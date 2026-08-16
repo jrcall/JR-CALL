@@ -1,0 +1,35 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "jr-call",
+          "appId": "1:189491346512:android:442b874d29bfa58c38a555",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "jr-call",
+          "configurations": {
+            "android": "1:189491346512:android:442b874d29bfa58c38a555",
+            "ios": "1:189491346512:ios:0ddf9c490c244b2a38a555",
+            "macos": "1:189491346512:ios:0ddf9c490c244b2a38a555",
+            "web": "1:189491346512:web:8d14e2b5209bde7238a555",
+            "windows": "1:189491346512:web:3fc25bdc0cb9319738a555"
+          }
+        }
+      }
+    }
+  },
+  "functions": {
+    "source": "functions"
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  }
+}

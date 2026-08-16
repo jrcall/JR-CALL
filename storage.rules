@@ -1,0 +1,191 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // =========================================================
+    // JR CALL
+    // PRODUCTION FIREBASE STORAGE SECURITY RULES
+    // =========================================================
+    //
+    // Current real media:
+    //
+    // Profile Photo:
+    // users/{uid}/profile/{fileName}
+    //
+    // Cover Photo:
+    // users/{uid}/cover/{fileName}
+    //
+    // Security model:
+    //
+    // - Firebase Auth UID = canonical ownership identity
+    // - Only owner may upload/update/delete
+    // - Authenticated JR CALL users may read profile media
+    // - Image MIME type validated
+    // - File size validated
+    // - No broad/public Storage writes
+    //
+    // =========================================================
+
+
+    // =========================================================
+    // COMMON AUTH HELPERS
+    // =========================================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() &&
+             request.auth.uid == userId;
+    }
+
+
+    // =========================================================
+    // FILE VALIDATION HELPERS
+    // =========================================================
+
+    function hasUploadResource() {
+      return request.resource != null;
+    }
+
+    function hasValidContentType() {
+      return hasUploadResource() &&
+             request.resource.contentType != null;
+    }
+
+    // Supported production profile/cover image formats.
+    //
+    // image_picker / image_cropper commonly produce JPEG/PNG,
+    // while WEBP/HEIC/HEIF remain supported for compatible
+    // devices/platform flows.
+    function isAllowedImageType() {
+      return hasValidContentType() &&
+             request.resource.contentType.matches(
+               '^image/(jpeg|png|webp|heic|heif)$'
+             );
+    }
+
+    function hasPositiveSize() {
+      return hasUploadResource() &&
+             request.resource.size > 0;
+    }
+
+    function isProfileImageSizeAllowed() {
+      return hasPositiveSize() &&
+             request.resource.size <= 5 * 1024 * 1024;
+    }
+
+    function isCoverImageSizeAllowed() {
+      return hasPositiveSize() &&
+             request.resource.size <= 10 * 1024 * 1024;
+    }
+
+
+    // =========================================================
+    // PROFILE PHOTO
+    // =========================================================
+    //
+    // Canonical client path:
+    //
+    // users/{uid}/profile/{fileName}
+    //
+    // Example:
+    //
+    // users/ABC123/profile/profile_1723456789.jpg
+    //
+    // Permissions:
+    //
+    // READ:
+    // authenticated JR CALL users
+    //
+    // CREATE / UPDATE / DELETE:
+    // authenticated owner only
+    //
+    // Max:
+    // 5 MB
+    //
+    // =========================================================
+
+    match /users/{userId}/profile/{fileName} {
+
+      allow read: if isSignedIn();
+
+      allow create: if isOwner(userId)
+        && isAllowedImageType()
+        && isProfileImageSizeAllowed();
+
+      allow update: if isOwner(userId)
+        && isAllowedImageType()
+        && isProfileImageSizeAllowed();
+
+      allow delete: if isOwner(userId);
+    }
+
+
+    // =========================================================
+    // COVER PHOTO
+    // =========================================================
+    //
+    // Canonical client path:
+    //
+    // users/{uid}/cover/{fileName}
+    //
+    // Example:
+    //
+    // users/ABC123/cover/cover_1723456789.jpg
+    //
+    // Permissions:
+    //
+    // READ:
+    // authenticated JR CALL users
+    //
+    // CREATE / UPDATE / DELETE:
+    // authenticated owner only
+    //
+    // Max:
+    // 10 MB
+    //
+    // =========================================================
+
+    match /users/{userId}/cover/{fileName} {
+
+      allow read: if isSignedIn();
+
+      allow create: if isOwner(userId)
+        && isAllowedImageType()
+        && isCoverImageSizeAllowed();
+
+      allow update: if isOwner(userId)
+        && isAllowedImageType()
+        && isCoverImageSizeAllowed();
+
+      allow delete: if isOwner(userId);
+    }
+
+
+    // =========================================================
+    // DEFAULT DENY
+    // =========================================================
+    //
+    // Message / Public Media / Video Reels / AI Tools are not
+    // real Storage-backed production modules in this phase.
+    //
+    // Therefore no Storage folders for those demo modules are
+    // opened here.
+    //
+    // Future real media modules must receive their own explicit
+    // rules and ownership model before activation.
+    //
+    // NEVER USE:
+    //
+    // allow read, write: if true;
+    //
+    // =========================================================
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
