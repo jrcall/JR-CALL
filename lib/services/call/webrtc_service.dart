@@ -150,6 +150,16 @@ class WebRTCService {
 
   // =============================================================
   // REMOTE SDP CACHE
+  //
+  // IMPORTANT:
+  // Do NOT use native getRemoteDescription() as a precondition
+  // immediately before applying SDP.
+  //
+  // flutter_webrtc/native WebRTC can temporarily expose a null
+  // native description while the PeerConnection is otherwise valid.
+  //
+  // These values represent SDP that this service has successfully
+  // handed to native WebRTC through setRemoteDescription().
   // =============================================================
 
   String? _appliedRemoteSdp;
@@ -479,6 +489,9 @@ class WebRTCService {
 
       _ensureStreamControllers();
 
+      // A new PeerConnection starts a completely new SDP
+      // negotiation. Never carry the previous connection's
+      // remote SDP cache into it.
       _clearAppliedRemoteDescription();
 
       newConnection = await createPeerConnection(
@@ -625,6 +638,10 @@ class WebRTCService {
 
   // =============================================================
   // PEER CONNECTION CALLBACKS
+  //
+  // NO native candidate callback assignment.
+  // NO data-channel callback assignment.
+  // NO renegotiation callback assignment.
   // =============================================================
 
   void _configurePeerConnectionCallbacks(
@@ -1074,6 +1091,16 @@ class WebRTCService {
 
   // =============================================================
   // ANSWER
+  //
+  // IMPORTANT FIX:
+  //
+  // Do NOT call native getRemoteDescription() here.
+  //
+  // Immediately after setRemoteDescription(), flutter_webrtc
+  // can transiently report a NULL native SessionDescription.
+  //
+  // The successfully-applied remote offer is tracked internally.
+  // Native createAnswer() remains the final authority.
   // =============================================================
 
   Future<RTCSessionDescription> createAnswer() async {
@@ -1131,6 +1158,25 @@ class WebRTCService {
 
   // =============================================================
   // REMOTE SDP
+  //
+  // CRITICAL PRODUCTION FIX:
+  //
+  // The old implementation performed:
+  //
+  //   connection.getRemoteDescription()
+  //
+  // BEFORE:
+  //
+  //   connection.setRemoteDescription(...)
+  //
+  // On Android/flutter_webrtc this can hit:
+  //
+  //   WEBRTC_SET_REMOTE_DESCRIPTION_ERROR:
+  //   native WebRTC null-description error
+  //
+  // That native pre-read is intentionally removed.
+  //
+  // Duplicate detection now uses the internally cached SDP.
   // =============================================================
 
   Future<void> setRemoteDescription({
@@ -1161,6 +1207,12 @@ class WebRTCService {
       );
     }
 
+    // IMPORTANT:
+    // Do not query native getRemoteDescription() here.
+    //
+    // The cache only represents descriptions that this service
+    // has already successfully applied to this PeerConnection.
+
     final String cachedSdp =
         _appliedRemoteSdp?.trim() ?? '';
 
@@ -1182,6 +1234,9 @@ class WebRTCService {
       normalizedType,
     );
 
+    // Native WebRTC is the final authority.
+    //
+    // Cache ONLY after this succeeds.
     await connection.setRemoteDescription(
       description,
     );
@@ -1207,6 +1262,12 @@ class WebRTCService {
 
   // =============================================================
   // SAFE REMOTE DESCRIPTION GETTER
+  //
+  // Cached successful SDP is returned first.
+  //
+  // Native getter is only used as a fallback when this service
+  // has no cached SDP, and a transient native NULL description
+  // is treated as "not available yet".
   // =============================================================
 
   Future<RTCSessionDescription?> getRemoteDescription() async {
@@ -1223,8 +1284,7 @@ class WebRTCService {
     final String cachedType =
         _appliedRemoteType?.trim().toLowerCase() ?? '';
 
-    if (cachedSdp.isNotEmpty &&
-        cachedType.isNotEmpty) {
+    if (cachedSdp.isNotEmpty && cachedType.isNotEmpty) {
       return RTCSessionDescription(
         cachedSdp,
         cachedType,
@@ -1256,7 +1316,9 @@ class WebRTCService {
 
       return nativeDescription;
     } catch (error, stackTrace) {
-      if (_isNativeNullSdpError(error)) {
+      if (_isNativeNullSdpError(
+        error,
+      )) {
         _debugPrint(
           'Native remote SDP is not available yet; '
               'returning null safely.',
@@ -1282,8 +1344,7 @@ class WebRTCService {
     error.toString().toLowerCase();
 
     return message.contains(
-      'session'
-          'description is null',
+      'session' 'description is null',
     ) ||
         message.contains(
           'webrtc_set_remote_description_error',
@@ -1295,6 +1356,12 @@ class WebRTCService {
 
   // =============================================================
   // REMOTE ICE COMPATIBILITY
+  //
+  // ICE MANAGER remains the owner of candidate queueing.
+  //
+  // This compatibility method only adds a candidate when this
+  // service already knows that a remote SDP was successfully
+  // applied.
   // =============================================================
 
   Future<void> addIceCandidate(
@@ -1320,8 +1387,7 @@ class WebRTCService {
     final String remoteType =
         _appliedRemoteType?.trim().toLowerCase() ?? '';
 
-    if (remoteSdp.isEmpty ||
-        remoteType.isEmpty) {
+    if (remoteSdp.isEmpty || remoteType.isEmpty) {
       throw StateError(
         'Remote description must be set before adding '
             'an ICE candidate. IceManager owns pending candidates.',
@@ -1331,6 +1397,7 @@ class WebRTCService {
     await connection.addCandidate(candidate);
   }
 
+  // IceManager owns pending candidates.
   Future<void> flushPendingCandidates() async {}
 
   // =============================================================
@@ -2439,6 +2506,8 @@ class WebRTCService {
 
     _localSendersByKind.clear();
 
+    // The native PeerConnection is no longer valid,
+    // so its cached SDP must never be reused.
     _clearAppliedRemoteDescription();
 
     if (connection == null) {
@@ -2631,6 +2700,8 @@ class WebRTCService {
 
       _resetStatsState();
 
+      // Ensure no SDP from the previous native
+      // PeerConnection survives cleanup.
       _clearAppliedRemoteDescription();
 
       _localSendersByKind.clear();
@@ -2887,7 +2958,6 @@ class WebRTCService {
 
 // ===============================================================
 // END OF FILE
-// ===============================================================
 //
 // JR CALL — REMOTE SDP NULL RACE FIX
 //
@@ -2914,9 +2984,6 @@ class WebRTCService {
 // ✓ Native setRemoteDescription() remains the final authority.
 //
 // ✓ Remote SDP is cached ONLY after native application succeeds.
-//
-// ✓ IDE spell-check warning fixed without changing the native
-//   runtime error-matching text.
 //
 // PRESERVED:
 //
@@ -2951,17 +3018,13 @@ class WebRTCService {
 //
 // IMPORTANT:
 //
-// The spell-check fix intentionally keeps the runtime matching
-// semantics unchanged:
+// This replacement specifically targets the runtime error:
 //
-//   'session' 'description is null'
+//   WEBRTC_SET_REMOTE_DESCRIPTION_ERROR:
+//   native WebRTC null-description error
 //
-// Dart concatenates adjacent string literals at compile time,
-// so the runtime value remains:
+// observed during:
 //
-//   sessiondescription is null
-//
-// while Android Studio no longer reports the combined word as a
-// typo.
+//   Receiver -> Accept -> answerIncomingCall()
 //
 // ===============================================================
