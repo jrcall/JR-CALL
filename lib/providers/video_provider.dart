@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../services/call/video_manager.dart';
@@ -7,60 +9,113 @@ import '../services/call/video_manager.dart';
 /// File: video_provider.dart
 /// Location: lib/providers/video_provider.dart
 ///
-/// Description:
-/// Production video-state bridge between VideoManager and UI.
+/// MASTER PRODUCTION VIDEO PROVIDER
 ///
-/// Architecture ownership:
-/// - VideoManager owns video orchestration.
-/// - CameraManager owns camera/device operations.
-/// - AI Video Engine owns AI decision/optimization logic.
-/// - WebRTCService owns WebRTC tracks/peer connection.
-/// - VideoProvider exposes synchronized video state to UI.
+/// RESPONSIBILITIES:
 ///
-/// Rules:
+/// - Bridge VideoManager state to Presentation/UI.
+/// - Expose video enabled state.
+/// - Expose video quality presentation state.
+/// - Expose AI/enhancement presentation state.
+/// - Coordinate UI video actions through VideoManager.
+/// - Serialize normal UI video operations.
+/// - Prevent silently dropped UI operations.
+/// - Prevent duplicate presentation notifications.
+///
+/// OWNERSHIP:
+///
+/// VideoManager:
+/// - Video orchestration.
+/// - Camera coordination.
+/// - Quality-profile state.
+/// - Adaptive video settings.
+///
+/// CameraManager:
+/// - Physical camera/device state.
+///
+/// AI Video Engine:
+/// - AI video decisions/optimization.
+///
+/// WebRTCService:
+/// - MediaStream / MediaStreamTrack.
+/// - PeerConnection.
+/// - Actual media transport.
+///
+/// BitrateController:
+/// - Actual WebRTC sender bitrate application.
+///
+/// VideoProvider:
+/// - Presentation bridge only.
+///
+/// IMPORTANT:
+///
 /// - No duplicate camera implementation.
 /// - No duplicate WebRTC logic.
-/// - No duplicate AI optimization engine.
-/// - No duplicate timer.
-/// - No duplicate stream.
-/// - No direct platform permission handling.
-/// - No independent source-of-truth video state.
+/// - No duplicate AI engine.
+/// - No timer ownership.
+/// - No stream ownership.
+/// - No permission ownership.
+/// - No independent video source of truth.
 /// ===========================================================
 
 class VideoProvider extends ChangeNotifier {
-  VideoProvider({VideoManager? videoManager})
-    : _videoManager = videoManager ?? VideoManager.instance;
+  VideoProvider({
+    VideoManager? videoManager,
+  }) : _videoManager = videoManager ?? VideoManager.instance;
+
+  // ===========================================================
+  // DEPENDENCY
+  // ===========================================================
 
   final VideoManager _videoManager;
 
+  // ===========================================================
+  // LIFECYCLE
+  // ===========================================================
+
   bool _isInitialized = false;
+
   bool _isDisposed = false;
+
   bool _listenerAttached = false;
-  bool _operationInProgress = false;
 
   Future<void>? _initializationFuture;
 
+  // ===========================================================
+  // OPERATION STATE
+  // ===========================================================
+
+  Future<void> _operationQueue = Future<void>.value();
+
+  int _activeOperations = 0;
+
+  // ===========================================================
+  // DUPLICATE NOTIFICATION PROTECTION
+  // ===========================================================
+
   String? _lastStateSignature;
 
-  /// ===========================================================
-  /// Initialization State
-  /// ===========================================================
+  // ===========================================================
+  // INITIALIZATION STATE
+  // ===========================================================
 
   bool get isInitialized => _isInitialized;
 
-  bool get isBusy => _operationInProgress;
+  bool get isDisposed => _isDisposed;
 
-  /// ===========================================================
-  /// Video State
-  /// ===========================================================
+  bool get isBusy => _activeOperations > 0;
+
+  // ===========================================================
+  // VIDEO STATE
+  // ===========================================================
 
   bool get videoEnabled => _videoManager.videoEnabled;
 
   bool get cameraEnabled => _videoManager.videoEnabled;
 
-  /// ===========================================================
-  /// Video Quality State
-  /// ===========================================================
+  // ===========================================================
+  // VIDEO QUALITY STATE
+  // ===========================================================
 
   int get width => _videoManager.width;
 
@@ -70,16 +125,17 @@ class VideoProvider extends ChangeNotifier {
 
   int get bitrate => _videoManager.bitrate;
 
-  String get resolution => '${_videoManager.width}x${_videoManager.height}';
+  String get resolution =>
+      '${_videoManager.width}x${_videoManager.height}';
 
   Map<String, int> get resolutionProfile => <String, int>{
     'width': _videoManager.width,
     'height': _videoManager.height,
   };
 
-  /// ===========================================================
-  /// AI / Enhancement State
-  /// ===========================================================
+  // ===========================================================
+  // AI / ENHANCEMENT STATE
+  // ===========================================================
 
   bool get beautyMode => _videoManager.beautyMode;
 
@@ -89,18 +145,37 @@ class VideoProvider extends ChangeNotifier {
 
   bool get backgroundBlur => _videoManager.backgroundBlur;
 
-  /// ===========================================================
-  /// Initialization
-  /// ===========================================================
+  // ===========================================================
+  // INITIALIZATION
+  // ===========================================================
 
   Future<void> initialize() {
     if (_isDisposed) {
       return Future<void>.error(
-        StateError('VideoProvider has already been disposed.'),
+        StateError(
+          'VideoProvider has already been disposed.',
+        ),
       );
     }
 
-    return _initializationFuture ??= _initializeInternal();
+    if (_isInitialized &&
+        _videoManager.isInitialized) {
+      return Future<void>.value();
+    }
+
+    final Future<void>? existing =
+        _initializationFuture;
+
+    if (existing != null) {
+      return existing;
+    }
+
+    final Future<void> future =
+    _initializeInternal();
+
+    _initializationFuture = future;
+
+    return future;
   }
 
   Future<void> _initializeInternal() async {
@@ -115,239 +190,325 @@ class VideoProvider extends ChangeNotifier {
         return;
       }
 
-      _isInitialized = true;
-      _lastStateSignature = _buildStateSignature();
+      _isInitialized =
+          _videoManager.isInitialized;
 
-      _notifySafely(force: true);
+      _lastStateSignature =
+          _buildStateSignature();
+
+      _notifySafely(
+        force: true,
+      );
     } catch (error, stackTrace) {
-      _initializationFuture = null;
-
-      _reportError('Initialization', error, stackTrace);
+      _reportError(
+        'Initialization',
+        error,
+        stackTrace,
+      );
 
       rethrow;
+    } finally {
+      _initializationFuture = null;
     }
   }
 
-  /// ===========================================================
-  /// Video Enable / Disable
-  /// ===========================================================
+  // ===========================================================
+  // VIDEO ENABLE / DISABLE
+  // ===========================================================
 
-  Future<void> enableVideo() async {
-    await _runOperation(_videoManager.enableVideo);
+  Future<void> enableVideo() {
+    return _runOperation(
+      _videoManager.enableVideo,
+    );
   }
 
-  Future<void> disableVideo() async {
-    await _runOperation(_videoManager.disableVideo);
+  Future<void> disableVideo() {
+    return _runOperation(
+      _videoManager.disableVideo,
+    );
   }
 
-  Future<void> toggleVideo() async {
-    await _runOperation(_videoManager.toggleVideo);
+  Future<void> toggleVideo() {
+    return _runOperation(
+      _videoManager.toggleVideo,
+    );
   }
 
-  Future<void> setVideoEnabled(bool enabled) async {
-    if (enabled == videoEnabled) {
-      return;
-    }
-
-    if (enabled) {
-      await enableVideo();
-    } else {
-      await disableVideo();
-    }
+  Future<void> setVideoEnabled(
+      bool enabled,
+      ) {
+    return _runOperation(
+          () => _videoManager.setVideoEnabled(
+        enabled,
+      ),
+    );
   }
 
   /// Compatibility alias used by call UI.
-  Future<void> setCameraEnabled(bool enabled) {
-    return setVideoEnabled(enabled);
+  Future<void> setCameraEnabled(
+      bool enabled,
+      ) {
+    return setVideoEnabled(
+      enabled,
+    );
   }
 
-  /// ===========================================================
-  /// Camera Controls
-  /// ===========================================================
+  // ===========================================================
+  // CAMERA CONTROLS
+  // ===========================================================
 
-  Future<void> switchCamera() async {
-    await _runOperation(_videoManager.switchCamera);
+  Future<void> switchCamera() {
+    return _runOperation(
+      _videoManager.switchCamera,
+    );
   }
 
-  Future<void> toggleFlash() async {
-    await _runOperation(_videoManager.toggleFlash);
+  Future<void> toggleFlash() {
+    return _runOperation(
+      _videoManager.toggleFlash,
+    );
   }
 
-  Future<void> setZoom(double zoom) async {
+  Future<void> setZoom(
+      double zoom,
+      ) {
     if (!zoom.isFinite) {
-      throw ArgumentError.value(zoom, 'zoom', 'Zoom value must be finite.');
-    }
-
-    await _runOperation(() async {
-      await _videoManager.setZoom(zoom);
-    });
-  }
-
-  /// ===========================================================
-  /// Resolution
-  /// ===========================================================
-
-  Future<void> setResolution({required int width, required int height}) async {
-    if (width <= 0 || height <= 0) {
-      throw ArgumentError('Video resolution must be greater than zero.');
-    }
-
-    if (this.width == width && this.height == height) {
-      return;
-    }
-
-    await _runOperation(() async {
-      await _videoManager.setResolution(width: width, height: height);
-    });
-  }
-
-  /// ===========================================================
-  /// Frame Rate
-  /// ===========================================================
-
-  Future<void> setFrameRate(int value) async {
-    if (value <= 0) {
-      throw ArgumentError.value(
-        value,
-        'value',
-        'Frame rate must be greater than zero.',
+      return Future<void>.error(
+        ArgumentError.value(
+          zoom,
+          'zoom',
+          'Zoom value must be finite.',
+        ),
       );
     }
 
-    if (fps == value) {
-      return;
-    }
-
-    await _runOperation(() async {
-      await _videoManager.setFrameRate(value);
-    });
+    return _runOperation(
+          () => _videoManager.setZoom(
+        zoom,
+      ),
+    );
   }
 
-  /// ===========================================================
-  /// Bitrate
-  /// ===========================================================
+  // ===========================================================
+  // RESOLUTION
+  // ===========================================================
 
-  Future<void> setBitrate(int value) async {
+  Future<void> setResolution({
+    required int width,
+    required int height,
+  }) {
+    if (width <= 0 ||
+        height <= 0) {
+      return Future<void>.error(
+        ArgumentError(
+          'Video resolution must be greater than zero.',
+        ),
+      );
+    }
+
+    return _runOperation(
+          () => _videoManager.setResolution(
+        width: width,
+        height: height,
+      ),
+    );
+  }
+
+  // ===========================================================
+  // FRAME RATE
+  // ===========================================================
+
+  Future<void> setFrameRate(
+      int value,
+      ) {
+    if (value < 1 ||
+        value > 120) {
+      return Future<void>.error(
+        ArgumentError.value(
+          value,
+          'value',
+          'Frame rate must be between 1 and 120.',
+        ),
+      );
+    }
+
+    return _runOperation(
+          () => _videoManager.setFrameRate(
+        value,
+      ),
+    );
+  }
+
+  // ===========================================================
+  // BITRATE
+  // ===========================================================
+
+  Future<void> setBitrate(
+      int value,
+      ) {
     if (value < 0) {
-      throw ArgumentError.value(value, 'value', 'Bitrate cannot be negative.');
+      return Future<void>.error(
+        ArgumentError.value(
+          value,
+          'value',
+          'Bitrate cannot be negative.',
+        ),
+      );
     }
 
-    if (bitrate == value) {
-      return;
-    }
-
-    await _runOperation(() async {
-      await _videoManager.setBitrate(value);
-    });
+    return _runOperation(
+          () => _videoManager.setBitrate(
+        value,
+      ),
+    );
   }
 
-  /// ===========================================================
-  /// AI Video Features
-  /// ===========================================================
+  // ===========================================================
+  // AI VIDEO FEATURES
+  // ===========================================================
 
-  Future<void> setBeautyMode(bool enabled) async {
-    if (beautyMode == enabled) {
-      return;
-    }
-
-    await _runOperation(() async {
-      await _videoManager.enableBeautyMode(enabled);
-    });
+  Future<void> setBeautyMode(
+      bool enabled,
+      ) {
+    return _runOperation(
+          () => _videoManager.enableBeautyMode(
+        enabled,
+      ),
+    );
   }
 
-  Future<void> setFaceEnhancement(bool enabled) async {
-    if (faceEnhancement == enabled) {
-      return;
-    }
-
-    await _runOperation(() async {
-      await _videoManager.enableFaceEnhancement(enabled);
-    });
+  Future<void> setFaceEnhancement(
+      bool enabled,
+      ) {
+    return _runOperation(
+          () => _videoManager.enableFaceEnhancement(
+        enabled,
+      ),
+    );
   }
 
-  Future<void> setNoiseReduction(bool enabled) async {
-    if (noiseReduction == enabled) {
-      return;
-    }
-
-    await _runOperation(() async {
-      await _videoManager.enableNoiseReduction(enabled);
-    });
+  Future<void> setNoiseReduction(
+      bool enabled,
+      ) {
+    return _runOperation(
+          () => _videoManager.enableNoiseReduction(
+        enabled,
+      ),
+    );
   }
 
-  Future<void> setBackgroundBlur(bool enabled) async {
-    if (backgroundBlur == enabled) {
-      return;
-    }
-
-    await _runOperation(() async {
-      await _videoManager.enableBackgroundBlur(enabled);
-    });
+  Future<void> setBackgroundBlur(
+      bool enabled,
+      ) {
+    return _runOperation(
+          () => _videoManager.enableBackgroundBlur(
+        enabled,
+      ),
+    );
   }
 
-  /// Compatibility aliases.
+  // ===========================================================
+  // COMPATIBILITY ALIASES
+  // ===========================================================
 
-  Future<void> enableBeautyMode(bool enabled) => setBeautyMode(enabled);
-
-  Future<void> enableFaceEnhancement(bool enabled) =>
-      setFaceEnhancement(enabled);
-
-  Future<void> enableNoiseReduction(bool enabled) => setNoiseReduction(enabled);
-
-  Future<void> enableBackgroundBlur(bool enabled) => setBackgroundBlur(enabled);
-
-  /// ===========================================================
-  /// Standard Quality Profiles
-  /// ===========================================================
-
-  Future<void> applyLowQuality() async {
-    await _runOperation(_videoManager.applyLowQuality);
+  Future<void> enableBeautyMode(
+      bool enabled,
+      ) {
+    return setBeautyMode(
+      enabled,
+    );
   }
 
-  Future<void> applyMediumQuality() async {
-    await _runOperation(_videoManager.applyMediumQuality);
+  Future<void> enableFaceEnhancement(
+      bool enabled,
+      ) {
+    return setFaceEnhancement(
+      enabled,
+    );
   }
 
-  Future<void> applyHDQuality() async {
-    await _runOperation(_videoManager.applyHDQuality);
+  Future<void> enableNoiseReduction(
+      bool enabled,
+      ) {
+    return setNoiseReduction(
+      enabled,
+    );
   }
 
-  Future<void> applyFullHDQuality() async {
-    await _runOperation(_videoManager.applyFullHDQuality);
+  Future<void> enableBackgroundBlur(
+      bool enabled,
+      ) {
+    return setBackgroundBlur(
+      enabled,
+    );
   }
 
-  /// ===========================================================
-  /// Dynamic Profile Application
-  /// ===========================================================
+  // ===========================================================
+  // STANDARD QUALITY PROFILES
+  // ===========================================================
+
+  Future<void> applyLowQuality() {
+    return _runOperation(
+      _videoManager.applyLowQuality,
+    );
+  }
+
+  Future<void> applyMediumQuality() {
+    return _runOperation(
+      _videoManager.applyMediumQuality,
+    );
+  }
+
+  Future<void> applyHDQuality() {
+    return _runOperation(
+      _videoManager.applyHDQuality,
+    );
+  }
+
+  Future<void> applyFullHDQuality() {
+    return _runOperation(
+      _videoManager.applyFullHDQuality,
+    );
+  }
+
+  // ===========================================================
+  // DYNAMIC PROFILE APPLICATION
+  //
+  // VideoManager already owns the unified adaptive-profile API.
+  // Provider must not rebuild the same orchestration manually.
+  // ===========================================================
 
   Future<void> applyStreamingProfile({
     required int width,
     required int height,
     required int fps,
     required int bitrate,
-  }) async {
-    if (width <= 0 || height <= 0 || fps <= 0 || bitrate < 0) {
-      throw ArgumentError('Invalid video streaming profile.');
+  }) {
+    if (width <= 0 ||
+        height <= 0 ||
+        fps < 1 ||
+        fps > 120 ||
+        bitrate < 0) {
+      return Future<void>.error(
+        ArgumentError(
+          'Invalid video streaming profile.',
+        ),
+      );
     }
 
-    await _runOperation(() async {
-      if (_videoManager.width != width || _videoManager.height != height) {
-        await _videoManager.setResolution(width: width, height: height);
-      }
-
-      if (_videoManager.fps != fps) {
-        await _videoManager.setFrameRate(fps);
-      }
-
-      if (_videoManager.bitrate != bitrate) {
-        await _videoManager.setBitrate(bitrate);
-      }
-    });
+    return _runOperation(
+          () => _videoManager.applyAdaptiveSettings(
+        width: width,
+        height: height,
+        fps: fps,
+        bitrate: bitrate,
+      ),
+    );
   }
 
-  /// ===========================================================
-  /// Refresh
-  /// ===========================================================
+  // ===========================================================
+  // REFRESH
+  // ===========================================================
 
   Future<void> refresh() async {
     if (_isDisposed) {
@@ -360,19 +521,27 @@ class VideoProvider extends ChangeNotifier {
       return;
     }
 
-    _notifySafely(force: true);
+    _isInitialized =
+        _videoManager.isInitialized;
+
+    _notifySafely(
+      force: true,
+    );
   }
 
-  /// ===========================================================
-  /// VideoManager Synchronization
-  /// ===========================================================
+  // ===========================================================
+  // VIDEO MANAGER SYNCHRONIZATION
+  // ===========================================================
 
   void _attachManagerListener() {
-    if (_listenerAttached || _isDisposed) {
+    if (_listenerAttached ||
+        _isDisposed) {
       return;
     }
 
-    _videoManager.addListener(_handleVideoManagerChanged);
+    _videoManager.addListener(
+      _handleVideoManagerChanged,
+    );
 
     _listenerAttached = true;
   }
@@ -382,7 +551,9 @@ class VideoProvider extends ChangeNotifier {
       return;
     }
 
-    _videoManager.removeListener(_handleVideoManagerChanged);
+    _videoManager.removeListener(
+      _handleVideoManagerChanged,
+    );
 
     _listenerAttached = false;
   }
@@ -392,14 +563,21 @@ class VideoProvider extends ChangeNotifier {
       return;
     }
 
+    _isInitialized =
+        _videoManager.isInitialized;
+
     _notifySafely();
   }
 
-  /// ===========================================================
-  /// Serialized Operation Guard
-  /// ===========================================================
+  // ===========================================================
+  // SERIALIZED OPERATION ENGINE
+  //
+  // UI operations are queued, not silently discarded.
+  // ===========================================================
 
-  Future<void> _runOperation(Future<void> Function() operation) async {
+  Future<void> _runOperation(
+      Future<void> Function() operation,
+      ) async {
     if (_isDisposed) {
       return;
     }
@@ -410,33 +588,86 @@ class VideoProvider extends ChangeNotifier {
       return;
     }
 
-    if (_operationInProgress) {
+    final Completer<void> completer =
+    Completer<void>();
+
+    _beginBusyOperation();
+
+    _operationQueue =
+        _operationQueue.then<void>(
+              (_) async {
+            if (_isDisposed) {
+              if (!completer.isCompleted) {
+                completer.complete();
+              }
+
+              _endBusyOperation();
+
+              return;
+            }
+
+            try {
+              await operation();
+
+              if (!completer.isCompleted) {
+                completer.complete();
+              }
+            } catch (error, stackTrace) {
+              _reportError(
+                'Video operation',
+                error,
+                stackTrace,
+              );
+
+              if (!completer.isCompleted) {
+                completer.completeError(
+                  error,
+                  stackTrace,
+                );
+              }
+            } finally {
+              _endBusyOperation();
+            }
+          },
+        );
+
+    await completer.future;
+  }
+
+  // ===========================================================
+  // BUSY STATE
+  // ===========================================================
+
+  void _beginBusyOperation() {
+    if (_isDisposed) {
       return;
     }
 
-    _operationInProgress = true;
-    _notifySafely(force: true);
+    _activeOperations++;
 
-    try {
-      await operation();
-    } catch (error, stackTrace) {
-      _reportError('Video operation', error, stackTrace);
-
-      rethrow;
-    } finally {
-      _operationInProgress = false;
-      _notifySafely(force: true);
-    }
+    _notifySafely(
+      force: true,
+    );
   }
 
-  /// ===========================================================
-  /// Duplicate Notification Protection
-  /// ===========================================================
+  void _endBusyOperation() {
+    if (_activeOperations > 0) {
+      _activeOperations--;
+    }
+
+    _notifySafely(
+      force: true,
+    );
+  }
+
+  // ===========================================================
+  // DUPLICATE NOTIFICATION PROTECTION
+  // ===========================================================
 
   String _buildStateSignature() {
     return <Object?>[
       _isInitialized,
-      _operationInProgress,
+      isBusy,
       videoEnabled,
       width,
       height,
@@ -449,71 +680,88 @@ class VideoProvider extends ChangeNotifier {
     ].join('|');
   }
 
-  void _notifySafely({bool force = false}) {
+  void _notifySafely({
+    bool force = false,
+  }) {
     if (_isDisposed) {
       return;
     }
 
-    final signature = _buildStateSignature();
+    final String signature =
+    _buildStateSignature();
 
-    if (!force && signature == _lastStateSignature) {
+    if (!force &&
+        signature ==
+            _lastStateSignature) {
       return;
     }
 
-    _lastStateSignature = signature;
+    _lastStateSignature =
+        signature;
 
     notifyListeners();
   }
 
-  /// ===========================================================
-  /// Reset
-  /// ===========================================================
+  // ===========================================================
+  // RESET
+  //
+  // VideoManager owns reset semantics.
+  //
+  // After reset VideoManager intentionally reports
+  // isInitialized == false. The next provider operation
+  // therefore performs a real initialization again.
+  // ===========================================================
 
   Future<void> reset() async {
     if (_isDisposed) {
       return;
     }
 
-    await initialize();
+    await _runOperation(
+      _videoManager.reset,
+    );
 
     if (_isDisposed) {
       return;
     }
 
-    _operationInProgress = true;
+    _isInitialized =
+        _videoManager.isInitialized;
 
-    try {
-      await _videoManager.reset();
-
-      _isInitialized = _videoManager.isInitialized;
-    } catch (error, stackTrace) {
-      _reportError('Reset', error, stackTrace);
-
-      rethrow;
-    } finally {
-      _operationInProgress = false;
-      _notifySafely(force: true);
-    }
+    _notifySafely(
+      force: true,
+    );
   }
 
-  /// ===========================================================
-  /// Error Reporting
-  /// ===========================================================
+  // ===========================================================
+  // ERROR REPORTING
+  // ===========================================================
 
-  void _reportError(String source, Object error, [StackTrace? stackTrace]) {
-    debugPrint('JR CALL [VideoProvider/$source] error: $error');
+  void _reportError(
+      String source,
+      Object error, [
+        StackTrace? stackTrace,
+      ]) {
+    debugPrint(
+      'JR CALL [VideoProvider/$source] error: $error',
+    );
 
     if (stackTrace != null) {
       debugPrintStack(
-        label: 'JR CALL [VideoProvider/$source]',
-        stackTrace: stackTrace,
+        label:
+        'JR CALL [VideoProvider/$source]',
+        stackTrace:
+        stackTrace,
       );
     }
   }
 
-  /// ===========================================================
-  /// Disposal
-  /// ===========================================================
+  // ===========================================================
+  // DISPOSAL
+  //
+  // VideoManager is shared by the call engine.
+  // Provider disposal MUST NOT reset/dispose VideoManager.
+  // ===========================================================
 
   @override
   void dispose() {
@@ -524,14 +772,14 @@ class VideoProvider extends ChangeNotifier {
     _detachManagerListener();
 
     _isDisposed = true;
-    _isInitialized = false;
-    _operationInProgress = false;
-    _initializationFuture = null;
-    _lastStateSignature = null;
 
-    /// VideoManager is a shared singleton used by the
-    /// complete call engine. Provider disposal therefore
-    /// MUST NOT reset or dispose VideoManager.
+    _isInitialized = false;
+
+    _activeOperations = 0;
+
+    _initializationFuture = null;
+
+    _lastStateSignature = null;
 
     super.dispose();
   }

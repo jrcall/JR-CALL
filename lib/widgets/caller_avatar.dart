@@ -15,20 +15,26 @@ import 'package:flutter/material.dart';
 /// - incoming_call_card.dart
 ///
 /// Responsibilities:
-/// - Render remote/user profile image
-/// - Safe initials fallback
-/// - Premium JR CALL border/glow
-/// - Optional online indicator
+/// - Render remote/user profile image.
+/// - Provide safe initials fallback.
+/// - Provide premium JR CALL border/glow.
+/// - Display optional parent-supplied online state.
+/// - Provide accessibility semantics.
 ///
 /// Architecture:
-/// - Presentation only
-/// - No Firebase logic
-/// - No CallService logic
-/// - No WebRTC logic
-/// - No network monitoring logic
+/// - Presentation only.
+/// - No Firebase logic.
+/// - No CallService logic.
+/// - No WebRTC logic.
+/// - No signaling logic.
+/// - No ICE logic.
+/// - No network monitoring logic.
+/// - No presence-fetching ownership.
 ///
-/// Backward Compatibility:
-/// Existing public constructor and parameters are preserved.
+/// Important:
+/// - Online state is supplied by the parent.
+/// - This widget never determines real presence itself.
+/// - Existing public constructor/API and visual design are preserved.
 /// ===========================================================
 
 class CallerAvatar extends StatelessWidget {
@@ -41,7 +47,10 @@ class CallerAvatar extends StatelessWidget {
     this.showBorder = true,
     this.borderColor = const Color(0xFF3B82F6),
     this.onlineColor = const Color(0xFF22C55E),
-  });
+  }) : assert(
+  radius > 0,
+  'CallerAvatar radius must be greater than zero.',
+  );
 
   /// Optional remote/user profile image URL.
   final String? imageUrl;
@@ -52,16 +61,16 @@ class CallerAvatar extends StatelessWidget {
   /// Avatar radius.
   final double radius;
 
-  /// Whether online indicator should be visible.
+  /// Parent-supplied online presentation state.
   final bool isOnline;
 
   /// Whether premium outer border should be visible.
   final bool showBorder;
 
-  /// Existing configurable border color.
+  /// Configurable border color.
   final Color borderColor;
 
-  /// Existing configurable online indicator color.
+  /// Configurable online indicator color.
   final Color onlineColor;
 
   // ===========================================================
@@ -88,24 +97,46 @@ class CallerAvatar extends StatelessWidget {
     return value;
   }
 
+  double get _safeRadius {
+    final double value = radius;
+
+    if (!value.isFinite || value <= 0) {
+      return 52.0;
+    }
+
+    return value.clamp(
+      18.0,
+      180.0,
+    ).toDouble();
+  }
+
   String get _initials {
     final List<String> parts = _safeName
         .split(RegExp(r'\s+'))
-        .where((String part) => part.isNotEmpty)
-        .toList(growable: false);
+        .where(
+          (String part) => part.isNotEmpty,
+    )
+        .toList(
+      growable: false,
+    );
 
     if (parts.isEmpty) {
       return 'JR';
     }
 
     if (parts.length == 1) {
-      return _firstCharacter(parts.first);
+      return _firstCharacter(
+        parts.first,
+      );
     }
 
-    return '${_firstCharacter(parts.first)}${_firstCharacter(parts.last)}';
+    return '${_firstCharacter(parts.first)}'
+        '${_firstCharacter(parts.last)}';
   }
 
-  String _firstCharacter(String value) {
+  String _firstCharacter(
+      String value,
+      ) {
     if (value.isEmpty) {
       return '';
     }
@@ -119,22 +150,34 @@ class CallerAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final double safeRadius = radius.clamp(18.0, 180.0);
+    final double safeRadius = _safeRadius;
 
-    final double avatarDiameter = safeRadius * 2;
+    final double avatarDiameter =
+        safeRadius * 2;
 
-    final double borderWidth = safeRadius >= 52 ? 3 : 2.5;
+    final double borderWidth =
+    safeRadius >= 52 ? 3.0 : 2.5;
 
-    final double outerPadding = showBorder ? 4 : 0;
+    final double outerPadding =
+    showBorder ? 4.0 : 0.0;
 
-    final double onlineSize = (safeRadius * 0.32).clamp(13.0, 24.0);
+    final double onlineSize =
+    (safeRadius * 0.32)
+        .clamp(
+      13.0,
+      24.0,
+    )
+        .toDouble();
 
     return Semantics(
       image: true,
-      label: '$_safeName profile photo${isOnline ? ', online' : ''}',
+      label:
+      '$_safeName profile photo${isOnline ? ', online' : ''}',
       child: SizedBox(
-        width: avatarDiameter + (outerPadding * 2),
-        height: avatarDiameter + (outerPadding * 2),
+        width:
+        avatarDiameter + (outerPadding * 2),
+        height:
+        avatarDiameter + (outerPadding * 2),
         child: Stack(
           clipBehavior: Clip.none,
           children: <Widget>[
@@ -144,44 +187,67 @@ class CallerAvatar extends StatelessWidget {
                   shape: BoxShape.circle,
                   gradient: showBorder
                       ? LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: <Color>[
-                            borderColor.withValues(alpha: 0.95),
-                            const Color(0xFF64BDF5),
-                            const Color(0xFF00D99B),
-                          ],
-                        )
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: <Color>[
+                      borderColor.withValues(
+                        alpha: 0.95,
+                      ),
+                      const Color(
+                        0xFF64BDF5,
+                      ),
+                      const Color(
+                        0xFF00D99B,
+                      ),
+                    ],
+                  )
                       : null,
-                  color: showBorder ? null : Colors.transparent,
+                  color: showBorder
+                      ? null
+                      : Colors.transparent,
                   boxShadow: showBorder
                       ? <BoxShadow>[
-                          BoxShadow(
-                            color: borderColor.withValues(alpha: 0.18),
-                            blurRadius: 20,
-                            spreadRadius: 1,
-                          ),
-                          const BoxShadow(
-                            color: Color(0x1600D99B),
-                            blurRadius: 26,
-                            spreadRadius: 2,
-                          ),
-                        ]
+                    BoxShadow(
+                      color:
+                      borderColor.withValues(
+                        alpha: 0.18,
+                      ),
+                      blurRadius: 20,
+                      spreadRadius: 1,
+                    ),
+                    const BoxShadow(
+                      color:
+                      Color(0x1600D99B),
+                      blurRadius: 26,
+                      spreadRadius: 2,
+                    ),
+                  ]
                       : const <BoxShadow>[],
                 ),
                 child: Padding(
-                  padding: EdgeInsets.all(showBorder ? borderWidth : 0),
+                  padding: EdgeInsets.all(
+                    showBorder
+                        ? borderWidth
+                        : 0,
+                  ),
                   child: DecoratedBox(
-                    decoration: const BoxDecoration(
-                      color: Color(0xFFF8FBFF),
+                    decoration:
+                    const BoxDecoration(
+                      color:
+                      Color(0xFFF8FBFF),
                       shape: BoxShape.circle,
                     ),
                     child: Padding(
-                      padding: EdgeInsets.all(showBorder ? 2 : 0),
+                      padding: EdgeInsets.all(
+                        showBorder ? 2 : 0,
+                      ),
                       child: ClipOval(
-                        child: _buildAvatarContent(
-                          diameter: avatarDiameter,
-                          radius: safeRadius,
+                        child:
+                        _buildAvatarContent(
+                          diameter:
+                          avatarDiameter,
+                          radius:
+                          safeRadius,
                         ),
                       ),
                     ),
@@ -192,9 +258,14 @@ class CallerAvatar extends StatelessWidget {
 
             if (isOnline)
               Positioned(
-                right: outerPadding + 2,
-                bottom: outerPadding + 2,
-                child: _buildOnlineIndicator(onlineSize),
+                right:
+                outerPadding + 2,
+                bottom:
+                outerPadding + 2,
+                child:
+                _buildOnlineIndicator(
+                  onlineSize,
+                ),
               ),
           ],
         ),
@@ -213,7 +284,9 @@ class CallerAvatar extends StatelessWidget {
     final String? url = _safeImageUrl;
 
     if (url == null) {
-      return _buildFallback(radius);
+      return _buildFallback(
+        radius,
+      );
     }
 
     return Image.network(
@@ -221,24 +294,31 @@ class CallerAvatar extends StatelessWidget {
       width: diameter,
       height: diameter,
       fit: BoxFit.cover,
-      filterQuality: FilterQuality.medium,
+      filterQuality:
+      FilterQuality.medium,
       gaplessPlayback: true,
-      errorBuilder:
-          (BuildContext context, Object error, StackTrace? stackTrace) {
-            return _buildFallback(radius);
-          },
-      loadingBuilder:
-          (
-            BuildContext context,
-            Widget child,
-            ImageChunkEvent? loadingProgress,
+      errorBuilder: (
+          BuildContext context,
+          Object error,
+          StackTrace? stackTrace,
           ) {
-            if (loadingProgress == null) {
-              return child;
-            }
+        return _buildFallback(
+          radius,
+        );
+      },
+      loadingBuilder: (
+          BuildContext context,
+          Widget child,
+          ImageChunkEvent? loadingProgress,
+          ) {
+        if (loadingProgress == null) {
+          return child;
+        }
 
-            return _buildLoadingState(radius);
-          },
+        return _buildLoadingState(
+          radius,
+        );
+      },
     );
   }
 
@@ -246,9 +326,20 @@ class CallerAvatar extends StatelessWidget {
   // Loading
   // ===========================================================
 
-  Widget _buildLoadingState(double radius) {
+  Widget _buildLoadingState(
+      double radius,
+      ) {
+    final double indicatorSize =
+    (radius * 0.38)
+        .clamp(
+      18.0,
+      28.0,
+    )
+        .toDouble();
+
     return DecoratedBox(
-      decoration: const BoxDecoration(
+      decoration:
+      const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
@@ -261,11 +352,13 @@ class CallerAvatar extends StatelessWidget {
       ),
       child: Center(
         child: SizedBox(
-          width: (radius * 0.38).clamp(18.0, 28.0),
-          height: (radius * 0.38).clamp(18.0, 28.0),
-          child: const CircularProgressIndicator(
+          width: indicatorSize,
+          height: indicatorSize,
+          child:
+          const CircularProgressIndicator(
             strokeWidth: 2.2,
-            color: Color(0xFF087AF5),
+            color:
+            Color(0xFF087AF5),
           ),
         ),
       ),
@@ -276,11 +369,20 @@ class CallerAvatar extends StatelessWidget {
   // Fallback
   // ===========================================================
 
-  Widget _buildFallback(double radius) {
-    final double textSize = (radius * 0.52).clamp(18.0, 48.0);
+  Widget _buildFallback(
+      double radius,
+      ) {
+    final double textSize =
+    (radius * 0.52)
+        .clamp(
+      18.0,
+      48.0,
+    )
+        .toDouble();
 
     return DecoratedBox(
-      decoration: const BoxDecoration(
+      decoration:
+      const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
@@ -296,9 +398,11 @@ class CallerAvatar extends StatelessWidget {
           _initials,
           maxLines: 1,
           style: TextStyle(
-            color: const Color(0xFF1557D9),
+            color:
+            const Color(0xFF1557D9),
             fontSize: textSize,
-            fontWeight: FontWeight.w800,
+            fontWeight:
+            FontWeight.w800,
             letterSpacing: 0.5,
           ),
         ),
@@ -310,26 +414,35 @@ class CallerAvatar extends StatelessWidget {
   // Online Indicator
   // ===========================================================
 
-  Widget _buildOnlineIndicator(double size) {
+  Widget _buildOnlineIndicator(
+      double size,
+      ) {
     return Semantics(
       label: 'Online',
       child: Container(
         width: size,
         height: size,
-        padding: const EdgeInsets.all(2.5),
+        padding:
+        const EdgeInsets.all(2.5),
         decoration: BoxDecoration(
           color: Colors.white,
           shape: BoxShape.circle,
           boxShadow: <BoxShadow>[
             BoxShadow(
-              color: onlineColor.withValues(alpha: 0.22),
+              color:
+              onlineColor.withValues(
+                alpha: 0.22,
+              ),
               blurRadius: 10,
               spreadRadius: 1,
             ),
           ],
         ),
         child: DecoratedBox(
-          decoration: BoxDecoration(color: onlineColor, shape: BoxShape.circle),
+          decoration: BoxDecoration(
+            color: onlineColor,
+            shape: BoxShape.circle,
+          ),
         ),
       ),
     );

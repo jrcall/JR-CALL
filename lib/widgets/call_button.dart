@@ -1,279 +1,199 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
-import '../services/call/audio_manager.dart';
-import '../services/call/video_manager.dart';
+/// ===========================================================
+/// JR CALL
+/// File: call_button.dart
+/// Location: lib/widgets/call_button.dart
+///
+/// Description:
+/// Production-ready reusable JR CALL voice-call action button.
+///
+/// Responsibilities:
+/// - Render voice-call action control.
+/// - Preserve parent supplied callback.
+/// - Prevent accidental rapid repeated taps.
+/// - Support enabled / disabled state.
+/// - Provide premium JR CALL visual feedback.
+/// - Provide accessibility semantics.
+///
+/// Architecture:
+/// - UI only.
+/// - No Firebase logic.
+/// - No navigation logic.
+/// - No CallService logic.
+/// - No WebRTC logic.
+/// - No AudioManager logic.
+/// - No call-lifecycle ownership.
+///
+/// This widget is the voice-call counterpart of VideoButton.
+///
+/// Parent/provider/screen owns the actual call action.
+/// CallButton only renders and forwards the user action.
+/// ===========================================================
 
-// ===========================================================
-// JR CALL
-// File: call_bottom_bar.dart
-// Location: lib/widgets/call_bottom_bar.dart
-//
-// Description:
-// Production-safe reusable JR CALL in-call control bar.
-//
-// Responsibilities:
-// - Microphone mute / unmute
-// - Speaker on / off
-// - Camera on / off
-// - Switch front / rear camera
-// - In-call keypad
-// - Optional DTMF forwarding
-// - End call
-//
-// Architecture:
-// - Audio logic -> AudioManager
-// - Video logic -> VideoManager
-// - Call lifecycle -> parent screen / CallService
-// - DTMF logic -> parent / WebRTC layer
-// - This widget owns presentation state only
-//
-// Design:
-// - JR CALL premium light UI
-// - Modern glassmorphism
-// - Soft blue/cyan CALL glow
-// - Responsive small/large phone layout
-// - No duplicate call-engine logic
-// ===========================================================
-
-class CallBottomBar extends StatefulWidget {
-  const CallBottomBar({
+class CallButton extends StatefulWidget {
+  const CallButton({
     super.key,
-    required this.onEndCall,
-    this.showVideoControls = true,
-    this.onKeypadDigit,
-  });
+    required this.onPressed,
+    this.size = 64,
+    this.backgroundColor = const Color(0xFF12B76A),
+    this.iconColor = Colors.white,
+    this.icon = Icons.call_rounded,
+    this.enabled = true,
+    this.tooltip,
+  }) : assert(
+  size > 0,
+  'CallButton size must be greater than zero.',
+  );
 
-  final VoidCallback onEndCall;
+  /// Parent supplied voice-call action.
+  final VoidCallback? onPressed;
 
-  final bool showVideoControls;
+  /// Circular button diameter.
+  final double size;
 
-  final ValueChanged<String>? onKeypadDigit;
+  /// Main active call accent.
+  final Color backgroundColor;
+
+  /// Icon foreground color.
+  final Color iconColor;
+
+  /// Display icon.
+  final IconData icon;
+
+  /// Whether interaction is enabled.
+  final bool enabled;
+
+  /// Optional tooltip / accessibility description.
+  final String? tooltip;
 
   @override
-  State<CallBottomBar> createState() => _CallBottomBarState();
+  State<CallButton> createState() => _CallButtonState();
 }
 
-class _CallBottomBarState extends State<CallBottomBar> {
-  final AudioManager _audioManager = AudioManager.instance;
-  final VideoManager _videoManager = VideoManager.instance;
+class _CallButtonState extends State<CallButton> {
+  static const double _fallbackSize = 64;
 
-  bool _isMuted = false;
-  bool _isSpeakerEnabled = false;
-  bool _isCameraEnabled = true;
+  static const Duration _pressAnimationDuration =
+  Duration(milliseconds: 110);
 
-  bool _muteLoading = false;
-  bool _speakerLoading = false;
-  bool _cameraLoading = false;
-  bool _switchCameraLoading = false;
-  bool _endCallLoading = false;
+  static const Duration _containerAnimationDuration =
+  Duration(milliseconds: 180);
+
+  static const Duration _tapLockDuration =
+  Duration(milliseconds: 350);
+
+  bool _isPressed = false;
+  bool _tapLocked = false;
+
+  Timer? _unlockTimer;
 
   // ===========================================================
-  // Microphone
+  // Derived State
   // ===========================================================
 
-  Future<void> _toggleMute() async {
-    if (_muteLoading || _endCallLoading) {
-      return;
+  bool get _isInteractive {
+    return widget.enabled && widget.onPressed != null;
+  }
+
+  double get _effectiveSize {
+    final double value = widget.size;
+
+    if (!value.isFinite || value <= 0) {
+      return _fallbackSize;
     }
 
-    setState(() {
-      _muteLoading = true;
-    });
+    return value;
+  }
 
-    try {
-      await _audioManager.toggleMute();
+  String get _semanticLabel {
+    final String? value = widget.tooltip?.trim();
 
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _isMuted = !_isMuted;
-      });
-    } catch (error, stackTrace) {
-      _reportError('Toggle microphone', error, stackTrace);
-      _showError('Unable to change microphone state.');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _muteLoading = false;
-        });
-      }
+    if (value != null && value.isNotEmpty) {
+      return value;
     }
+
+    return 'Voice call';
   }
 
   // ===========================================================
-  // Speaker
+  // Widget Updates
   // ===========================================================
 
-  Future<void> _toggleSpeaker() async {
-    if (_speakerLoading || _endCallLoading) {
-      return;
-    }
+  @override
+  void didUpdateWidget(covariant CallButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
 
-    setState(() {
-      _speakerLoading = true;
-    });
+    final bool wasInteractive =
+        oldWidget.enabled && oldWidget.onPressed != null;
 
-    try {
-      await _audioManager.toggleSpeaker();
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _isSpeakerEnabled = !_isSpeakerEnabled;
-      });
-    } catch (error, stackTrace) {
-      _reportError('Toggle speaker', error, stackTrace);
-      _showError('Unable to change speaker state.');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _speakerLoading = false;
-        });
-      }
+    if (wasInteractive && !_isInteractive) {
+      _resetTransientInteractionState();
     }
   }
 
-  // ===========================================================
-  // Camera
-  // ===========================================================
+  void _resetTransientInteractionState() {
+    _unlockTimer?.cancel();
+    _unlockTimer = null;
 
-  Future<void> _toggleCamera() async {
-    if (_cameraLoading || _endCallLoading || !widget.showVideoControls) {
-      return;
-    }
-
-    setState(() {
-      _cameraLoading = true;
-    });
-
-    try {
-      await _videoManager.toggleVideo();
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _isCameraEnabled = !_isCameraEnabled;
-      });
-    } catch (error, stackTrace) {
-      _reportError('Toggle camera', error, stackTrace);
-      _showError('Unable to change camera state.');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _cameraLoading = false;
-        });
-      }
-    }
+    _tapLocked = false;
+    _isPressed = false;
   }
 
   // ===========================================================
-  // Switch Camera
+  // Press State
   // ===========================================================
 
-  Future<void> _switchCamera() async {
-    if (_switchCameraLoading ||
-        _endCallLoading ||
-        !_isCameraEnabled ||
-        !widget.showVideoControls) {
-      return;
-    }
-
-    setState(() {
-      _switchCameraLoading = true;
-    });
-
-    try {
-      await _videoManager.switchCamera();
-    } catch (error, stackTrace) {
-      _reportError('Switch camera', error, stackTrace);
-      _showError('Unable to switch camera.');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _switchCameraLoading = false;
-        });
-      }
-    }
-  }
-
-  // ===========================================================
-  // End Call
-  // ===========================================================
-
-  void _endCall() {
-    if (_endCallLoading) {
-      return;
-    }
-
-    setState(() {
-      _endCallLoading = true;
-    });
-
-    try {
-      widget.onEndCall();
-    } catch (error, stackTrace) {
-      _reportError('End call', error, stackTrace);
-
-      if (mounted) {
-        setState(() {
-          _endCallLoading = false;
-        });
-      }
-
-      _showError('Unable to end the call.');
-    }
-  }
-
-  // ===========================================================
-  // Keypad
-  // ===========================================================
-
-  Future<void> _openKeypad() async {
-    if (!mounted || _endCallLoading) {
-      return;
-    }
-
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      barrierColor: const Color(0x66000000),
-      builder: (BuildContext context) {
-        return _CallKeypadSheet(onDigitPressed: widget.onKeypadDigit);
-      },
-    );
-  }
-
-  // ===========================================================
-  // Error
-  // ===========================================================
-
-  void _showError(String message) {
+  void _setPressed(bool value) {
     if (!mounted) {
       return;
     }
 
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
-      );
+    if (value && !_isInteractive) {
+      return;
+    }
+
+    if (_isPressed == value) {
+      return;
+    }
+
+    setState(() {
+      _isPressed = value;
+    });
   }
 
-  void _reportError(String source, Object error, StackTrace stackTrace) {
-    debugPrint('JR CALL [CallBottomBar/$source] error: $error');
+  // ===========================================================
+  // Tap Handling
+  // ===========================================================
 
-    debugPrintStack(
-      label: 'JR CALL [CallBottomBar/$source]',
-      stackTrace: stackTrace,
-    );
+  void _handleTap() {
+    if (!_isInteractive || _tapLocked) {
+      return;
+    }
+
+    final VoidCallback? callback = widget.onPressed;
+
+    if (callback == null) {
+      return;
+    }
+
+    _tapLocked = true;
+
+    try {
+      callback();
+    } finally {
+      _unlockTimer?.cancel();
+
+      _unlockTimer = Timer(
+        _tapLockDuration,
+            () {
+          _tapLocked = false;
+          _unlockTimer = null;
+        },
+      );
+    }
   }
 
   // ===========================================================
@@ -282,592 +202,168 @@ class _CallBottomBarState extends State<CallBottomBar> {
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
-      child: LayoutBuilder(
-        builder: (BuildContext context, BoxConstraints constraints) {
-          final int controlCount = widget.showVideoControls ? 6 : 4;
+    final double size = _effectiveSize;
 
-          final double horizontalPadding = constraints.maxWidth < 360 ? 6 : 10;
+    final Color activeColor = widget.backgroundColor;
 
-          final double usableWidth =
-              constraints.maxWidth - (horizontalPadding * 2);
+    final Color effectiveBackground = _isInteractive
+        ? activeColor
+        : const Color(0xFFE8EDF5);
 
-          final double availablePerControl = usableWidth / controlCount;
+    final Color effectiveIconColor = _isInteractive
+        ? widget.iconColor
+        : const Color(0xFF98A2B3);
 
-          final double buttonSize = (availablePerControl - 7).clamp(42.0, 56.0);
+    final double scale =
+    _isPressed && _isInteractive ? 0.94 : 1.0;
 
-          final double iconSize = buttonSize < 48 ? 21 : 24;
-
-          return Container(
-            width: double.infinity,
-            padding: EdgeInsets.symmetric(
-              horizontal: horizontalPadding,
-              vertical: 14,
-            ),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: <Color>[
-                  Color(0xFFFDFEFF),
-                  Color(0xFFF4F9FF),
-                  Color(0xFFEEF8FF),
-                ],
-              ),
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(28),
-              ),
-              border: const Border(top: BorderSide(color: Color(0xFFDCE7F5))),
-              boxShadow: const <BoxShadow>[
-                BoxShadow(
-                  color: Color(0x16087AF5),
-                  blurRadius: 28,
-                  offset: Offset(0, -8),
-                ),
-                BoxShadow(
-                  color: Color(0x1000B8D9),
-                  blurRadius: 20,
-                  offset: Offset(0, -3),
-                ),
-              ],
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: <Widget>[
-                _CallControlButton(
-                  tooltip: _isMuted ? 'Unmute' : 'Mute',
-                  icon: _isMuted ? Icons.mic_off_rounded : Icons.mic_rounded,
-                  foregroundColor: _isMuted
-                      ? const Color(0xFFE5484D)
-                      : const Color(0xFF087AF5),
-                  selected: _isMuted,
-                  loading: _muteLoading,
-                  size: buttonSize,
-                  iconSize: iconSize,
-                  onPressed: _toggleMute,
-                ),
-
-                _CallControlButton(
-                  tooltip: _isSpeakerEnabled ? 'Speaker off' : 'Speaker on',
-                  icon: _isSpeakerEnabled
-                      ? Icons.volume_up_rounded
-                      : Icons.hearing_rounded,
-                  foregroundColor: _isSpeakerEnabled
-                      ? const Color(0xFF00AFCB)
-                      : const Color(0xFF1557D0),
-                  selected: _isSpeakerEnabled,
-                  loading: _speakerLoading,
-                  size: buttonSize,
-                  iconSize: iconSize,
-                  onPressed: _toggleSpeaker,
-                ),
-
-                if (widget.showVideoControls) ...<Widget>[
-                  _CallControlButton(
-                    tooltip: _isCameraEnabled ? 'Camera off' : 'Camera on',
-                    icon: _isCameraEnabled
-                        ? Icons.videocam_rounded
-                        : Icons.videocam_off_rounded,
-                    foregroundColor: _isCameraEnabled
-                        ? const Color(0xFF087AF5)
-                        : const Color(0xFFE5484D),
-                    selected: !_isCameraEnabled,
-                    loading: _cameraLoading,
-                    size: buttonSize,
-                    iconSize: iconSize,
-                    onPressed: _toggleCamera,
-                  ),
-
-                  _CallControlButton(
-                    tooltip: 'Switch camera',
-                    icon: Icons.flip_camera_android_rounded,
-                    foregroundColor: const Color(0xFF087AF5),
-                    enabled: _isCameraEnabled,
-                    loading: _switchCameraLoading,
-                    size: buttonSize,
-                    iconSize: iconSize,
-                    onPressed: _switchCamera,
-                  ),
-                ],
-
-                _CallControlButton(
-                  tooltip: 'Keypad',
-                  icon: Icons.dialpad_rounded,
-                  foregroundColor: const Color(0xFF00AFCB),
-                  size: buttonSize,
-                  iconSize: iconSize,
-                  onPressed: _openKeypad,
-                ),
-
-                _CallControlButton(
-                  tooltip: 'End call',
-                  icon: Icons.call_end_rounded,
-                  foregroundColor: Colors.white,
-                  backgroundColor: const Color(0xFFFF4D5E),
-                  loading: _endCallLoading,
-                  size: buttonSize,
-                  iconSize: iconSize,
-                  onPressed: _endCall,
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-// ===========================================================
-// Internal Call Control Button
-// ===========================================================
-
-class _CallControlButton extends StatelessWidget {
-  const _CallControlButton({
-    required this.tooltip,
-    required this.icon,
-    required this.foregroundColor,
-    required this.size,
-    required this.iconSize,
-    required this.onPressed,
-    this.backgroundColor,
-    this.enabled = true,
-    this.loading = false,
-    this.selected = false,
-  });
-
-  final String tooltip;
-
-  final IconData icon;
-
-  final Color foregroundColor;
-
-  final Color? backgroundColor;
-
-  final double size;
-
-  final double iconSize;
-
-  final VoidCallback onPressed;
-
-  final bool enabled;
-
-  final bool loading;
-
-  final bool selected;
-
-  @override
-  Widget build(BuildContext context) {
-    final Color effectiveBackground =
-        backgroundColor ??
-        (selected
-            ? foregroundColor.withValues(alpha: 0.14)
-            : Colors.white.withValues(alpha: 0.88));
-
-    final Color effectiveBorder = backgroundColor != null
-        ? backgroundColor!.withValues(alpha: 0.90)
-        : selected
-        ? foregroundColor.withValues(alpha: 0.30)
-        : const Color(0xFFDCE7F5);
-
-    final List<BoxShadow> shadows = backgroundColor != null
-        ? const <BoxShadow>[
-            BoxShadow(
-              color: Color(0x33FF4D5E),
-              blurRadius: 14,
-              offset: Offset(0, 5),
-            ),
-          ]
-        : selected
-        ? <BoxShadow>[
-            BoxShadow(
-              color: foregroundColor.withValues(alpha: 0.14),
-              blurRadius: 14,
-              offset: const Offset(0, 4),
-            ),
-          ]
-        : const <BoxShadow>[
-            BoxShadow(
-              color: Color(0x12087AF5),
-              blurRadius: 12,
-              offset: Offset(0, 4),
-            ),
-          ];
-
-    return Tooltip(
-      message: tooltip,
-      child: Semantics(
-        button: true,
-        enabled: enabled && !loading,
-        selected: selected,
-        label: tooltip,
-        child: Material(
-          color: Colors.transparent,
-          shape: const CircleBorder(),
-          child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: enabled && !loading ? onPressed : null,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 160),
-              curve: Curves.easeOutCubic,
-              width: size,
-              height: size,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: enabled ? effectiveBackground : const Color(0xFFF1F4F8),
-                border: Border.all(
-                  color: enabled ? effectiveBorder : const Color(0xFFE4E9F0),
-                ),
-                boxShadow: enabled ? shadows : null,
-              ),
-              child: loading
-                  ? SizedBox(
-                      width: iconSize - 3,
-                      height: iconSize - 3,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: foregroundColor,
-                      ),
-                    )
-                  : Icon(
-                      icon,
-                      size: iconSize,
-                      color: enabled
-                          ? foregroundColor
-                          : const Color(0xFF98A2B3),
-                    ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ===========================================================
-// JR CALL In-Call Keypad
-// ===========================================================
-
-class _CallKeypadSheet extends StatefulWidget {
-  const _CallKeypadSheet({this.onDigitPressed});
-
-  final ValueChanged<String>? onDigitPressed;
-
-  @override
-  State<_CallKeypadSheet> createState() => _CallKeypadSheetState();
-}
-
-class _CallKeypadSheetState extends State<_CallKeypadSheet> {
-  static const int _maxInputLength = 64;
-
-  String _input = '';
-
-  void _append(String value) {
-    if (_input.length >= _maxInputLength) {
-      return;
-    }
-
-    setState(() {
-      _input += value;
-    });
-
-    widget.onDigitPressed?.call(value);
-  }
-
-  void _backspace() {
-    if (_input.isEmpty) {
-      return;
-    }
-
-    setState(() {
-      _input = _input.substring(0, _input.length - 1);
-    });
-  }
-
-  void _clear() {
-    if (_input.isEmpty) {
-      return;
-    }
-
-    setState(() {
-      _input = '';
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final double bottomInset = MediaQuery.viewInsetsOf(context).bottom;
-
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: <Color>[
-            Color(0xFFFFFFFF),
-            Color(0xFFF7FAFF),
-            Color(0xFFF0F8FF),
-          ],
-        ),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
-        border: Border(top: BorderSide(color: Color(0xFFDCE7F5))),
-        boxShadow: <BoxShadow>[
-          BoxShadow(
-            color: Color(0x1A087AF5),
-            blurRadius: 28,
-            offset: Offset(0, -8),
-          ),
-        ],
-      ),
-      padding: EdgeInsets.fromLTRB(20, 12, 20, 24 + bottomInset),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Container(
-              width: 42,
-              height: 4,
-              decoration: BoxDecoration(
-                color: const Color(0xFF98A2B3).withValues(alpha: 0.40),
-                borderRadius: BorderRadius.circular(100),
-              ),
-            ),
-
-            const SizedBox(height: 18),
-
-            const Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: <Widget>[
-                Icon(Icons.dialpad_rounded, color: Color(0xFF087AF5), size: 20),
-                SizedBox(width: 8),
-                Text(
-                  'Keypad',
-                  style: TextStyle(
-                    color: Color(0xFF101828),
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 6),
-
-            const Text(
-              'JR CALL',
-              style: TextStyle(
-                color: Color(0xFF58677F),
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0.7,
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            Container(
-              constraints: const BoxConstraints(minHeight: 58),
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.82),
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: const Color(0xFFDCE7F5)),
-                boxShadow: const <BoxShadow>[
-                  BoxShadow(
-                    color: Color(0x0F087AF5),
-                    blurRadius: 14,
-                    offset: Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      _input.isEmpty ? 'Enter digits' : _input,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: _input.isEmpty
-                            ? const Color(0xFF98A2B3)
-                            : const Color(0xFF087AF5),
-                        fontSize: _input.isEmpty ? 16 : 27,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: _input.isEmpty ? 0 : 2,
-                      ),
-                    ),
-                  ),
-
-                  if (_input.isNotEmpty)
-                    IconButton(
-                      tooltip: 'Clear',
-                      onPressed: _clear,
-                      icon: const Icon(
-                        Icons.close_rounded,
-                        color: Color(0xFF58677F),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            _buildRow(const <String>['1', '2', '3']),
-
-            const SizedBox(height: 14),
-
-            _buildRow(const <String>['4', '5', '6']),
-
-            const SizedBox(height: 14),
-
-            _buildRow(const <String>['7', '8', '9']),
-
-            const SizedBox(height: 14),
-
-            _buildRow(const <String>['*', '0', '#']),
-
-            const SizedBox(height: 18),
-
-            _KeypadIconButton(
-              icon: Icons.backspace_outlined,
-              tooltip: 'Backspace',
-              onPressed: _backspace,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildRow(List<String> values) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-      children: values
-          .map(
-            (String value) => _KeypadButton(
-              label: value,
-              onPressed: () {
-                _append(value);
-              },
-            ),
-          )
-          .toList(growable: false),
-    );
-  }
-}
-
-// ===========================================================
-// Keypad Digit Button
-// ===========================================================
-
-class _KeypadButton extends StatelessWidget {
-  const _KeypadButton({required this.label, required this.onPressed});
-
-  final String label;
-
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
+    final Widget button = Semantics(
       button: true,
-      label: 'Key $label',
-      child: Material(
-        color: Colors.transparent,
-        shape: const CircleBorder(),
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: onPressed,
-          child: Container(
-            width: 64,
-            height: 64,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: <Color>[Color(0xFFFFFFFF), Color(0xFFF2F8FF)],
-              ),
-              border: Border.all(color: const Color(0xFFDCE7F5)),
-              boxShadow: const <BoxShadow>[
-                BoxShadow(
-                  color: Color(0x12087AF5),
-                  blurRadius: 14,
-                  offset: Offset(0, 5),
-                ),
+      enabled: _isInteractive,
+      label: _semanticLabel,
+      child: AnimatedScale(
+        scale: scale,
+        duration: _pressAnimationDuration,
+        curve: Curves.easeOutCubic,
+        child: AnimatedContainer(
+          duration: _containerAnimationDuration,
+          curve: Curves.easeOutCubic,
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: _isInteractive
+                ? LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: <Color>[
+                activeColor.withValues(alpha: 0.96),
+                const Color(0xFF00AFCB),
               ],
+            )
+                : null,
+            color: _isInteractive ? null : effectiveBackground,
+            border: Border.all(
+              color: _isInteractive
+                  ? Colors.white.withValues(alpha: 0.82)
+                  : const Color(0xFFDDE3EC),
+              width: 1,
             ),
-            child: Text(
-              label,
-              style: const TextStyle(
-                color: Color(0xFF101828),
-                fontSize: 23,
-                fontWeight: FontWeight.w700,
+            boxShadow: _isInteractive
+                ? <BoxShadow>[
+              BoxShadow(
+                color: activeColor.withValues(alpha: 0.26),
+                blurRadius: 22,
+                spreadRadius: 1,
+                offset: const Offset(0, 8),
               ),
-            ),
+              BoxShadow(
+                color: const Color(
+                  0xFF22D3EE,
+                ).withValues(alpha: 0.12),
+                blurRadius: 28,
+                spreadRadius: 2,
+              ),
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.06),
+                blurRadius: 12,
+                offset: const Offset(0, 5),
+              ),
+            ]
+                : <BoxShadow>[
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.04),
+                blurRadius: 8,
+                offset: const Offset(0, 4),
+              ),
+            ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-// ===========================================================
-// Keypad Backspace Button
-// ===========================================================
-
-class _KeypadIconButton extends StatelessWidget {
-  const _KeypadIconButton({
-    required this.icon,
-    required this.tooltip,
-    required this.onPressed,
-  });
-
-  final IconData icon;
-
-  final String tooltip;
-
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: Semantics(
-        button: true,
-        label: tooltip,
-        child: Material(
-          color: Colors.transparent,
-          borderRadius: BorderRadius.circular(28),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(28),
-            onTap: onPressed,
-            child: Container(
-              width: 78,
-              height: 52,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(26),
-                color: const Color(0xFFFFF1F2),
-                border: Border.all(color: const Color(0xFFFFD4D8)),
-                boxShadow: const <BoxShadow>[
-                  BoxShadow(
-                    color: Color(0x14FF4D5E),
-                    blurRadius: 12,
-                    offset: Offset(0, 4),
+          child: Material(
+            color: Colors.transparent,
+            shape: const CircleBorder(),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: _isInteractive ? _handleTap : null,
+              onTapDown: _isInteractive
+                  ? (_) {
+                _setPressed(true);
+              }
+                  : null,
+              onTapUp: _isInteractive
+                  ? (_) {
+                _setPressed(false);
+              }
+                  : null,
+              onTapCancel: _isInteractive
+                  ? () {
+                _setPressed(false);
+              }
+                  : null,
+              splashColor:
+              widget.iconColor.withValues(alpha: 0.14),
+              highlightColor:
+              widget.iconColor.withValues(alpha: 0.06),
+              hoverColor:
+              widget.iconColor.withValues(alpha: 0.05),
+              focusColor:
+              widget.iconColor.withValues(alpha: 0.07),
+              child: Stack(
+                fit: StackFit.expand,
+                children: <Widget>[
+                  if (_isInteractive)
+                    Align(
+                      alignment: const Alignment(-0.35, -0.55),
+                      child: Container(
+                        width: size * 0.54,
+                        height: size * 0.26,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(size),
+                          gradient: LinearGradient(
+                            colors: <Color>[
+                              Colors.white.withValues(alpha: 0.28),
+                              Colors.white.withValues(alpha: 0),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  Center(
+                    child: Icon(
+                      widget.icon,
+                      color: effectiveIconColor,
+                      size: size * 0.44,
+                    ),
                   ),
                 ],
               ),
-              child: Icon(icon, color: const Color(0xFFFF4D5E), size: 23),
             ),
           ),
         ),
       ),
     );
+
+    final String? tooltipValue = widget.tooltip?.trim();
+
+    if (tooltipValue == null || tooltipValue.isEmpty) {
+      return button;
+    }
+
+    return Tooltip(
+      message: tooltipValue,
+      child: button,
+    );
+  }
+
+  // ===========================================================
+  // Dispose
+  // ===========================================================
+
+  @override
+  void dispose() {
+    _unlockTimer?.cancel();
+    _unlockTimer = null;
+
+    super.dispose();
   }
 }

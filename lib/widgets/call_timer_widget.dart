@@ -9,16 +9,20 @@ import 'package:flutter/material.dart';
 /// Production-safe premium call-duration presentation widget.
 ///
 /// Responsibilities:
-/// - Display call duration received from CallService / Provider
-/// - Format MM:SS or HH:MM:SS
-/// - Preserve existing public API
-/// - Provide JR CALL premium glass presentation
+/// - Display call duration received from CallService / Provider.
+/// - Format MM:SS or HH:MM:SS.
+/// - Preserve existing public API.
+/// - Provide JR CALL premium glass presentation.
+/// - Provide accessible current-duration semantics.
 ///
 /// Architecture:
-/// - Timer ownership -> CallService / Provider
-/// - This widget owns NO timer
-/// - This widget owns NO call lifecycle
-/// - This widget owns NO signaling / ICE / WebRTC logic
+/// - Timer ownership -> CallService / Provider.
+/// - This widget owns NO timer.
+/// - This widget owns NO Stopwatch.
+/// - This widget owns NO call lifecycle.
+/// - This widget owns NO signaling logic.
+/// - This widget owns NO ICE logic.
+/// - This widget owns NO WebRTC logic.
 ///
 /// Used by:
 /// - call_screen.dart
@@ -35,19 +39,25 @@ class CallTimerWidget extends StatelessWidget {
     this.fontSize = 22,
     this.fontWeight = FontWeight.w600,
     this.showHours = false,
-  });
+  }) : assert(
+  fontSize > 0,
+  'CallTimerWidget fontSize must be greater than zero.',
+  );
 
   /// Duration supplied by CallService / Provider.
   final Duration duration;
 
   /// Preserved existing presentation API.
   final Color textColor;
+
   final double fontSize;
+
   final FontWeight fontWeight;
+
   final bool showHours;
 
   // ===========================================================
-  // Safe Duration
+  // Safe Presentation Values
   // ===========================================================
 
   Duration get _safeDuration {
@@ -58,6 +68,16 @@ class CallTimerWidget extends StatelessWidget {
     return duration;
   }
 
+  double get _safeFontSize {
+    final double value = fontSize;
+
+    if (!value.isFinite || value <= 0) {
+      return 22.0;
+    }
+
+    return value;
+  }
+
   // ===========================================================
   // Formatting
   // ===========================================================
@@ -65,12 +85,18 @@ class CallTimerWidget extends StatelessWidget {
   String _formatDuration(Duration value) {
     final int totalHours = value.inHours;
 
-    final String minutes = (value.inMinutes % 60).toString().padLeft(2, '0');
+    final String minutes = (value.inMinutes % 60)
+        .toString()
+        .padLeft(2, '0');
 
-    final String seconds = (value.inSeconds % 60).toString().padLeft(2, '0');
+    final String seconds = (value.inSeconds % 60)
+        .toString()
+        .padLeft(2, '0');
 
     if (showHours || totalHours > 0) {
-      final String hours = totalHours.toString().padLeft(2, '0');
+      final String hours = totalHours
+          .toString()
+          .padLeft(2, '0');
 
       return '$hours:$minutes:$seconds';
     }
@@ -85,16 +111,22 @@ class CallTimerWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Duration safeDuration = _safeDuration;
-    final String formattedDuration = _formatDuration(safeDuration);
+
+    final String formattedDuration = _formatDuration(
+      safeDuration,
+    );
 
     return Semantics(
+      container: true,
+      excludeSemantics: true,
       label: 'Call duration $formattedDuration',
-      liveRegion: true,
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: Colors.white.withValues(alpha: 0.10),
           borderRadius: BorderRadius.circular(22),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.15),
+          ),
           boxShadow: const <BoxShadow>[
             BoxShadow(
               color: Color(0x1600D99B),
@@ -111,7 +143,10 @@ class CallTimerWidget extends StatelessWidget {
           ],
         ),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 8,
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
@@ -130,19 +165,25 @@ class CallTimerWidget extends StatelessWidget {
                   ],
                 ),
               ),
+
               const SizedBox(width: 9),
+
               AnimatedSwitcher(
-                duration: const Duration(milliseconds: 180),
+                duration: const Duration(
+                  milliseconds: 180,
+                ),
                 switchInCurve: Curves.easeOut,
                 switchOutCurve: Curves.easeIn,
                 child: Text(
                   formattedDuration,
-                  key: ValueKey<int>(safeDuration.inSeconds),
+                  key: ValueKey<int>(
+                    safeDuration.inSeconds,
+                  ),
                   maxLines: 1,
                   overflow: TextOverflow.clip,
                   style: TextStyle(
                     color: textColor,
-                    fontSize: fontSize,
+                    fontSize: _safeFontSize,
                     fontWeight: fontWeight,
                     letterSpacing: 1.2,
                     height: 1.0,

@@ -1,47 +1,3 @@
-// ===============================================================
-// JR CALL
-// File: video_call_screen.dart
-// Location: lib/screens/video_call_screen.dart
-// Fixes: BUG 08, BUG 09
-// Production-safe replacement
-// Existing APIs preserved
-// ===============================================================
-//
-// Responsibilities:
-// - Render remote video.
-// - Render local camera preview.
-// - Support local/remote presentation swap.
-// - Display participant information.
-// - Display real call status.
-// - Display real connected-call duration.
-// - Display supplied network quality.
-// - Forward UI actions to Provider / CallService.
-//
-// Architecture ownership:
-// - Call lifecycle         -> CallService
-// - Call state             -> CallProvider / CallScreenProvider
-// - Call duration          -> CallService / Provider
-// - Network monitoring     -> NetworkManager / Provider
-// - AI optimization        -> AICallEngine
-// - WebRTC connection      -> WebRTCService
-// - ICE                    -> IceManager
-// - Signaling              -> SignalingService
-// - Recovery               -> RecoveryManager
-// - Camera control         -> VideoManager / VideoProvider
-//
-// Production rules:
-// - No duplicate call timer.
-// - No duplicate network polling.
-// - No direct signaling.
-// - No direct ICE logic.
-// - No direct recovery.
-// - No direct call lifecycle ownership.
-// - No fake CONNECTED state.
-// - No fake video stream.
-// - Renderer lifecycle remains presentation-local.
-// - Existing constructor/callback API preserved.
-// ===============================================================
-
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -52,6 +8,48 @@ import '../widgets/call_bottom_bar.dart';
 import '../widgets/call_timer_widget.dart';
 import '../widgets/caller_avatar.dart';
 import '../widgets/network_quality_widget.dart';
+
+/// ===============================================================
+/// JR CALL
+/// File: video_call_screen.dart
+/// Location: lib/screens/video_call_screen.dart
+///
+/// Production video-call presentation screen.
+///
+/// Ownership:
+///
+/// VideoCallScreen:
+/// - Video-call presentation.
+/// - Local/remote renderer presentation.
+/// - Main/preview presentation swap.
+/// - User camera-action forwarding.
+/// - User end-call forwarding.
+/// - Back-navigation protection.
+///
+/// CallService / Provider:
+/// - Complete call lifecycle.
+/// - Terminal status.
+/// - Connected duration.
+/// - Recovery orchestration.
+///
+/// WebRTCService / Managers:
+/// - MediaStream ownership.
+/// - PeerConnection ownership.
+/// - Camera/media transport ownership.
+/// - SDP/ICE/recovery ownership.
+///
+/// This screen does NOT:
+/// - Create PeerConnection.
+/// - Acquire MediaStream.
+/// - Stop/dispose MediaStream.
+/// - Persist SDP.
+/// - Persist ICE.
+/// - Write Firestore call state.
+/// - Own recovery.
+/// - Own a call-duration timer.
+/// - Poll network state.
+/// - Invent CONNECTED state.
+/// ===============================================================
 
 class VideoCallScreen extends StatefulWidget {
   const VideoCallScreen({
@@ -97,12 +95,13 @@ class VideoCallScreen extends StatefulWidget {
   final FutureOr<void> Function()? onToggleVideo;
 
   @override
-  State<VideoCallScreen> createState() => _VideoCallScreenState();
+  State<VideoCallScreen> createState() =>
+      _VideoCallScreenState();
 }
 
 class _VideoCallScreenState extends State<VideoCallScreen> {
   // =============================================================
-  // DESIGN
+  // Design
   // =============================================================
 
   static const Color _background = Color(0xFFF5F8FE);
@@ -119,29 +118,37 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   static const Color _warning = Color(0xFFFFB020);
   static const Color _danger = Color(0xFFFF2449);
 
+  // =============================================================
+  // Limits
+  // =============================================================
+
   static const int _maximumDurationSeconds = 86400000;
 
   // =============================================================
-  // STATE
+  // State
   // =============================================================
 
   bool _isEndingCall = false;
+  bool _endActionCompleted = false;
+
   bool _isSwitchingCamera = false;
   bool _isTogglingVideo = false;
 
-  /// False:
-  ///   remote video = large/main
-  ///   local video  = small preview
+  bool _backDialogVisible = false;
+
+  /// false:
+  /// remote video = main
+  /// local video = preview
   ///
-  /// True:
-  ///   local video  = large/main
-  ///   remote video = small preview
+  /// true:
+  /// local video = main
+  /// remote video = preview
   ///
-  /// Presentation-only. It does NOT alter WebRTC ownership.
+  /// Presentation only.
   bool _showLocalVideoAsMain = false;
 
   // =============================================================
-  // SAFE DATA
+  // Safe Data
   // =============================================================
 
   String get _displayName {
@@ -160,28 +167,92 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     return image;
   }
 
+  String get _safeInitialStatus {
+    final String normalized =
+    widget.initialStatus.trim().toUpperCase();
+
+    return normalized.isEmpty
+        ? 'CONNECTING'
+        : normalized;
+  }
+
+  int get _safeInitialDurationSeconds {
+    return _boundedDurationSeconds(
+      widget.initialDurationSeconds,
+    );
+  }
+
+  int _boundedDurationSeconds(
+      int value,
+      ) {
+    return value
+        .clamp(
+      0,
+      _maximumDurationSeconds,
+    )
+        .toInt();
+  }
+
   // =============================================================
-  // STREAM AVAILABILITY
+  // Stream Availability
   // =============================================================
 
+  bool _streamHasVideoTrack(
+      MediaStream? stream,
+      ) {
+    if (stream == null) {
+      return false;
+    }
+
+    try {
+      return stream.getVideoTracks().isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
   bool get _hasUsableLocalVideo {
-    return widget.isLocalVideoEnabled && widget.localStream != null;
+    return widget.isLocalVideoEnabled &&
+        _streamHasVideoTrack(
+          widget.localStream,
+        );
   }
 
   bool get _hasUsableRemoteVideo {
-    return widget.isRemoteVideoEnabled && widget.remoteStream != null;
+    return widget.isRemoteVideoEnabled &&
+        _streamHasVideoTrack(
+          widget.remoteStream,
+        );
   }
 
   bool get _canSwapVideoPresentation {
-    return _hasUsableLocalVideo && _hasUsableRemoteVideo;
+    return _hasUsableLocalVideo &&
+        _hasUsableRemoteVideo;
+  }
+
+  bool _localVideoIsMain() {
+    return _showLocalVideoAsMain &&
+        _hasUsableLocalVideo;
   }
 
   // =============================================================
-  // END CALL
+  // End Call
   // =============================================================
 
   Future<void> _handleEndCall() async {
-    if (_isEndingCall || !mounted) {
+    if (!mounted ||
+        _isEndingCall ||
+        _endActionCompleted) {
+      return;
+    }
+
+    final FutureOr<void> Function()? callback =
+        widget.onEndCall;
+
+    if (callback == null) {
+      _showMessage(
+        'Call control is unavailable. Please try again.',
+      );
       return;
     }
 
@@ -189,33 +260,40 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       _isEndingCall = true;
     });
 
-    bool callbackSucceeded = true;
-
     try {
-      final FutureOr<void> Function()? callback = widget.onEndCall;
-
-      if (callback != null) {
-        await Future<void>.sync(callback);
-      }
+      await Future<void>.sync(
+        callback,
+      );
     } catch (error, stackTrace) {
-      callbackSucceeded = false;
+      _reportError(
+        'End call',
+        error,
+        stackTrace,
+      );
 
-      _reportError('End call', error, stackTrace);
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isEndingCall = false;
+      });
+
+      _showMessage(
+        'The video call could not be ended. Please try again.',
+      );
+
+      return;
     }
 
     if (!mounted) {
       return;
     }
 
-    if (!callbackSucceeded) {
-      setState(() {
-        _isEndingCall = false;
-      });
+    _endActionCompleted = true;
 
-      return;
-    }
-
-    final NavigatorState navigator = Navigator.of(context);
+    final NavigatorState navigator =
+    Navigator.of(context);
 
     if (navigator.canPop()) {
       navigator.pop();
@@ -228,15 +306,117 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   // =============================================================
-  // CAMERA ACTIONS
+  // Back Navigation Protection
   // =============================================================
 
-  Future<void> _handleSwitchCamera() async {
-    if (_isSwitchingCamera || _isEndingCall || !mounted) {
+  Future<void> _handleBackAttempt(
+      String status,
+      ) async {
+    if (!mounted ||
+        _isEndingCall ||
+        _backDialogVisible) {
       return;
     }
 
-    final FutureOr<void> Function()? callback = widget.onSwitchCamera;
+    if (_endActionCompleted ||
+        _isTerminalStatus(status)) {
+      final NavigatorState navigator =
+      Navigator.of(context);
+
+      if (navigator.canPop()) {
+        navigator.pop();
+      }
+
+      return;
+    }
+
+    _backDialogVisible = true;
+
+    try {
+      final bool shouldEnd =
+      await _confirmEndCall();
+
+      if (!mounted || !shouldEnd) {
+        return;
+      }
+
+      await _handleEndCall();
+    } finally {
+      _backDialogVisible = false;
+    }
+  }
+
+  Future<bool> _confirmEndCall() async {
+    if (!mounted) {
+      return false;
+    }
+
+    final bool? result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (
+          BuildContext dialogContext,
+          ) {
+        return AlertDialog(
+          title: const Text(
+            'End video call?',
+            style: TextStyle(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          content: const Text(
+            'Leaving this screen will end the current video call.',
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () {
+                Navigator.of(
+                  dialogContext,
+                ).pop(false);
+              },
+              child: const Text(
+                'Stay',
+              ),
+            ),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: _danger,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () {
+                Navigator.of(
+                  dialogContext,
+                ).pop(true);
+              },
+              icon: const Icon(
+                Icons.call_end_rounded,
+              ),
+              label: const Text(
+                'End Call',
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    return result ?? false;
+  }
+
+  // =============================================================
+  // Camera Actions
+  // =============================================================
+
+  Future<void> _handleSwitchCamera() async {
+    if (!mounted ||
+        _isSwitchingCamera ||
+        _isEndingCall ||
+        _endActionCompleted) {
+      return;
+    }
+
+    final FutureOr<void> Function()? callback =
+        widget.onSwitchCamera;
 
     if (callback == null) {
       return;
@@ -247,9 +427,21 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     });
 
     try {
-      await Future<void>.sync(callback);
+      await Future<void>.sync(
+        callback,
+      );
     } catch (error, stackTrace) {
-      _reportError('Switch camera', error, stackTrace);
+      _reportError(
+        'Switch camera',
+        error,
+        stackTrace,
+      );
+
+      if (mounted) {
+        _showMessage(
+          'Unable to switch camera.',
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -260,11 +452,15 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   Future<void> _handleToggleVideo() async {
-    if (_isTogglingVideo || _isEndingCall || !mounted) {
+    if (!mounted ||
+        _isTogglingVideo ||
+        _isEndingCall ||
+        _endActionCompleted) {
       return;
     }
 
-    final FutureOr<void> Function()? callback = widget.onToggleVideo;
+    final FutureOr<void> Function()? callback =
+        widget.onToggleVideo;
 
     if (callback == null) {
       return;
@@ -275,9 +471,21 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     });
 
     try {
-      await Future<void>.sync(callback);
+      await Future<void>.sync(
+        callback,
+      );
     } catch (error, stackTrace) {
-      _reportError('Toggle video', error, stackTrace);
+      _reportError(
+        'Toggle video',
+        error,
+        stackTrace,
+      );
+
+      if (mounted) {
+        _showMessage(
+          'Unable to change camera state.',
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -288,30 +496,41 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   // =============================================================
-  // VIDEO PRESENTATION SWAP
+  // Video Presentation Swap
   // =============================================================
 
   void _swapVideoPresentation() {
-    if (!_canSwapVideoPresentation || _isEndingCall || !mounted) {
+    if (!mounted ||
+        !_canSwapVideoPresentation ||
+        _isEndingCall ||
+        _endActionCompleted) {
       return;
     }
 
     setState(() {
-      _showLocalVideoAsMain = !_showLocalVideoAsMain;
+      _showLocalVideoAsMain =
+      !_showLocalVideoAsMain;
     });
   }
 
   // =============================================================
-  // STATUS
+  // Status
   // =============================================================
 
-  String _normalizeStatus(String value) {
-    final String normalized = value.trim().toUpperCase();
+  String _normalizeStatus(
+      String? value,
+      ) {
+    final String normalized =
+        value?.trim().toUpperCase() ?? '';
 
-    return normalized.isEmpty ? 'CONNECTING' : normalized;
+    return normalized.isEmpty
+        ? _safeInitialStatus
+        : normalized;
   }
 
-  String _statusText(String status) {
+  String _statusText(
+      String status,
+      ) {
     switch (_normalizeStatus(status)) {
       case 'IDLE':
         return 'Video call';
@@ -368,7 +587,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     }
   }
 
-  bool _showDuration(String status) {
+  bool _showDuration(
+      String status,
+      ) {
     switch (_normalizeStatus(status)) {
       case 'CONNECTED':
       case 'RECONNECTED':
@@ -381,7 +602,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     }
   }
 
-  bool _isConnectedStatus(String status) {
+  bool _isConnectedStatus(
+      String status,
+      ) {
     switch (_normalizeStatus(status)) {
       case 'CONNECTED':
       case 'RECONNECTED':
@@ -392,12 +615,12 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     }
   }
 
-  bool _isConnectionWarning(String status) {
+  bool _isConnectionWarning(
+      String status,
+      ) {
     switch (_normalizeStatus(status)) {
       case 'RECONNECTING':
       case 'NETWORK_LOST':
-      case 'FAILED':
-      case 'TIMEOUT':
         return true;
 
       default:
@@ -405,8 +628,12 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     }
   }
 
-  bool _isTerminalStatus(String status) {
+  bool _isTerminalStatus(
+      String status,
+      ) {
     switch (_normalizeStatus(status)) {
+      case 'USER_BUSY':
+      case 'BUSY':
       case 'REJECTED':
       case 'DECLINED':
       case 'CANCELLED':
@@ -421,7 +648,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     }
   }
 
-  Color _statusAccent(String status) {
+  Color _statusAccent(
+      String status,
+      ) {
     if (_isTerminalStatus(status)) {
       return _danger;
     }
@@ -437,7 +666,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     return _primaryBlue;
   }
 
-  bool _shouldDisplayRemoteVideo(String status) {
+  bool _shouldDisplayRemoteVideo(
+      String status,
+      ) {
     if (!_hasUsableRemoteVideo) {
       return false;
     }
@@ -455,42 +686,88 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   // =============================================================
-  // BUILD
+  // Build
   // =============================================================
 
   @override
-  Widget build(BuildContext context) {
-    return PopScope(
-      canPop: !_isEndingCall,
-      child: Scaffold(
-        backgroundColor: _background,
-        body: SafeArea(
-          child: StreamBuilder<String>(
-            stream: widget.statusStream,
-            initialData: widget.initialStatus,
-            builder: (BuildContext context, AsyncSnapshot<String> snapshot) {
-              final String status = _normalizeStatus(
-                snapshot.data ?? widget.initialStatus,
-              );
+  Widget build(
+      BuildContext context,
+      ) {
+    return StreamBuilder<String>(
+      stream: widget.statusStream,
+      initialData: _safeInitialStatus,
+      builder: (
+          _,
+          AsyncSnapshot<String> statusSnapshot,
+          ) {
+        final String status = _normalizeStatus(
+          statusSnapshot.data,
+        );
 
-              return _buildVideoCall(context, status);
-            },
-          ),
-        ),
-      ),
+        return StreamBuilder<int>(
+          stream: widget.durationStream,
+          initialData: _safeInitialDurationSeconds,
+          builder: (
+              _,
+              AsyncSnapshot<int> durationSnapshot,
+              ) {
+            final int durationSeconds =
+            _boundedDurationSeconds(
+              durationSnapshot.data ??
+                  _safeInitialDurationSeconds,
+            );
+
+            return PopScope<Object?>(
+              canPop: false,
+              onPopInvokedWithResult: (
+                  bool didPop,
+                  _,
+                  ) {
+                if (!didPop) {
+                  unawaited(
+                    _handleBackAttempt(
+                      status,
+                    ),
+                  );
+                }
+              },
+              child: Scaffold(
+                backgroundColor: _background,
+                body: SafeArea(
+                  child: _buildVideoCall(
+                    context,
+                    status,
+                    durationSeconds,
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
-  Widget _buildVideoCall(BuildContext context, String status) {
-    final Size screenSize = MediaQuery.sizeOf(context);
+  Widget _buildVideoCall(
+      BuildContext context,
+      String status,
+      int durationSeconds,
+      ) {
+    final Size screenSize =
+    MediaQuery.sizeOf(context);
 
-    final bool compactHeight = screenSize.height < 680;
-    final bool narrow = screenSize.width < 360;
+    final bool compactHeight =
+        screenSize.height < 680;
+
+    final bool narrow =
+        screenSize.width < 360;
 
     return Stack(
       fit: StackFit.expand,
       children: <Widget>[
-        _buildMainVideoSurface(status),
+        _buildMainVideoSurface(
+          status,
+        ),
 
         const IgnorePointer(
           child: DecoratedBox(
@@ -504,66 +781,92 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                   Color(0x00000000),
                   Color(0x40000000),
                 ],
-                stops: <double>[0, 0.22, 0.68, 1],
+                stops: <double>[
+                  0,
+                  0.22,
+                  0.68,
+                  1,
+                ],
               ),
             ),
           ),
         ),
 
-        // BUG 09:
-        // No JR CALL / Premium Calling Experience branding card.
-        //
-        // Only real call state remains visible in a compact location.
         Positioned(
           top: compactHeight ? 10 : 14,
           left: narrow ? 10 : 14,
-          child: _buildCompactStatus(status),
+          child: _buildCompactStatus(
+            status,
+          ),
         ),
 
         if (_showDuration(status))
           Positioned(
             top: compactHeight ? 10 : 14,
             right: narrow ? 10 : 14,
-            child: _buildDurationPill(),
+            child: _buildDurationPill(
+              durationSeconds,
+            ),
           ),
 
-        if (_shouldShowParticipantFallback(status))
+        if (_shouldShowParticipantFallback(
+          status,
+        ))
           Center(
-            child: _buildParticipantFallback(status, compact: compactHeight),
+            child: _buildParticipantFallback(
+              status,
+              durationSeconds: durationSeconds,
+              compact: compactHeight,
+            ),
           ),
 
         if (_shouldShowPreview(status))
           Positioned(
             top: compactHeight ? 62 : 72,
             right: narrow ? 10 : 14,
-            child: _buildPreview(status: status, compact: compactHeight),
+            child: _buildPreview(
+              status: status,
+              compact: compactHeight,
+            ),
           ),
 
         Positioned(
           left: narrow ? 10 : 14,
           right: narrow ? 10 : 14,
           bottom: narrow ? 10 : 14,
-          child: _buildBottomPanel(),
+          child: _buildBottomPanel(
+            terminal: _isTerminalStatus(
+              status,
+            ),
+          ),
         ),
       ],
     );
   }
 
   // =============================================================
-  // MAIN VIDEO
+  // Main Video
   // =============================================================
 
-  Widget _buildMainVideoSurface(String status) {
-    final bool remoteCanBeMain =
-        !_showLocalVideoAsMain && _shouldDisplayRemoteVideo(status);
+  Widget _buildMainVideoSurface(
+      String status,
+      ) {
+    final bool localCanBeMain =
+    _localVideoIsMain();
 
-    final bool localCanBeMain = _showLocalVideoAsMain && _hasUsableLocalVideo;
+    final bool remoteCanBeMain =
+        !localCanBeMain &&
+            _shouldDisplayRemoteVideo(
+              status,
+            );
 
     if (localCanBeMain) {
       return _RtcVideoSurface(
         stream: widget.localStream,
         mirror: widget.mirrorLocalVideo,
-        objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        objectFit:
+        RTCVideoViewObjectFit
+            .RTCVideoViewObjectFitCover,
         backgroundColor: _background,
       );
     }
@@ -572,7 +875,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       return _RtcVideoSurface(
         stream: widget.remoteStream,
         mirror: false,
-        objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        objectFit:
+        RTCVideoViewObjectFit
+            .RTCVideoViewObjectFitCover,
         backgroundColor: _background,
       );
     }
@@ -593,21 +898,38 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   // =============================================================
-  // COMPACT STATUS
+  // Compact Status
   // =============================================================
 
-  Widget _buildCompactStatus(String status) {
-    final Color accent = _statusAccent(status);
+  Widget _buildCompactStatus(
+      String status,
+      ) {
+    final Color accent =
+    _statusAccent(status);
 
     return Semantics(
-      label: 'Call status: ${_statusText(status)}',
+      label:
+      'Call status: ${_statusText(status)}',
       child: Container(
-        constraints: const BoxConstraints(maxWidth: 190),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        constraints: const BoxConstraints(
+          maxWidth: 190,
+        ),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 8,
+        ),
         decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.36),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.20)),
+          color: Colors.black.withValues(
+            alpha: 0.36,
+          ),
+          borderRadius: BorderRadius.circular(
+            999,
+          ),
+          border: Border.all(
+            color: Colors.white.withValues(
+              alpha: 0.20,
+            ),
+          ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -620,24 +942,28 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                 shape: BoxShape.circle,
                 boxShadow: <BoxShadow>[
                   BoxShadow(
-                    color: accent.withValues(alpha: 0.35),
+                    color: accent.withValues(
+                      alpha: 0.35,
+                    ),
                     blurRadius: 7,
                   ),
                 ],
               ),
             ),
-
-            const SizedBox(width: 7),
-
+            const SizedBox(
+              width: 7,
+            ),
             Flexible(
               child: Text(
                 _statusText(status),
                 maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+                overflow:
+                TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 12,
-                  fontWeight: FontWeight.w700,
+                  fontWeight:
+                  FontWeight.w700,
                 ),
               ),
             ),
@@ -648,50 +974,84 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   // =============================================================
-  // DURATION PILL
+  // Duration Pill
   // =============================================================
 
-  Widget _buildDurationPill() {
+  Widget _buildDurationPill(
+      int durationSeconds,
+      ) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.36),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.20)),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 11,
+        vertical: 7,
       ),
-      child: _buildDuration(),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(
+          alpha: 0.36,
+        ),
+        borderRadius: BorderRadius.circular(
+          999,
+        ),
+        border: Border.all(
+          color: Colors.white.withValues(
+            alpha: 0.20,
+          ),
+        ),
+      ),
+      child: _buildDuration(
+        durationSeconds,
+      ),
     );
   }
 
   // =============================================================
-  // PREVIEW
+  // Preview
   // =============================================================
 
-  bool _shouldShowPreview(String status) {
-    if (_showLocalVideoAsMain) {
-      return _shouldDisplayRemoteVideo(status);
+  bool _shouldShowPreview(
+      String status,
+      ) {
+    if (_localVideoIsMain()) {
+      return _shouldDisplayRemoteVideo(
+        status,
+      );
     }
 
     return _hasUsableLocalVideo;
   }
 
-  Widget _buildPreview({required String status, required bool compact}) {
-    final double width = compact ? 96 : 118;
-    final double height = compact ? 132 : 164;
+  Widget _buildPreview({
+    required String status,
+    required bool compact,
+  }) {
+    final double width =
+    compact ? 96 : 118;
 
-    final bool previewShowsRemote = _showLocalVideoAsMain;
+    final double height =
+    compact ? 132 : 164;
 
-    final MediaStream? previewStream = previewShowsRemote
+    final bool previewShowsRemote =
+    _localVideoIsMain();
+
+    final MediaStream? previewStream =
+    previewShowsRemote
         ? widget.remoteStream
         : widget.localStream;
 
-    final bool previewVideoEnabled = previewShowsRemote
-        ? _shouldDisplayRemoteVideo(status)
+    final bool previewVideoEnabled =
+    previewShowsRemote
+        ? _shouldDisplayRemoteVideo(
+      status,
+    )
         : _hasUsableLocalVideo;
 
-    final bool mirror = previewShowsRemote ? false : widget.mirrorLocalVideo;
+    final bool mirror =
+    previewShowsRemote
+        ? false
+        : widget.mirrorLocalVideo;
 
-    final String semanticsLabel = previewShowsRemote
+    final String semanticsLabel =
+    previewShowsRemote
         ? 'Remote participant video preview'
         : 'Your video preview';
 
@@ -703,29 +1063,42 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           : null,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-
-        /// WhatsApp-style presentation swap.
-        onTap: _canSwapVideoPresentation ? _swapVideoPresentation : null,
-
-        /// Preserve existing camera-switch gesture.
-        onDoubleTap: !previewShowsRemote && widget.onSwitchCamera != null
-            ? () {
-                unawaited(_handleSwitchCamera());
-              }
+        onTap:
+        _canSwapVideoPresentation &&
+            !_endActionCompleted
+            ? _swapVideoPresentation
             : null,
-
+        onDoubleTap:
+        !previewShowsRemote &&
+            widget.onSwitchCamera != null &&
+            !_endActionCompleted
+            ? () {
+          unawaited(
+            _handleSwitchCamera(),
+          );
+        }
+            : null,
         child: AnimatedOpacity(
-          opacity: (!previewShowsRemote && _isSwitchingCamera) ? 0.60 : 1.0,
-          duration: const Duration(milliseconds: 150),
+          opacity:
+          !previewShowsRemote &&
+              _isSwitchingCamera
+              ? 0.60
+              : 1.0,
+          duration: const Duration(
+            milliseconds: 150,
+          ),
           child: Container(
             width: width,
             height: height,
             clipBehavior: Clip.antiAlias,
             decoration: BoxDecoration(
               color: _surface,
-              borderRadius: BorderRadius.circular(20),
+              borderRadius:
+              BorderRadius.circular(20),
               border: Border.all(
-                color: Colors.white.withValues(alpha: 0.88),
+                color: Colors.white.withValues(
+                  alpha: 0.88,
+                ),
                 width: 1.4,
               ),
               boxShadow: const <BoxShadow>[
@@ -736,26 +1109,40 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                 ),
               ],
             ),
-            child: previewVideoEnabled && previewStream != null
+            child:
+            previewVideoEnabled &&
+                previewStream != null
                 ? _RtcVideoSurface(
-                    stream: previewStream,
-                    mirror: mirror,
-                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                    backgroundColor: _surface,
-                  )
-                : _buildPreviewFallback(remotePreview: previewShowsRemote),
+              stream: previewStream,
+              mirror: mirror,
+              objectFit:
+              RTCVideoViewObjectFit
+                  .RTCVideoViewObjectFitCover,
+              backgroundColor:
+              _surface,
+            )
+                : _buildPreviewFallback(
+              remotePreview:
+              previewShowsRemote,
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildPreviewFallback({required bool remotePreview}) {
+  Widget _buildPreviewFallback({
+    required bool remotePreview,
+  }) {
     return ColoredBox(
-      color: const Color(0xFFF2F6FB),
+      color: const Color(
+        0xFFF2F6FB,
+      ),
       child: Center(
         child: Icon(
-          remotePreview ? Icons.person_rounded : Icons.videocam_off_rounded,
+          remotePreview
+              ? Icons.person_rounded
+              : Icons.videocam_off_rounded,
           color: _textSecondary,
           size: 31,
         ),
@@ -764,22 +1151,34 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   // =============================================================
-  // PARTICIPANT FALLBACK
+  // Participant Fallback
   // =============================================================
 
-  bool _shouldShowParticipantFallback(String status) {
-    if (_showLocalVideoAsMain && _hasUsableLocalVideo) {
+  bool _shouldShowParticipantFallback(
+      String status,
+      ) {
+    if (_localVideoIsMain()) {
       return false;
     }
 
-    return !_shouldDisplayRemoteVideo(status);
+    return !_shouldDisplayRemoteVideo(
+      status,
+    );
   }
 
-  Widget _buildParticipantFallback(String status, {required bool compact}) {
+  Widget _buildParticipantFallback(
+      String status, {
+        required int durationSeconds,
+        required bool compact,
+      }) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 28),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 28,
+      ),
       child: Container(
-        constraints: const BoxConstraints(maxWidth: 420),
+        constraints: const BoxConstraints(
+          maxWidth: 420,
+        ),
         padding: EdgeInsets.fromLTRB(
           24,
           compact ? 24 : 30,
@@ -787,9 +1186,15 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           compact ? 22 : 28,
         ),
         decoration: BoxDecoration(
-          color: _surface.withValues(alpha: 0.94),
-          borderRadius: BorderRadius.circular(30),
-          border: Border.all(color: _border),
+          color: _surface.withValues(
+            alpha: 0.94,
+          ),
+          borderRadius: BorderRadius.circular(
+            30,
+          ),
+          border: Border.all(
+            color: _border,
+          ),
           boxShadow: const <BoxShadow>[
             BoxShadow(
               color: Color(0x1A087AF5),
@@ -807,15 +1212,23 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
             Container(
-              padding: const EdgeInsets.all(7),
+              padding: const EdgeInsets.all(
+                7,
+              ),
               decoration: const BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: LinearGradient(
-                  colors: <Color>[_primaryBlue, _cyan, _callGreen],
+                  colors: <Color>[
+                    _primaryBlue,
+                    _cyan,
+                    _callGreen,
+                  ],
                 ),
               ),
               child: Container(
-                padding: const EdgeInsets.all(4),
+                padding: const EdgeInsets.all(
+                  4,
+                ),
                 decoration: const BoxDecoration(
                   color: Colors.white,
                   shape: BoxShape.circle,
@@ -823,18 +1236,15 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                 child: CallerAvatar(
                   name: _displayName,
                   imageUrl: _safeCallerImage,
-
-                  /// Do not hard-code online state.
-                  /// Connected call state is the only reliable information
-                  /// available to this UI.
-                  isOnline: _isConnectedStatus(status),
-
                   radius: compact ? 42 : 50,
+                  isOnline: false,
                 ),
               ),
             ),
 
-            const SizedBox(height: 18),
+            const SizedBox(
+              height: 18,
+            ),
 
             Text(
               _displayName,
@@ -844,26 +1254,37 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
               style: TextStyle(
                 color: _textPrimary,
                 fontSize: compact ? 22 : 25,
-                fontWeight: FontWeight.w800,
+                fontWeight:
+                FontWeight.w800,
               ),
             ),
 
-            const SizedBox(height: 7),
+            const SizedBox(
+              height: 7,
+            ),
 
             Text(
               _statusText(status),
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: _statusAccent(status),
+                color: _statusAccent(
+                  status,
+                ),
                 fontSize: 14,
-                fontWeight: FontWeight.w700,
+                fontWeight:
+                FontWeight.w700,
               ),
             ),
 
-            if (_showDuration(status)) ...<Widget>[
-              const SizedBox(height: 13),
-              _buildDuration(),
-            ],
+            if (_showDuration(status))
+              ...<Widget>[
+                const SizedBox(
+                  height: 13,
+                ),
+                _buildDuration(
+                  durationSeconds,
+                ),
+              ],
           ],
         ),
       ),
@@ -871,16 +1292,34 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   // =============================================================
-  // BOTTOM PANEL
+  // Bottom Panel
   // =============================================================
 
-  Widget _buildBottomPanel() {
+  Widget _buildBottomPanel({
+    required bool terminal,
+  }) {
+    final bool actionsDisabled =
+        _isEndingCall ||
+            _endActionCompleted ||
+            terminal;
+
     return Container(
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      padding: const EdgeInsets.fromLTRB(
+        14,
+        12,
+        14,
+        14,
+      ),
       decoration: BoxDecoration(
-        color: _surface.withValues(alpha: 0.94),
-        borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: _border),
+        color: _surface.withValues(
+          alpha: 0.94,
+        ),
+        borderRadius: BorderRadius.circular(
+          26,
+        ),
+        border: Border.all(
+          color: _border,
+        ),
         boxShadow: const <BoxShadow>[
           BoxShadow(
             color: Color(0x1A087AF5),
@@ -896,55 +1335,96 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
             children: <Widget>[
               Expanded(
                 child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: _buildNetworkQuality(),
+                  alignment:
+                  Alignment.centerLeft,
+                  child:
+                  _buildNetworkQuality(),
                 ),
               ),
 
-              if (widget.onToggleVideo != null)
+              if (widget.onToggleVideo !=
+                  null)
                 _VideoActionButton(
-                  tooltip: widget.isLocalVideoEnabled
+                  tooltip:
+                  widget.isLocalVideoEnabled
                       ? 'Turn camera off'
                       : 'Turn camera on',
-                  icon: widget.isLocalVideoEnabled
+                  icon:
+                  widget.isLocalVideoEnabled
                       ? Icons.videocam_rounded
-                      : Icons.videocam_off_rounded,
+                      : Icons
+                      .videocam_off_rounded,
                   busy: _isTogglingVideo,
-                  enabled: !_isEndingCall,
-                  accentColor: _primaryBlue,
+                  enabled: !actionsDisabled,
+                  accentColor:
+                  _primaryBlue,
                   onPressed: () {
-                    unawaited(_handleToggleVideo());
+                    unawaited(
+                      _handleToggleVideo(),
+                    );
                   },
                 ),
 
-              if (widget.onToggleVideo != null && widget.onSwitchCamera != null)
-                const SizedBox(width: 10),
+              if (widget.onToggleVideo !=
+                  null &&
+                  widget.onSwitchCamera !=
+                      null)
+                const SizedBox(
+                  width: 10,
+                ),
 
-              if (widget.onSwitchCamera != null)
+              if (widget.onSwitchCamera !=
+                  null)
                 _VideoActionButton(
                   tooltip: 'Switch camera',
-                  icon: Icons.cameraswitch_rounded,
-                  busy: _isSwitchingCamera,
+                  icon:
+                  Icons.cameraswitch_rounded,
+                  busy:
+                  _isSwitchingCamera,
                   enabled:
-                      !_isEndingCall &&
-                      widget.isLocalVideoEnabled &&
-                      widget.localStream != null,
+                  !actionsDisabled &&
+                      _hasUsableLocalVideo,
                   accentColor: _cyan,
                   onPressed: () {
-                    unawaited(_handleSwitchCamera());
+                    unawaited(
+                      _handleSwitchCamera(),
+                    );
                   },
                 ),
             ],
           ),
 
-          const SizedBox(height: 12),
+          const SizedBox(
+            height: 12,
+          ),
 
           IgnorePointer(
-            ignoring: _isEndingCall,
+            ignoring: actionsDisabled,
             child: AnimatedOpacity(
-              opacity: _isEndingCall ? 0.55 : 1,
-              duration: const Duration(milliseconds: 150),
-              child: CallBottomBar(onEndCall: _handleEndCall),
+              opacity:
+              actionsDisabled
+                  ? 0.55
+                  : 1,
+              duration: const Duration(
+                milliseconds: 150,
+              ),
+              child: CallBottomBar(
+                key: ValueKey<bool>(
+                  _isEndingCall,
+                ),
+
+                // Camera toggle/switch presentation is already
+                // owned above by this screen and forwarded through
+                // the parent callbacks. Do not duplicate a second
+                // direct VideoManager control path here.
+                showVideoControls: false,
+
+                onEndCall: () {
+                  unawaited(
+                    _handleEndCall(),
+                  );
+                },
+              ),
             ),
           ),
         ],
@@ -953,54 +1433,98 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   // =============================================================
-  // NETWORK QUALITY
+  // Network Quality
   // =============================================================
 
   Widget _buildNetworkQuality() {
     return StreamBuilder<NetworkQuality>(
       stream: widget.networkQualityStream,
-      initialData: widget.initialNetworkQuality,
-      builder: (BuildContext context, AsyncSnapshot<NetworkQuality> snapshot) {
+      initialData:
+      widget.initialNetworkQuality,
+      builder: (
+          _,
+          AsyncSnapshot<NetworkQuality> snapshot,
+          ) {
         return NetworkQualityWidget(
-          quality: snapshot.data ?? widget.initialNetworkQuality,
+          quality:
+          snapshot.data ??
+              widget.initialNetworkQuality,
         );
       },
     );
   }
 
   // =============================================================
-  // DURATION
+  // Duration
   // =============================================================
 
-  Widget _buildDuration() {
-    return StreamBuilder<int>(
-      stream: widget.durationStream,
-      initialData: widget.initialDurationSeconds,
-      builder: (BuildContext context, AsyncSnapshot<int> snapshot) {
-        final int seconds = (snapshot.data ?? widget.initialDurationSeconds)
-            .clamp(0, _maximumDurationSeconds);
-
-        return CallTimerWidget(duration: Duration(seconds: seconds));
-      },
+  Widget _buildDuration(
+      int durationSeconds,
+      ) {
+    return CallTimerWidget(
+      duration: Duration(
+        seconds:
+        _boundedDurationSeconds(
+          durationSeconds,
+        ),
+      ),
     );
   }
 
   // =============================================================
-  // ERROR REPORTING
+  // Message
   // =============================================================
 
-  void _reportError(String source, Object error, StackTrace stackTrace) {
-    debugPrint('JR CALL [VideoCallScreen/$source] error: $error');
+  void _showMessage(
+      String message,
+      ) {
+    if (!mounted ||
+        message.trim().isEmpty) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            message,
+          ),
+          behavior:
+          SnackBarBehavior.floating,
+        ),
+      );
+  }
+
+  // =============================================================
+  // Error Reporting
+  // =============================================================
+
+  void _reportError(
+      String source,
+      Object error,
+      StackTrace stackTrace,
+      ) {
+    debugPrint(
+      'JR CALL '
+          '[VideoCallScreen/$source] '
+          'error: $error',
+    );
 
     debugPrintStack(
-      label: 'JR CALL [VideoCallScreen/$source]',
+      label:
+      'JR CALL '
+          '[VideoCallScreen/$source]',
       stackTrace: stackTrace,
     );
   }
 }
 
 // ===============================================================
-// ISOLATED RTC VIDEO SURFACE
+// Isolated RTC Video Surface
+//
+// Renderer ownership only.
+// MediaStream ownership remains external.
 // ===============================================================
 
 class _RtcVideoSurface extends StatefulWidget {
@@ -1012,25 +1536,35 @@ class _RtcVideoSurface extends StatefulWidget {
   });
 
   final MediaStream? stream;
+
   final bool mirror;
+
   final RTCVideoViewObjectFit objectFit;
+
   final Color backgroundColor;
 
   @override
-  State<_RtcVideoSurface> createState() => _RtcVideoSurfaceState();
+  State<_RtcVideoSurface> createState() =>
+      _RtcVideoSurfaceState();
 }
 
-class _RtcVideoSurfaceState extends State<_RtcVideoSurface> {
-  final RTCVideoRenderer _renderer = RTCVideoRenderer();
+class _RtcVideoSurfaceState
+    extends State<_RtcVideoSurface> {
+  final RTCVideoRenderer _renderer =
+  RTCVideoRenderer();
+
+  late final Future<void> _initializationFuture;
 
   bool _initialized = false;
+  bool _initializationFailed = false;
+
   bool _disposed = false;
   bool _rendererDisposed = false;
 
   MediaStream? _pendingStream;
 
   // =============================================================
-  // LIFECYCLE
+  // Lifecycle
   // =============================================================
 
   @override
@@ -1039,14 +1573,26 @@ class _RtcVideoSurfaceState extends State<_RtcVideoSurface> {
 
     _pendingStream = widget.stream;
 
-    unawaited(_initializeRenderer());
+    _initializationFuture =
+        _initializeRenderer();
+
+    unawaited(
+      _initializationFuture,
+    );
   }
 
   @override
-  void didUpdateWidget(covariant _RtcVideoSurface oldWidget) {
-    super.didUpdateWidget(oldWidget);
+  void didUpdateWidget(
+      covariant _RtcVideoSurface oldWidget,
+      ) {
+    super.didUpdateWidget(
+      oldWidget,
+    );
 
-    if (!identical(oldWidget.stream, widget.stream)) {
+    if (!identical(
+      oldWidget.stream,
+      widget.stream,
+    )) {
       _pendingStream = widget.stream;
 
       _attachPendingStream();
@@ -1058,7 +1604,6 @@ class _RtcVideoSurfaceState extends State<_RtcVideoSurface> {
       await _renderer.initialize();
 
       if (_disposed) {
-        await _disposeRendererOnce();
         return;
       }
 
@@ -1070,29 +1615,69 @@ class _RtcVideoSurfaceState extends State<_RtcVideoSurface> {
         setState(() {});
       }
     } catch (error, stackTrace) {
-      if (!_disposed) {
-        debugPrint('JR CALL [VideoRenderer] initialization error: $error');
+      if (_disposed) {
+        return;
+      }
 
-        debugPrintStack(
-          label: 'JR CALL [VideoRenderer]',
-          stackTrace: stackTrace,
-        );
+      _initializationFailed = true;
+
+      debugPrint(
+        'JR CALL '
+            '[VideoRenderer] '
+            'initialization error: $error',
+      );
+
+      debugPrintStack(
+        label:
+        'JR CALL '
+            '[VideoRenderer]',
+        stackTrace: stackTrace,
+      );
+
+      if (mounted) {
+        setState(() {});
       }
     }
   }
 
   void _attachPendingStream() {
-    if (!_initialized || _disposed || _rendererDisposed) {
+    if (!_initialized ||
+        _disposed ||
+        _rendererDisposed) {
       return;
     }
 
-    final MediaStream? targetStream = _pendingStream;
+    final MediaStream? targetStream =
+        _pendingStream;
 
-    if (identical(_renderer.srcObject, targetStream)) {
+    if (identical(
+      _renderer.srcObject,
+      targetStream,
+    )) {
       return;
     }
 
-    _renderer.srcObject = targetStream;
+    try {
+      _renderer.srcObject =
+          targetStream;
+    } catch (error, stackTrace) {
+      if (_disposed) {
+        return;
+      }
+
+      debugPrint(
+        'JR CALL '
+            '[VideoRenderer] '
+            'stream attachment error: $error',
+      );
+
+      debugPrintStack(
+        label:
+        'JR CALL '
+            '[VideoRenderer/attach]',
+        stackTrace: stackTrace,
+      );
+    }
   }
 
   Future<void> _disposeRendererOnce() async {
@@ -1103,35 +1688,84 @@ class _RtcVideoSurfaceState extends State<_RtcVideoSurface> {
     _rendererDisposed = true;
 
     try {
-      _renderer.srcObject = null;
+      await _initializationFuture;
+    } catch (_) {
+      // Initialization errors are already handled by
+      // _initializeRenderer().
+    }
 
-      await _renderer.dispose();
+    try {
+      if (_initialized &&
+          _renderer.srcObject != null) {
+        _renderer.srcObject = null;
+      }
     } catch (error, stackTrace) {
-      debugPrint('JR CALL [VideoRenderer] disposal error: $error');
+      debugPrint(
+        'JR CALL '
+            '[VideoRenderer] '
+            'stream detach error: $error',
+      );
 
       debugPrintStack(
-        label: 'JR CALL [VideoRenderer/dispose]',
+        label:
+        'JR CALL '
+            '[VideoRenderer/detach]',
+        stackTrace: stackTrace,
+      );
+    }
+
+    try {
+      await _renderer.dispose();
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL '
+            '[VideoRenderer] '
+            'disposal error: $error',
+      );
+
+      debugPrintStack(
+        label:
+        'JR CALL '
+            '[VideoRenderer/dispose]',
         stackTrace: stackTrace,
       );
     }
   }
 
   // =============================================================
-  // BUILD
+  // Build
   // =============================================================
 
   @override
-  Widget build(BuildContext context) {
-    if (!_initialized || _rendererDisposed) {
+  Widget build(
+      BuildContext context,
+      ) {
+    if (_initializationFailed) {
+      return ColoredBox(
+        color: widget.backgroundColor,
+        child: const Center(
+          child: Icon(
+            Icons.videocam_off_rounded,
+            color: Color(0xFF98A2B3),
+            size: 28,
+          ),
+        ),
+      );
+    }
+
+    if (!_initialized ||
+        _rendererDisposed) {
       return ColoredBox(
         color: widget.backgroundColor,
         child: const Center(
           child: SizedBox(
             width: 24,
             height: 24,
-            child: CircularProgressIndicator(
+            child:
+            CircularProgressIndicator(
               strokeWidth: 2,
-              color: Color(0xFF087AF5),
+              color:
+              Color(0xFF087AF5),
             ),
           ),
         ),
@@ -1152,14 +1786,18 @@ class _RtcVideoSurfaceState extends State<_RtcVideoSurface> {
   void dispose() {
     _disposed = true;
 
-    unawaited(_disposeRendererOnce());
+    _pendingStream = null;
+
+    unawaited(
+      _disposeRendererOnce(),
+    );
 
     super.dispose();
   }
 }
 
 // ===============================================================
-// VIDEO ACTION BUTTON
+// Video Action Button
 // ===============================================================
 
 class _VideoActionButton extends StatelessWidget {
@@ -1173,9 +1811,11 @@ class _VideoActionButton extends StatelessWidget {
   });
 
   final String tooltip;
+
   final IconData icon;
 
   final bool busy;
+
   final bool enabled;
 
   final Color accentColor;
@@ -1183,8 +1823,11 @@ class _VideoActionButton extends StatelessWidget {
   final VoidCallback onPressed;
 
   @override
-  Widget build(BuildContext context) {
-    final bool actionEnabled = enabled && !busy;
+  Widget build(
+      BuildContext context,
+      ) {
+    final bool actionEnabled =
+        enabled && !busy;
 
     return Semantics(
       button: true,
@@ -1193,34 +1836,55 @@ class _VideoActionButton extends StatelessWidget {
       child: Tooltip(
         message: tooltip,
         child: AnimatedOpacity(
-          opacity: actionEnabled || busy ? 1 : 0.45,
-          duration: const Duration(milliseconds: 150),
+          opacity:
+          actionEnabled || busy
+              ? 1
+              : 0.45,
+          duration: const Duration(
+            milliseconds: 150,
+          ),
           child: Material(
             color: Colors.transparent,
             child: InkWell(
-              customBorder: const CircleBorder(),
-              onTap: actionEnabled ? onPressed : null,
+              customBorder:
+              const CircleBorder(),
+              onTap: actionEnabled
+                  ? onPressed
+                  : null,
               child: Container(
                 width: 48,
                 height: 48,
+                alignment:
+                Alignment.center,
                 decoration: BoxDecoration(
-                  color: accentColor.withValues(alpha: 0.10),
+                  color:
+                  accentColor.withValues(
+                    alpha: 0.10,
+                  ),
                   shape: BoxShape.circle,
                   border: Border.all(
-                    color: accentColor.withValues(alpha: 0.22),
+                    color:
+                    accentColor.withValues(
+                      alpha: 0.22,
+                    ),
                   ),
                 ),
-                alignment: Alignment.center,
                 child: busy
                     ? SizedBox(
-                        width: 19,
-                        height: 19,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: accentColor,
-                        ),
-                      )
-                    : Icon(icon, color: accentColor, size: 24),
+                  width: 19,
+                  height: 19,
+                  child:
+                  CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color:
+                    accentColor,
+                  ),
+                )
+                    : Icon(
+                  icon,
+                  color: accentColor,
+                  size: 24,
+                ),
               ),
             ),
           ),
@@ -1229,31 +1893,3 @@ class _VideoActionButton extends StatelessWidget {
     );
   }
 }
-
-// ===============================================================
-// END OF FILE
-//
-// FIXED: BUG 08, BUG 09
-//
-// ALSO FIXED:
-// - Removed duplicate JR CALL / Premium Calling Experience top card.
-// - Real compact status retained without duplicate branding.
-// - Local camera preview remains available before remote connection.
-// - Remote video renders only when a real remote stream exists.
-// - Added local/remote tap-to-swap presentation.
-// - Existing double-tap camera-switch behaviour preserved.
-// - No second WebRTC/PeerConnection/media ownership introduced.
-// - Safer renderer stream updates during async initialization.
-// - Renderer double-dispose race prevented.
-// - Camera actions protected against duplicate execution.
-// - End-call action protected against duplicate execution.
-// - Failed end callback safely unlocks UI.
-// - No hard-coded fake CONNECTED state introduced.
-// - Caller online indicator derives from actual connected status.
-// - Existing constructor and callback API preserved.
-//
-// STATUS: READY FOR FORMAT + ANALYZE
-//
-// NEXT FILE: call_history_screen.dart
-// Location: lib/screens/call_history_screen.dart
-// ===============================================================

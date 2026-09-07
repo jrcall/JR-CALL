@@ -10,30 +10,39 @@ import '../services/managers/network_manager.dart';
 /// File: network_provider.dart
 /// Location: lib/providers/network_provider.dart
 ///
-/// Description:
-/// Production network-state adapter between NetworkManager
+/// Production network state bridge between NetworkManager
 /// and the Presentation/UI layer.
 ///
-/// Architecture ownership:
+/// Ownership:
 /// - NetworkManager owns network detection and monitoring.
 /// - NetworkHelper owns network measurement utilities.
 /// - NetworkOptimizer owns optimization decisions.
 /// - ConnectionManager owns connection orchestration.
-/// - NetworkProvider only exposes NetworkManager state to UI.
+/// - NetworkProvider exposes NetworkManager state to UI.
 ///
 /// Rules:
 /// - No duplicate network polling.
 /// - No duplicate timer.
 /// - No duplicate connectivity listener.
-/// - No network calculations inside Provider.
-/// - One NetworkManager source of truth.
+/// - No network measurement logic inside this provider.
+/// - No connection or recovery ownership.
+/// - NetworkManager remains the shared network owner.
 /// ===========================================================
 
 class NetworkProvider extends ChangeNotifier {
-  NetworkProvider({NetworkManager? networkManager})
-    : _networkManager = networkManager ?? NetworkManager.instance;
+  NetworkProvider({
+    NetworkManager? networkManager,
+  }) : _networkManager = networkManager ?? NetworkManager.instance;
+
+  // ===========================================================
+  // Dependency
+  // ===========================================================
 
   final NetworkManager _networkManager;
+
+  // ===========================================================
+  // Presentation State
+  // ===========================================================
 
   NetworkModel _network = NetworkModel.initial();
 
@@ -41,7 +50,14 @@ class NetworkProvider extends ChangeNotifier {
   bool _isDisposed = false;
   bool _listenerAttached = false;
 
+  // ===========================================================
+  // Initialization State
+  // ===========================================================
+
   Future<void>? _initializationFuture;
+
+  int _initializationSerial = 0;
+  int _lifecycleGeneration = 0;
 
   // ===========================================================
   // Public State
@@ -50,6 +66,8 @@ class NetworkProvider extends ChangeNotifier {
   NetworkModel get network => _network;
 
   bool get isMonitoring => _isMonitoring;
+
+  bool get isDisposed => _isDisposed;
 
   bool get isConnected => _network.isConnected;
 
@@ -80,14 +98,16 @@ class NetworkProvider extends ChangeNotifier {
   DateTime get updatedAt => _network.updatedAt;
 
   bool get isOffline =>
-      !_network.isConnected || _network.quality == NetworkQuality.offline;
+      !_network.isConnected ||
+          _network.quality == NetworkQuality.offline;
 
-  bool get isPoor => _network.quality == NetworkQuality.poor;
+  bool get isPoor =>
+      _network.quality == NetworkQuality.poor;
 
   bool get isStable =>
       _network.isConnected &&
-      (_network.quality == NetworkQuality.excellent ||
-          _network.quality == NetworkQuality.good);
+          (_network.quality == NetworkQuality.excellent ||
+              _network.quality == NetworkQuality.good);
 
   // ===========================================================
   // Initialization
@@ -96,39 +116,89 @@ class NetworkProvider extends ChangeNotifier {
   Future<void> initialize() {
     if (_isDisposed) {
       return Future<void>.error(
-        StateError('NetworkProvider has already been disposed.'),
+        StateError(
+          'NetworkProvider has already been disposed.',
+        ),
       );
     }
 
-    return _initializationFuture ??= _initializeInternal();
+    if (_isMonitoring && _listenerAttached) {
+      _synchronizeFromManager();
+      return Future<void>.value();
+    }
+
+    final Future<void>? existing = _initializationFuture;
+
+    if (existing != null) {
+      return existing;
+    }
+
+    final int lifecycleToken = _lifecycleGeneration;
+    final int initializationToken = ++_initializationSerial;
+
+    final Future<void> future = _initializeInternal(
+      lifecycleToken: lifecycleToken,
+      initializationToken: initializationToken,
+    );
+
+    _initializationFuture = future;
+
+    return future;
   }
 
-  Future<void> _initializeInternal() async {
+  Future<void> _initializeInternal({
+    required int lifecycleToken,
+    required int initializationToken,
+  }) async {
     try {
       if (!_networkManager.isInitialized) {
         await _networkManager.initialize();
       }
 
-      if (_isDisposed) {
+      if (!_isLifecycleCurrent(lifecycleToken)) {
         return;
       }
 
       _attachManagerListener();
 
-      _network = _networkManager.currentNetwork;
-      _isMonitoring = true;
+      if (!_isLifecycleCurrent(lifecycleToken)) {
+        _detachManagerListener();
+        return;
+      }
 
-      _notifySafely();
-    } catch (error, stackTrace) {
-      debugPrint('JR CALL [NetworkProvider] initialization error: $error');
+      final NetworkModel nextNetwork = _networkManager.currentNetwork;
 
-      debugPrintStack(
-        label: 'JR CALL [NetworkProvider]',
-        stackTrace: stackTrace,
+      final bool networkChanged = !_isSameNetworkState(
+        _network,
+        nextNetwork,
       );
 
-      _initializationFuture = null;
+      final bool monitoringChanged = !_isMonitoring;
+
+      _network = nextNetwork;
+      _isMonitoring = true;
+
+      if (networkChanged || monitoringChanged) {
+        _notifySafely();
+      }
+    } catch (error, stackTrace) {
+      if (_isLifecycleCurrent(lifecycleToken)) {
+        _detachManagerListener();
+
+        _isMonitoring = false;
+
+        _reportError(
+          'Initialization',
+          error,
+          stackTrace,
+        );
+      }
+
       rethrow;
+    } finally {
+      if (initializationToken == _initializationSerial) {
+        _initializationFuture = null;
+      }
     }
   }
 
@@ -136,11 +206,14 @@ class NetworkProvider extends ChangeNotifier {
   // Monitoring
   // ===========================================================
 
-  /// Compatibility method for existing UI/provider code.
+  /// Compatibility API.
   ///
-  /// NetworkProvider does NOT create its own timer.
-  /// NetworkManager remains the single monitoring owner.
-  void startMonitoring({Duration interval = const Duration(seconds: 2)}) {
+  /// The interval is validated only.
+  /// NetworkManager remains responsible for its own monitoring
+  /// frequency and this provider never creates a timer.
+  void startMonitoring({
+    Duration interval = const Duration(seconds: 2),
+  }) {
     if (_isDisposed || _isMonitoring) {
       return;
     }
@@ -153,31 +226,54 @@ class NetworkProvider extends ChangeNotifier {
       );
     }
 
-    unawaited(initialize());
+    unawaited(
+      _startMonitoringSafely(),
+    );
   }
 
-  /// Stops only this provider's subscription to NetworkManager.
+  Future<void> _startMonitoringSafely() async {
+    try {
+      await initialize();
+    } catch (_) {
+      // initialize() already reports the error.
+    }
+  }
+
+  /// Stops only this provider's observation of NetworkManager.
   ///
-  /// It intentionally does NOT stop NetworkManager because
-  /// CallService / ConnectionManager may still depend on it.
+  /// NetworkManager itself remains active because other call
+  /// engine components may still depend on it.
   void stopMonitoring() {
     if (_isDisposed) {
       return;
     }
 
+    final bool stateChanged =
+        _isMonitoring || _listenerAttached;
+
+    _invalidatePendingInitialization();
+
     _detachManagerListener();
 
     _isMonitoring = false;
 
-    _notifySafely();
+    if (stateChanged) {
+      _notifySafely();
+    }
   }
+
+  // ===========================================================
+  // Manager Listener
+  // ===========================================================
 
   void _attachManagerListener() {
     if (_listenerAttached || _isDisposed) {
       return;
     }
 
-    _networkManager.addListener(_handleNetworkManagerUpdate);
+    _networkManager.addListener(
+      _handleNetworkManagerUpdate,
+    );
 
     _listenerAttached = true;
   }
@@ -187,7 +283,9 @@ class NetworkProvider extends ChangeNotifier {
       return;
     }
 
-    _networkManager.removeListener(_handleNetworkManagerUpdate);
+    _networkManager.removeListener(
+      _handleNetworkManagerUpdate,
+    );
 
     _listenerAttached = false;
   }
@@ -201,18 +299,36 @@ class NetworkProvider extends ChangeNotifier {
       return;
     }
 
-    final nextNetwork = _networkManager.currentNetwork;
+    _synchronizeFromManager();
+  }
 
-    if (_isSameNetworkState(_network, nextNetwork)) {
+  void _synchronizeFromManager() {
+    if (_isDisposed) {
       return;
     }
 
+    final NetworkModel nextNetwork =
+        _networkManager.currentNetwork;
+
+    final bool changed = !_isSameNetworkState(
+      _network,
+      nextNetwork,
+    );
+
+    // Always keep the latest manager snapshot internally.
+    // This also keeps updatedAt current without forcing a rebuild
+    // when every visible network metric is unchanged.
     _network = nextNetwork;
 
-    _notifySafely();
+    if (changed) {
+      _notifySafely();
+    }
   }
 
-  /// Forces Provider state to match NetworkManager immediately.
+  // ===========================================================
+  // Refresh
+  // ===========================================================
+
   Future<void> refresh() async {
     if (_isDisposed) {
       return;
@@ -220,26 +336,21 @@ class NetworkProvider extends ChangeNotifier {
 
     await initialize();
 
-    if (_isDisposed) {
+    if (_isDisposed || !_isMonitoring) {
       return;
     }
 
-    final nextNetwork = _networkManager.currentNetwork;
-
-    if (_isSameNetworkState(_network, nextNetwork)) {
-      return;
-    }
-
-    _network = nextNetwork;
-
-    _notifySafely();
+    _synchronizeFromManager();
   }
 
   // ===========================================================
-  // Duplicate-State Protection
+  // Duplicate State Protection
   // ===========================================================
 
-  bool _isSameNetworkState(NetworkModel current, NetworkModel next) {
+  bool _isSameNetworkState(
+      NetworkModel current,
+      NetworkModel next,
+      ) {
     return current.isConnected == next.isConnected &&
         current.quality == next.quality &&
         current.type == next.type &&
@@ -256,25 +367,79 @@ class NetworkProvider extends ChangeNotifier {
   }
 
   // ===========================================================
+  // Initialization Protection
+  // ===========================================================
+
+  bool _isLifecycleCurrent(
+      int token,
+      ) {
+    return !_isDisposed &&
+        token == _lifecycleGeneration;
+  }
+
+  void _invalidatePendingInitialization() {
+    _lifecycleGeneration++;
+
+    _initializationSerial++;
+
+    _initializationFuture = null;
+  }
+
+  // ===========================================================
   // Reset
   // ===========================================================
 
-  /// Resets only Provider presentation state.
+  /// Resets presentation state only.
   ///
-  /// NetworkManager is intentionally NOT reset here because
-  /// it is shared by ConnectionManager and the active call engine.
+  /// NetworkManager is shared by the call engine and is therefore
+  /// intentionally not reset or disposed here.
   void reset() {
     if (_isDisposed) {
       return;
     }
 
+    final NetworkModel initialNetwork =
+    NetworkModel.initial();
+
+    final bool stateChanged =
+        _isMonitoring ||
+            _listenerAttached ||
+            !_isSameNetworkState(
+              _network,
+              initialNetwork,
+            );
+
+    _invalidatePendingInitialization();
+
     _detachManagerListener();
 
-    _network = NetworkModel.initial();
+    _network = initialNetwork;
     _isMonitoring = false;
-    _initializationFuture = null;
 
-    _notifySafely();
+    if (stateChanged) {
+      _notifySafely();
+    }
+  }
+
+  // ===========================================================
+  // Error Reporting
+  // ===========================================================
+
+  void _reportError(
+      String source,
+      Object error, [
+        StackTrace? stackTrace,
+      ]) {
+    debugPrint(
+      'JR CALL [NetworkProvider/$source] error: $error',
+    );
+
+    if (stackTrace != null) {
+      debugPrintStack(
+        label: 'JR CALL [NetworkProvider/$source]',
+        stackTrace: stackTrace,
+      );
+    }
   }
 
   // ===========================================================
@@ -299,11 +464,15 @@ class NetworkProvider extends ChangeNotifier {
       return;
     }
 
+    _invalidatePendingInitialization();
+
     _detachManagerListener();
 
     _isMonitoring = false;
     _isDisposed = true;
-    _initializationFuture = null;
+
+    // NetworkManager is shared.
+    // Never stop, reset, or dispose it from this provider.
 
     super.dispose();
   }

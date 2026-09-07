@@ -6,8 +6,7 @@ import 'network_optimizer.dart';
 // File: bitrate_controller.dart
 // Location: lib/services/call/bitrate_controller.dart
 //
-// Description:
-// Central adaptive audio/video bitrate policy controller.
+// FINAL PRODUCTION BITRATE POLICY CONTROLLER.
 //
 // Architecture:
 //
@@ -17,49 +16,67 @@ import 'network_optimizer.dart';
 //      ↓
 // BitrateController
 //      ↓
-// AI / WebRTC media layer
+// WebRTC / Media Layer
 //
 // Ownership:
-// - NetworkManager owns network measurement
-// - NetworkOptimizer owns optimization policy
-// - BitrateController exposes bitrate decisions
-// - WebRTC/media layer owns actual RTCRtpSender mutation
 //
-// Rules:
-// - No direct NetworkHelper access
-// - No duplicate network polling
-// - No duplicate timers
-// - No signaling
-// - No ICE handling
-// - No recovery logic
-// - No peer-connection lifecycle ownership
+// NetworkManager:
+// - Network measurement.
+//
+// NetworkOptimizer:
+// - Optimization policy.
+//
+// BitrateController:
+// - Exposes and validates bitrate decisions.
+//
+// WebRTC / Media Layer:
+// - Actual RTCRtpSender mutation.
+//
+// IMPORTANT:
+//
+// - No direct NetworkHelper access.
+// - No duplicate network polling.
+// - No timers/listeners.
+// - No signaling.
+// - No ICE handling.
+// - No recovery logic.
+// - No PeerConnection lifecycle ownership.
+// - No media acquisition.
+// - No UI/design changes.
 // ===========================================================
 
 class BitrateController {
   BitrateController._();
 
-  static final BitrateController instance = BitrateController._();
+  static final BitrateController instance =
+  BitrateController._();
 
   // ===========================================================
-  // Dependencies
+  // DEPENDENCY
   // ===========================================================
 
-  final NetworkOptimizer _networkOptimizer = NetworkOptimizer.instance;
+  final NetworkOptimizer _networkOptimizer =
+      NetworkOptimizer.instance;
 
   // ===========================================================
-  // Runtime State
+  // INITIALIZATION STATE
   // ===========================================================
 
   bool _initialized = false;
 
-  // ===========================================================
-  // Public State
-  // ===========================================================
+  int _generation = 0;
 
-  bool get isInitialized => _initialized;
+  Future<void>? _activeInitialization;
 
   // ===========================================================
-  // Initialization
+  // PUBLIC STATE
+  // ===========================================================
+
+  bool get isInitialized =>
+      _initialized;
+
+  // ===========================================================
+  // INITIALIZATION
   // ===========================================================
 
   Future<void> initialize() async {
@@ -67,69 +84,121 @@ class BitrateController {
       return;
     }
 
+    final Future<void>? active =
+        _activeInitialization;
+
+    if (active != null) {
+      await active;
+
+      return;
+    }
+
+    final int generation =
+    ++_generation;
+
+    final Future<void> operation =
+    _initializeInternal(
+      generation,
+    );
+
+    late final Future<void> tracked;
+
+    tracked = operation.whenComplete(() {
+      if (identical(
+        _activeInitialization,
+        tracked,
+      )) {
+        _activeInitialization = null;
+      }
+    });
+
+    _activeInitialization =
+        tracked;
+
+    await tracked;
+  }
+
+  Future<void> _initializeInternal(
+      int generation,
+      ) async {
     if (!_networkOptimizer.isInitialized) {
       await _networkOptimizer.initialize();
+    }
+
+    if (generation !=
+        _generation) {
+      return;
     }
 
     _initialized = true;
   }
 
   Future<void> _ensureInitialized() async {
-    if (!_initialized) {
-      await initialize();
+    if (_initialized) {
+      return;
     }
+
+    await initialize();
   }
 
   // ===========================================================
-  // Current Network Quality
+  // CURRENT NETWORK QUALITY
   // ===========================================================
 
   Future<NetworkQuality> get quality async {
     await _ensureInitialized();
 
-    return _networkOptimizer.currentNetwork.quality;
+    return _networkOptimizer
+        .currentNetwork
+        .quality;
   }
 
   // ===========================================================
-  // Video Bitrate
+  // VIDEO BITRATE
+  //
+  // Bits per second.
   // ===========================================================
 
-  /// Recommended video bitrate in bits per second.
   Future<int> get videoBitrate async {
     await _ensureInitialized();
 
-    final bitrate = await _networkOptimizer.videoBitrate;
+    final int bitrate =
+    await _networkOptimizer
+        .videoBitrate;
 
-    return _sanitizeBitrate(bitrate);
+    return _sanitizeBitrate(
+      bitrate,
+    );
   }
 
   // ===========================================================
-  // Audio Bitrate
+  // AUDIO BITRATE
+  //
+  // Bits per second.
   // ===========================================================
 
-  /// Recommended audio bitrate in bits per second.
   Future<int> get audioBitrate async {
     await _ensureInitialized();
 
-    final bitrate = await _networkOptimizer.audioBitrate;
+    final int bitrate =
+    await _networkOptimizer
+        .audioBitrate;
 
-    return _sanitizeBitrate(bitrate);
+    return _sanitizeBitrate(
+      bitrate,
+    );
   }
 
   // ===========================================================
-  // Adaptive Bitrate
+  // ADAPTIVE VIDEO BITRATE
   // ===========================================================
 
-  /// Compatibility method used by existing call-engine code.
-  ///
-  /// The actual adaptive recommendation is owned by
-  /// NetworkOptimizer.
   Future<int> adaptiveBitrate() async {
     return videoBitrate;
   }
 
   // ===========================================================
-  // Adaptive Audio Bitrate
+  // ADAPTIVE AUDIO BITRATE
   // ===========================================================
 
   Future<int> adaptiveAudioBitrate() async {
@@ -137,73 +206,232 @@ class BitrateController {
   }
 
   // ===========================================================
-  // HD Availability
+  // HD AVAILABILITY
+  //
+  // NetworkOptimizer remains policy owner.
   // ===========================================================
 
   Future<bool> get allowHD async {
     await _ensureInitialized();
 
-    return _networkOptimizer.enableHD;
+    final bool enabled =
+    await _networkOptimizer
+        .enableHD;
+
+    return enabled;
   }
 
   // ===========================================================
-  // Full-HD Availability
+  // FULL-HD AVAILABILITY
+  //
+  // Compatibility policy preserved from the existing file.
   // ===========================================================
 
   Future<bool> get allowFullHD async {
     await _ensureInitialized();
 
-    final network = _networkOptimizer.currentNetwork;
+    final NetworkModel network =
+        _networkOptimizer.currentNetwork;
 
+    return _allowFullHDFor(
+      network,
+    );
+  }
+
+  bool _allowFullHDFor(
+      NetworkModel network,
+      ) {
     if (!network.isConnected) {
       return false;
     }
 
-    return network.quality == NetworkQuality.excellent &&
-        network.packetLoss < 2.0 &&
-        network.ping < 150;
+    final double packetLoss =
+        network.packetLoss;
+
+    final int ping =
+        network.ping;
+
+    if (!packetLoss.isFinite ||
+        packetLoss < 0 ||
+        packetLoss >= 2.0) {
+      return false;
+    }
+
+    if (ping < 0 ||
+        ping >= 150) {
+      return false;
+    }
+
+    return network.quality ==
+        NetworkQuality.excellent;
   }
 
   // ===========================================================
-  // Adaptive Feature State
+  // ADAPTIVE FEATURE STATE
   // ===========================================================
 
   Future<bool> get adaptiveBitrateEnabled async {
     await _ensureInitialized();
 
-    return _networkOptimizer.enableAdaptiveBitrate;
+    final bool enabled =
+    await _networkOptimizer
+        .enableAdaptiveBitrate;
+
+    return enabled;
   }
 
   Future<bool> get dataSaverEnabled async {
     await _ensureInitialized();
 
-    return _networkOptimizer.enableDataSaver;
+    final bool enabled =
+    await _networkOptimizer
+        .enableDataSaver;
+
+    return enabled;
   }
 
   // ===========================================================
-  // Current Recommended Profile
+  // CURRENT RECOMMENDED PROFILE
+  //
+  // IMPORTANT:
+  //
+  // NetworkOptimizer.recommendedProfile is asynchronous:
+  //
+  // Future<Map<String, dynamic>>
+  //
+  // It must always be awaited before using it as a Map.
+  //
+  // A short retry protects the composed profile from a network
+  // snapshot changing between asynchronous policy reads.
   // ===========================================================
 
-  Future<Map<String, dynamic>> get recommendedProfile async {
+  Future<Map<String, dynamic>>
+  get recommendedProfile async {
     await _ensureInitialized();
 
-    return <String, dynamic>{
-      'connected': _networkOptimizer.isConnected,
-      'quality': _networkOptimizer.currentNetwork.quality.name,
-      'videoBitrate': await videoBitrate,
-      'audioBitrate': await audioBitrate,
-      'allowHD': await allowHD,
-      'allowFullHD': await allowFullHD,
-      'adaptiveBitrate': await adaptiveBitrateEnabled,
-      'dataSaver': await dataSaverEnabled,
-    };
+    const int maxSnapshotAttempts = 3;
+
+    for (int attempt = 0;
+    attempt < maxSnapshotAttempts;
+    attempt++) {
+      final NetworkModel snapshot =
+          _networkOptimizer.currentNetwork;
+
+      final Map<String, dynamic>
+      optimizerProfile =
+      await _networkOptimizer
+          .recommendedProfile;
+
+      final bool hdEnabled =
+      await _networkOptimizer
+          .enableHD;
+
+      if (!identical(
+        snapshot,
+        _networkOptimizer.currentNetwork,
+      )) {
+        continue;
+      }
+
+      return Map<String, dynamic>.unmodifiable(
+        <String, dynamic>{
+          'connected':
+          optimizerProfile['connected'] ??
+              snapshot.isConnected,
+          'quality':
+          optimizerProfile['quality'] ??
+              snapshot.quality.name,
+          'videoBitrate':
+          _sanitizeDynamicBitrate(
+            optimizerProfile[
+            'videoBitrate'],
+          ),
+          'audioBitrate':
+          _sanitizeDynamicBitrate(
+            optimizerProfile[
+            'audioBitrate'],
+          ),
+          'allowHD':
+          hdEnabled,
+          'allowFullHD':
+          _allowFullHDFor(
+            snapshot,
+          ),
+          'adaptiveBitrate':
+          optimizerProfile[
+          'adaptiveBitrate'] ==
+              true,
+          'dataSaver':
+          optimizerProfile[
+          'dataSaver'] ==
+              true,
+        },
+      );
+    }
+
+    // ---------------------------------------------------------
+    // Extremely rare case:
+    //
+    // Network state changed during every retry.
+    //
+    // Return the freshest policy snapshot rather than failing
+    // the Call Engine.
+    // ---------------------------------------------------------
+
+    final Map<String, dynamic> optimizerProfile =
+    await _networkOptimizer
+        .recommendedProfile;
+
+    final NetworkModel latestNetwork =
+        _networkOptimizer.currentNetwork;
+
+    final bool hdEnabled =
+    await _networkOptimizer
+        .enableHD;
+
+    return Map<String, dynamic>.unmodifiable(
+      <String, dynamic>{
+        'connected':
+        optimizerProfile['connected'] ??
+            latestNetwork.isConnected,
+        'quality':
+        optimizerProfile['quality'] ??
+            latestNetwork.quality.name,
+        'videoBitrate':
+        _sanitizeDynamicBitrate(
+          optimizerProfile[
+          'videoBitrate'],
+        ),
+        'audioBitrate':
+        _sanitizeDynamicBitrate(
+          optimizerProfile[
+          'audioBitrate'],
+        ),
+        'allowHD':
+        hdEnabled,
+        'allowFullHD':
+        _allowFullHDFor(
+          latestNetwork,
+        ),
+        'adaptiveBitrate':
+        optimizerProfile[
+        'adaptiveBitrate'] ==
+            true,
+        'dataSaver':
+        optimizerProfile[
+        'dataSaver'] ==
+            true,
+      },
+    );
   }
 
   // ===========================================================
-  // Validation
+  // VALIDATION
   // ===========================================================
 
-  int _sanitizeBitrate(int bitrate) {
+  int _sanitizeBitrate(
+      int bitrate,
+      ) {
     if (bitrate <= 0) {
       return 0;
     }
@@ -211,15 +439,81 @@ class BitrateController {
     return bitrate;
   }
 
+  int _sanitizeDynamicBitrate(
+      Object? value,
+      ) {
+    if (value is int) {
+      return _sanitizeBitrate(
+        value,
+      );
+    }
+
+    if (value is num &&
+        value.isFinite) {
+      return _sanitizeBitrate(
+        value.toInt(),
+      );
+    }
+
+    return 0;
+  }
+
   // ===========================================================
-  // Reset
+  // RESET
   // ===========================================================
 
   void reset() {
+    _generation++;
+
+    _activeInitialization =
+    null;
+
     _initialized = false;
 
-    // NetworkOptimizer and NetworkManager are shared
-    // call-engine services and therefore are intentionally
-    // NOT reset from BitrateController.
+    // NetworkOptimizer and NetworkManager are shared Call Engine
+    // services and are intentionally NOT reset here.
   }
 }
+
+// ===========================================================
+// END OF FILE
+//
+// FILE 21 FINAL GUARANTEES:
+//
+// ✓ Existing public APIs preserved.
+// ✓ Existing bits-per-second bitrate semantics preserved.
+// ✓ NetworkOptimizer remains optimization-policy owner.
+// ✓ BitrateController remains recommendation/exposure layer.
+// ✓ Actual RTCRtpSender mutation remains WebRTC/media-owned.
+// ✓ Initialization concurrency deduplicated.
+// ✓ Reset invalidates stale initialization.
+// ✓ Old initialization cannot reactivate controller after reset.
+// ✓ NetworkOptimizer Future APIs are explicitly awaited.
+// ✓ videoBitrate Future contract handled correctly.
+// ✓ audioBitrate Future contract handled correctly.
+// ✓ enableHD Future contract handled correctly.
+// ✓ enableAdaptiveBitrate Future contract handled correctly.
+// ✓ enableDataSaver Future contract handled correctly.
+// ✓ recommendedProfile Future<Map> contract handled correctly.
+// ✓ No Future<Map> passed directly where Map is required.
+// ✓ Non-positive bitrate safely becomes zero.
+// ✓ Invalid dynamic bitrate safely becomes zero.
+// ✓ Full-HD policy uses one NetworkModel snapshot.
+// ✓ Invalid packet-loss/latency cannot enable Full-HD.
+// ✓ Recommended profile is returned unmodifiable.
+// ✓ Network snapshot churn is handled safely.
+// ✓ No NetworkHelper access.
+// ✓ No duplicate polling/timers/listeners.
+// ✓ No PeerConnection lifecycle ownership.
+// ✓ No ICE/signaling/recovery ownership.
+// ✓ No media acquisition ownership.
+// ✓ Shared NetworkOptimizer/NetworkManager are not reset.
+// ✓ No UI/design changes.
+//
+// STATUS:
+// BITRATE CONTROLLER FINALIZED.
+//
+// NEXT PURE CALL ENGINE FILE:
+// FILE 22
+// lib/services/call/call_quality_monitor.dart
+// ===========================================================

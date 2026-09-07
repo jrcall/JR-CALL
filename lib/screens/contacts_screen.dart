@@ -3,23 +3,24 @@
 // File: contacts_screen.dart
 // Location: lib/screens/contacts_screen.dart
 //
-// Fixes:
-// - BUG 03: Search result -> resolved Firebase UID/public profile handoff
-// - BUG 05: Search field must never behave as credential input
-// - BUG 07: Voice call now enters the REAL CallService lifecycle
-// - BUG 08: Video call now enters the REAL CallService lifecycle
+// Production Search / Discovery + Call UI:
 //
-// PRODUCTION-SAFE REPLACEMENT
+// SEARCH:
+// - Global discovery remains UserDiscoveryService-owned.
+// - Name supports contains-style matching.
+// - Username supports contains-style matching.
+// - JR CALL ID supports contains-style matching.
+// - Email supports contains-style matching where discovery permits.
+// - Phone supports contains-style matching where discovery permits.
+// - Firebase UID is NEVER a public search keyword.
+// - Search remains normalized, debounced, limited and paginated.
 //
-// IMPORTANT:
-// - Firebase UID remains canonical internal identity.
-// - Search/display identity never replaces Firebase UID.
-// - CallService.startCall() owns real outgoing call creation.
-// - No duplicate signaling/WebRTC/Firestore call implementation here.
-// - Guest search/public profile remains available.
-// - Voice/Video/Message remain authentication protected.
-// - Existing ContactsScreen constructor preserved.
-// - Existing ContactModel / Discovery APIs preserved.
+// CALL:
+// - Firebase UID remains the canonical call target.
+// - CallService remains the only owner of outgoing call creation.
+// - CallSessionScreen owns outgoing -> active-screen presentation.
+// - Real CONNECTED state opens VoiceCallScreen / VideoCallScreen.
+// - No duplicate WebRTC/signaling/ICE/recovery implementation here.
 // ===============================================================
 
 import 'dart:async';
@@ -34,13 +35,16 @@ import '../services/call/call_service.dart';
 import '../services/user_discovery_service.dart';
 import '../widgets/caller_avatar.dart';
 import '../widgets/video_button.dart';
+import 'call_session_screen.dart';
 import 'create_account_screen.dart';
 import 'login_screen.dart';
-import 'outgoing_call_screen.dart';
 import 'profile_screen.dart';
 
 class ContactsScreen extends StatefulWidget {
-  const ContactsScreen({super.key, this.contacts = const <ContactModel>[]});
+  const ContactsScreen({
+    super.key,
+    this.contacts = const <ContactModel>[],
+  });
 
   final List<ContactModel> contacts;
 
@@ -53,9 +57,11 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // CONSTANTS
   // =============================================================
 
-  static const Duration _debounce = Duration(milliseconds: 420);
+  static const Duration _debounce =
+  Duration(milliseconds: 420);
 
-  static const int _pageSize = UserDiscoveryService.defaultPageSize;
+  static const int _pageSize =
+      UserDiscoveryService.defaultPageSize;
 
   static const double _maxWidth = 720;
 
@@ -65,7 +71,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
-  final UserDiscoveryService _discovery = UserDiscoveryService.instance;
+  final UserDiscoveryService _discovery =
+      UserDiscoveryService.instance;
 
   final CallService _callService = CallService();
 
@@ -73,9 +80,11 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // CONTROLLERS
   // =============================================================
 
-  final TextEditingController _search = TextEditingController();
+  final TextEditingController _search =
+  TextEditingController();
 
-  final ScrollController _scroll = ScrollController();
+  final ScrollController _scroll =
+  ScrollController();
 
   final FocusNode _searchFocus = FocusNode(
     debugLabel: 'JR_CALL_PUBLIC_DISCOVERY_SEARCH',
@@ -89,7 +98,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   late List<ContactModel> _localResults;
 
-  List<DiscoveryUser> _remoteResults = <DiscoveryUser>[];
+  List<DiscoveryUser> _remoteResults =
+  <DiscoveryUser>[];
 
   DocumentSnapshot<Map<String, dynamic>>? _cursor;
 
@@ -105,7 +115,15 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   bool _hasMore = false;
 
-  bool _startingCall = false;
+  // =============================================================
+  // CALL START STATE
+  // =============================================================
+
+  String? _startingCallUid;
+
+  bool? _startingCallIsVideo;
+
+  bool _callStartInProgress = false;
 
   int _generation = 0;
 
@@ -113,10 +131,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // AUTH
   // =============================================================
 
-  bool get _authenticated => _auth.currentUser != null;
+  bool get _authenticated {
+    return _auth.currentUser != null;
+  }
 
   String? get _currentUid {
-    final String value = _auth.currentUser?.uid.trim() ?? '';
+    final String value =
+        _auth.currentUser?.uid.trim() ?? '';
 
     return value.isEmpty ? null : value;
   }
@@ -129,29 +150,51 @@ class _ContactsScreenState extends State<ContactsScreen> {
   void initState() {
     super.initState();
 
-    _contacts = List<ContactModel>.unmodifiable(widget.contacts);
+    _contacts =
+    List<ContactModel>.unmodifiable(
+      widget.contacts,
+    );
 
-    _localResults = List<ContactModel>.of(_contacts);
+    _localResults =
+    List<ContactModel>.of(
+      _contacts,
+    );
 
-    _search.addListener(_onSearchChanged);
+    _search.addListener(
+      _onSearchChanged,
+    );
 
-    _scroll.addListener(_onScroll);
+    _scroll.addListener(
+      _onScroll,
+    );
   }
 
   @override
-  void didUpdateWidget(covariant ContactsScreen oldWidget) {
+  void didUpdateWidget(
+      covariant ContactsScreen oldWidget,
+      ) {
     super.didUpdateWidget(oldWidget);
 
-    if (identical(oldWidget.contacts, widget.contacts)) {
+    if (identical(
+      oldWidget.contacts,
+      widget.contacts,
+    )) {
       return;
     }
 
-    _contacts = List<ContactModel>.unmodifiable(widget.contacts);
+    _contacts =
+    List<ContactModel>.unmodifiable(
+      widget.contacts,
+    );
 
-    final String query = _search.text.trim();
+    final String query =
+    _search.text.trim();
 
     if (query.isEmpty) {
-      _localResults = List<ContactModel>.of(_contacts);
+      _localResults =
+      List<ContactModel>.of(
+        _contacts,
+      );
     } else {
       _filterLocal(query);
     }
@@ -166,19 +209,21 @@ class _ContactsScreenState extends State<ContactsScreen> {
     _generation++;
 
     _timer?.cancel();
+    _timer = null;
 
-    _search.removeListener(_onSearchChanged);
+    _search.removeListener(
+      _onSearchChanged,
+    );
 
-    _scroll.removeListener(_onScroll);
+    _scroll.removeListener(
+      _onScroll,
+    );
 
     _search.dispose();
-
     _scroll.dispose();
-
     _searchFocus.dispose();
 
-    // CallService is a shared singleton.
-    // DO NOT dispose it from this screen.
+    // Shared CallService must never be disposed here.
 
     super.dispose();
   }
@@ -187,7 +232,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // AUTH GATE
   // =============================================================
 
-  Future<bool> _requireAuthentication(String action) async {
+  Future<bool> _requireAuthentication(
+      String action,
+      ) async {
     if (_authenticated) {
       return true;
     }
@@ -196,18 +243,29 @@ class _ContactsScreenState extends State<ContactsScreen> {
       return false;
     }
 
-    final String? choice = await showModalBottomSheet<String>(
+    final String? choice =
+    await showModalBottomSheet<String>(
       context: context,
       useSafeArea: true,
       backgroundColor: Colors.transparent,
-      builder: (BuildContext sheetContext) {
+      builder: (
+          BuildContext sheetContext,
+          ) {
         return Container(
           margin: const EdgeInsets.all(12),
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 22),
+          padding: const EdgeInsets.fromLTRB(
+            20,
+            12,
+            20,
+            22,
+          ),
           decoration: BoxDecoration(
             color: Colors.white,
-            borderRadius: BorderRadius.circular(26),
-            border: Border.all(color: JrColors.border),
+            borderRadius:
+            BorderRadius.circular(26),
+            border: Border.all(
+              color: JrColors.border,
+            ),
             boxShadow: const <BoxShadow>[
               BoxShadow(
                 color: Color(0x180F172A),
@@ -217,15 +275,25 @@ class _ContactsScreenState extends State<ContactsScreen> {
             ],
           ),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
+            mainAxisSize:
+            MainAxisSize.min,
             children: <Widget>[
               Container(
                 width: 42,
                 height: 5,
-                margin: const EdgeInsets.only(bottom: 18),
+                margin:
+                const EdgeInsets.only(
+                  bottom: 18,
+                ),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFD8E0EC),
-                  borderRadius: BorderRadius.circular(99),
+                  color:
+                  const Color(
+                    0xFFD8E0EC,
+                  ),
+                  borderRadius:
+                  BorderRadius.circular(
+                    99,
+                  ),
                 ),
               ),
               const Icon(
@@ -238,9 +306,11 @@ class _ContactsScreenState extends State<ContactsScreen> {
                 'JR CALL Account Required',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  color: JrColors.textPrimary,
+                  color:
+                  JrColors.textPrimary,
                   fontSize: 20,
-                  fontWeight: FontWeight.w800,
+                  fontWeight:
+                  FontWeight.w800,
                 ),
               ),
               const SizedBox(height: 8),
@@ -248,7 +318,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
                 'Login or create your JR CALL account to $action.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                  color: JrColors.textSecondary,
+                  color:
+                  JrColors.textSecondary,
                   height: 1.45,
                 ),
               ),
@@ -257,9 +328,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
                 width: double.infinity,
                 child: FilledButton(
                   onPressed: () {
-                    Navigator.of(sheetContext).pop('login');
+                    Navigator.of(
+                      sheetContext,
+                    ).pop('login');
                   },
-                  child: const Text('LOGIN'),
+                  child: const Text(
+                    'LOGIN',
+                  ),
                 ),
               ),
               const SizedBox(height: 10),
@@ -267,9 +342,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
                 width: double.infinity,
                 child: OutlinedButton(
                   onPressed: () {
-                    Navigator.of(sheetContext).pop('create');
+                    Navigator.of(
+                      sheetContext,
+                    ).pop('create');
                   },
-                  child: const Text('CREATE ACCOUNT'),
+                  child: const Text(
+                    'CREATE ACCOUNT',
+                  ),
                 ),
               ),
             ],
@@ -307,8 +386,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   void _onSearchChanged() {
     _timer?.cancel();
+    _timer = null;
 
-    final String query = _search.text.trim();
+    final String query =
+    _search.text.trim();
 
     if (query.isEmpty) {
       _resetSearch();
@@ -323,59 +404,131 @@ class _ContactsScreenState extends State<ContactsScreen> {
       });
     }
 
-    _timer = Timer(_debounce, () {
-      unawaited(_searchRemote(query));
-    });
+    _timer = Timer(
+      _debounce,
+          () {
+        unawaited(
+          _searchRemote(query),
+        );
+      },
+    );
   }
 
-  void _filterLocal(String query) {
-    final String normalized = query.trim().toLowerCase();
+  // =============================================================
+  // LOCAL SEARCH
+  // =============================================================
 
-    if (normalized.isEmpty) {
-      _localResults = List<ContactModel>.of(_contacts);
+  void _filterLocal(
+      String query,
+      ) {
+    final String textQuery =
+    _normalizeSearchText(query);
+
+    if (textQuery.isEmpty) {
+      _localResults =
+      List<ContactModel>.of(
+        _contacts,
+      );
+
       return;
     }
 
-    final String usernameQuery = normalized.startsWith('@')
-        ? normalized.substring(1)
-        : normalized;
+    final String identityQuery =
+    _normalizePublicIdentityQuery(
+      query,
+    );
+
+    final String emailQuery =
+    _normalizeEmailQuery(
+      query,
+    );
+
+    final String? phoneQuery =
+    _normalizePhoneQuery(
+      query,
+    );
 
     _localResults = _contacts
-        .where((ContactModel contact) {
-      String username = contact.username?.trim().toLowerCase() ?? '';
+        .where(
+          (
+          ContactModel contact,
+          ) {
+        if (contact.normalizedName
+            .contains(
+          textQuery,
+        )) {
+          return true;
+        }
 
-      if (username.startsWith('@')) {
-        username = username.substring(1);
-      }
+        final String? username =
+            contact.normalizedUsername;
 
-      final List<String> searchable =
-      <String>[
-        contact.name,
-        contact.phoneNumber,
-        contact.email,
-        contact.userId,
-        contact.linkedUid ?? '',
-        contact.jrCallUserId ?? '',
-      ]
-          .map((String value) {
-        return value.trim().toLowerCase();
-      })
-          .toList(growable: false);
+        if (identityQuery.isNotEmpty &&
+            username != null &&
+            username.contains(
+              identityQuery,
+            )) {
+          return true;
+        }
 
-      return searchable.any((String value) => value.contains(normalized)) ||
-          username.contains(usernameQuery);
-    })
-        .toList(growable: false);
+        final String? jrCallId =
+            contact
+                .normalizedJrCallUserId;
+
+        if (identityQuery.isNotEmpty &&
+            jrCallId != null &&
+            jrCallId.contains(
+              identityQuery,
+            )) {
+          return true;
+        }
+
+        final String? email =
+            contact.normalizedEmail;
+
+        if (emailQuery.isNotEmpty &&
+            email != null &&
+            email.contains(
+              emailQuery,
+            )) {
+          return true;
+        }
+
+        final String? phone =
+            contact.normalizedPhone;
+
+        if (phoneQuery != null &&
+            phone != null &&
+            phone.contains(
+              phoneQuery,
+            )) {
+          return true;
+        }
+
+        return false;
+      },
+    )
+        .toList(
+      growable: false,
+    );
   }
 
-  Future<void> _searchRemote(String query) async {
-    final String normalized = query.trim();
+  // =============================================================
+  // REMOTE SEARCH
+  // =============================================================
+
+  Future<void> _searchRemote(
+      String query,
+      ) async {
+    final String normalized =
+    query.trim();
 
     if (normalized.isEmpty) {
       return;
     }
 
-    final int generation = ++_generation;
+    final int generation =
+    ++_generation;
 
     if (mounted) {
       setState(() {
@@ -383,37 +536,52 @@ class _ContactsScreenState extends State<ContactsScreen> {
         _searching = true;
         _loadingMore = false;
         _error = null;
-        _remoteResults = <DiscoveryUser>[];
+        _remoteResults =
+        <DiscoveryUser>[];
         _cursor = null;
         _hasMore = false;
       });
     }
 
     try {
-      final DiscoveryPage page = await _discovery.search(
+      final DiscoveryPage page =
+      await _discovery.search(
         normalized,
-        type: DiscoverySearchType.automatic,
+        type:
+        DiscoverySearchType.automatic,
         limit: _pageSize,
-        excludeCurrentUser: _authenticated,
+        excludeCurrentUser:
+        _authenticated,
       );
 
-      if (!_validSearch(generation, normalized)) {
+      if (!_validSearch(
+        generation,
+        normalized,
+      )) {
         return;
       }
 
       setState(() {
-        _remoteResults = List<DiscoveryUser>.unmodifiable(
-          _uniqueUsers(page.users),
+        _remoteResults =
+        List<DiscoveryUser>.unmodifiable(
+          _uniqueUsers(
+            page.users,
+          ),
         );
 
         _cursor = page.nextCursor;
 
-        _hasMore = page.hasMore && page.nextCursor != null;
+        _hasMore =
+            page.hasMore &&
+                page.nextCursor != null;
 
         _searching = false;
       });
     } catch (error) {
-      if (!_validSearch(generation, normalized)) {
+      if (!_validSearch(
+        generation,
+        normalized,
+      )) {
         return;
       }
 
@@ -422,13 +590,21 @@ class _ContactsScreenState extends State<ContactsScreen> {
         _loadingMore = false;
         _hasMore = false;
         _cursor = null;
-        _error = _friendlySearchError(error);
+        _error =
+            _friendlySearchError(
+              error,
+            );
       });
     }
   }
 
-  bool _validSearch(int generation, String query) {
-    return mounted && generation == _generation && _search.text.trim() == query;
+  bool _validSearch(
+      int generation,
+      String query,
+      ) {
+    return mounted &&
+        generation == _generation &&
+        _search.text.trim() == query;
   }
 
   // =============================================================
@@ -444,51 +620,71 @@ class _ContactsScreenState extends State<ContactsScreen> {
       return;
     }
 
-    final String query = _activeQuery;
+    final String query =
+        _activeQuery;
 
-    final int generation = _generation;
+    final int generation =
+        _generation;
 
-    final DocumentSnapshot<Map<String, dynamic>> cursor = _cursor!;
+    final DocumentSnapshot<
+        Map<String, dynamic>>
+    cursor = _cursor!;
 
     setState(() {
       _loadingMore = true;
     });
 
     try {
-      final DiscoveryPage page = await _discovery.search(
+      final DiscoveryPage page =
+      await _discovery.search(
         query,
-        type: DiscoverySearchType.automatic,
+        type:
+        DiscoverySearchType.automatic,
         limit: _pageSize,
         cursor: cursor,
-        excludeCurrentUser: _authenticated,
+        excludeCurrentUser:
+        _authenticated,
       );
 
-      if (!_validSearch(generation, query)) {
+      if (!_validSearch(
+        generation,
+        query,
+      )) {
         return;
       }
 
       setState(() {
-        _remoteResults = List<DiscoveryUser>.unmodifiable(
-          _uniqueUsers(<DiscoveryUser>[
-            ..._remoteResults,
-            ...page.users,
-          ]),
+        _remoteResults =
+        List<DiscoveryUser>.unmodifiable(
+          _uniqueUsers(
+            <DiscoveryUser>[
+              ..._remoteResults,
+              ...page.users,
+            ],
+          ),
         );
 
         _cursor = page.nextCursor;
 
-        _hasMore = page.hasMore && page.nextCursor != null;
+        _hasMore =
+            page.hasMore &&
+                page.nextCursor != null;
 
         _loadingMore = false;
       });
     } catch (error) {
-      if (!mounted || generation != _generation) {
+      if (!mounted ||
+          generation != _generation) {
         return;
       }
 
       setState(() {
         _loadingMore = false;
-        _error = _friendlySearchError(error);
+
+        _error =
+            _friendlySearchError(
+              error,
+            );
       });
     }
   }
@@ -498,8 +694,11 @@ class _ContactsScreenState extends State<ContactsScreen> {
       return;
     }
 
-    if (_scroll.position.extentAfter <= 280) {
-      unawaited(_loadMore());
+    if (_scroll.position.extentAfter <=
+        280) {
+      unawaited(
+        _loadMore(),
+      );
     }
   }
 
@@ -509,6 +708,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   void _resetSearch() {
     _timer?.cancel();
+    _timer = null;
 
     _generation++;
 
@@ -523,8 +723,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
       _hasMore = false;
       _cursor = null;
       _error = null;
-      _remoteResults = <DiscoveryUser>[];
-      _localResults = List<ContactModel>.of(_contacts);
+      _remoteResults =
+      <DiscoveryUser>[];
+      _localResults =
+      List<ContactModel>.of(
+        _contacts,
+      );
     });
   }
 
@@ -534,58 +738,92 @@ class _ContactsScreenState extends State<ContactsScreen> {
     }
 
     _search.clear();
+
     _searchFocus.requestFocus();
   }
 
   Future<void> _retrySearch() async {
-    final String query = _search.text.trim();
+    final String query =
+    _search.text.trim();
 
     if (query.isNotEmpty) {
       await _searchRemote(query);
     }
   }
 
-  List<DiscoveryUser> _uniqueUsers(Iterable<DiscoveryUser> users) {
-    final Map<String, DiscoveryUser> unique = <String, DiscoveryUser>{};
+  List<DiscoveryUser> _uniqueUsers(
+      Iterable<DiscoveryUser> users,
+      ) {
+    final Map<String, DiscoveryUser>
+    unique =
+    <String, DiscoveryUser>{};
 
-    for (final DiscoveryUser user in users) {
-      final String uid = user.uid.trim();
+    for (final DiscoveryUser user
+    in users) {
+      final String uid =
+      user.uid.trim();
 
       if (uid.isNotEmpty) {
         unique[uid] = user;
       }
     }
 
-    return unique.values.toList(growable: false);
+    return unique.values.toList(
+      growable: false,
+    );
   }
 
   // =============================================================
   // DISCOVERY -> CONTACT
   // =============================================================
 
-  ContactModel _toContact(DiscoveryUser user) {
-    final String uid = user.uid.trim();
+  ContactModel _toContact(
+      DiscoveryUser user,
+      ) {
+    final String uid =
+    user.uid.trim();
 
-    final DateTime now = DateTime.now();
+    final DateTime now =
+    DateTime.now();
 
     return ContactModel(
       id: uid,
       userId: uid,
       linkedUid: uid,
-      jrCallUserId: _nonEmpty(user.jrCallUserId),
-      username: _usernameForContact(user.username),
-      registeredState: ContactRegisteredState.registered,
-      name: _safeName(user.displayName),
-      phoneNumber: user.phoneNumber ?? '',
-      email: user.email ?? '',
-      photoUrl: user.profilePhotoUrl ?? '',
-      countryCode: user.countryCode ?? '',
-      country: user.country ?? '',
-      bio: user.bio ?? '',
+      jrCallUserId:
+      _nonEmpty(
+        user.jrCallUserId,
+      ),
+      username:
+      _usernameForContact(
+        user.username,
+      ),
+      registeredState:
+      ContactRegisteredState.registered,
+      name:
+      _safeName(
+        user.displayName,
+      ),
+      phoneNumber:
+      user.phoneNumber ?? '',
+      email:
+      user.email ?? '',
+      photoUrl:
+      user.profilePhotoUrl ?? '',
+      countryCode:
+      user.countryCode ?? '',
+      country:
+      user.country ?? '',
+      bio:
+      user.bio ?? '',
       isFavorite: false,
       isBlocked: false,
-      isVerified: user.verified,
-      status: user.online ? ContactStatus.online : ContactStatus.offline,
+      isVerified:
+      user.verified,
+      status:
+      user.online
+          ? ContactStatus.online
+          : ContactStatus.offline,
       lastSeen: now,
       createdAt: now,
     );
@@ -595,7 +833,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // PROFILE
   // =============================================================
 
-  Future<void> _openProfile(ContactModel contact) async {
+  Future<void> _openProfile(
+      ContactModel contact,
+      ) async {
     if (!mounted) {
       return;
     }
@@ -606,13 +846,19 @@ class _ContactsScreenState extends State<ContactsScreen> {
           return ProfileScreen(
             contact: contact,
             onVoiceCall: () {
-              unawaited(_startVoice(contact));
+              unawaited(
+                _startVoice(contact),
+              );
             },
             onVideoCall: () {
-              unawaited(_startVideo(contact));
+              unawaited(
+                _startVideo(contact),
+              );
             },
             onMessage: () {
-              unawaited(_message(contact));
+              unawaited(
+                _message(contact),
+              );
             },
           );
         },
@@ -620,18 +866,40 @@ class _ContactsScreenState extends State<ContactsScreen> {
     );
   }
 
-  Future<void> _openDiscoveryProfile(DiscoveryUser user) {
-    return _openProfile(_toContact(user));
+  Future<void> _openDiscoveryProfile(
+      DiscoveryUser user,
+      ) {
+    return _openProfile(
+      _toContact(user),
+    );
   }
 
   // =============================================================
   // CALL TARGET
   // =============================================================
 
-  String? _resolvedTargetUid(ContactModel contact) {
-    final String value = contact.resolvedUid?.trim() ?? '';
+  String? _resolvedTargetUid(
+      ContactModel contact,
+      ) {
+    final String value =
+        contact.resolvedUid?.trim() ?? '';
 
-    return value.isEmpty ? null : value;
+    return value.isEmpty
+        ? null
+        : value;
+  }
+
+  bool _isStartingCallFor(
+      String? uid, {
+        required bool video,
+      }) {
+    if (uid == null ||
+        uid.isEmpty) {
+      return false;
+    }
+
+    return _startingCallUid == uid &&
+        _startingCallIsVideo == video;
   }
 
   // =============================================================
@@ -642,25 +910,31 @@ class _ContactsScreenState extends State<ContactsScreen> {
       ContactModel contact, {
         required bool video,
       }) async {
-    if (_startingCall) {
-      return;
-    }
-
-    final bool authenticated = await _requireAuthentication(
-      video ? 'start a video call' : 'start a voice call',
+    final bool authenticated =
+    await _requireAuthentication(
+      video
+          ? 'start a video call'
+          : 'start a voice call',
     );
 
-    if (!authenticated || !mounted) {
+    if (!authenticated ||
+        !mounted) {
       return;
     }
 
-    final String? callerUid = _currentUid;
-    final String? receiverUid = _resolvedTargetUid(contact);
+    final String? callerUid =
+        _currentUid;
+
+    final String? receiverUid =
+    _resolvedTargetUid(
+      contact,
+    );
 
     if (callerUid == null) {
       _showMessage(
         'Your authenticated JR CALL session is unavailable.',
       );
+
       return;
     }
 
@@ -668,6 +942,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
       _showMessage(
         'This JR CALL user could not be resolved for calling.',
       );
+
       return;
     }
 
@@ -675,6 +950,22 @@ class _ContactsScreenState extends State<ContactsScreen> {
       _showMessage(
         'You cannot call your own JR CALL account.',
       );
+
+      return;
+    }
+
+    if (_isStartingCallFor(
+      receiverUid,
+      video: video,
+    )) {
+      return;
+    }
+
+    if (_callStartInProgress) {
+      _showMessage(
+        'Another JR CALL call is already starting.',
+      );
+
       return;
     }
 
@@ -682,19 +973,26 @@ class _ContactsScreenState extends State<ContactsScreen> {
       _showMessage(
         'Another JR CALL call is already active.',
       );
+
       return;
     }
 
     setState(() {
-      _startingCall = true;
+      _callStartInProgress = true;
+      _startingCallUid =
+          receiverUid;
+      _startingCallIsVideo =
+          video;
     });
 
     String? callId;
 
     try {
-      callId = await _callService.startCall(
+      callId =
+      await _callService.startCall(
         callerId: callerUid,
-        receiverId: receiverUid,
+        receiverId:
+        receiverUid,
         isVideoCall: video,
       );
     } catch (error, stackTrace) {
@@ -703,14 +1001,32 @@ class _ContactsScreenState extends State<ContactsScreen> {
       );
 
       debugPrintStack(
-        label: 'JR CALL [Contacts/startCall]',
-        stackTrace: stackTrace,
+        label:
+        'JR CALL [Contacts/startCall]',
+        stackTrace:
+        stackTrace,
       );
     } finally {
       if (mounted) {
         setState(() {
-          _startingCall = false;
+          _callStartInProgress =
+          false;
+
+          _startingCallUid =
+          null;
+
+          _startingCallIsVideo =
+          null;
         });
+      } else {
+        _callStartInProgress =
+        false;
+
+        _startingCallUid =
+        null;
+
+        _startingCallIsVideo =
+        null;
       }
     }
 
@@ -718,7 +1034,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
       return;
     }
 
-    if (callId == null || callId.trim().isEmpty) {
+    final String normalizedCallId =
+        callId?.trim() ?? '';
+
+    if (normalizedCallId.isEmpty) {
       _showMessage(
         video
             ? 'Video call could not be started.'
@@ -728,25 +1047,42 @@ class _ContactsScreenState extends State<ContactsScreen> {
       return;
     }
 
-    final String normalizedCallId = callId.trim();
+    // -----------------------------------------------------------
+    // FINAL OUTGOING UI WIRING
+    //
+    // CallService has already created the canonical call session.
+    //
+    // CallSessionScreen does NOT start another call.
+    //
+    // It presents:
+    // CALLING/RINGING/CONNECTING
+    // -> real CONNECTED
+    // -> VoiceCallScreen / VideoCallScreen
+    //
+    // All status/duration/media remain CallService/WebRTC-owned.
+    // -----------------------------------------------------------
 
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (_) {
-          return OutgoingCallScreen(
-            callerName: _safeName(contact.displayName),
-            callerImage: _nonEmpty(contact.photoUrl),
-            isVideoCall: video,
-            statusStream: _callService.callStatusStream,
-            durationStream: _callService.callDurationStream,
-            initialStatus: CallServiceStatus.calling,
-            onEndCall: () async {
-              if (_callService.currentCallId == normalizedCallId) {
-                await _callService.cancelCall(
-                  callId: normalizedCallId,
-                );
-              }
-            },
+          return CallSessionScreen(
+            callerName:
+            _safeName(
+              contact.displayName,
+            ),
+            callerImage:
+            _nonEmpty(
+              contact.photoUrl,
+            ),
+            isVideoCall:
+            video,
+            showOutgoingStage:
+            true,
+            initialStatus:
+            CallServiceStatus.calling,
+            initialDurationSeconds:
+            _callService
+                .callDurationSeconds,
           );
         },
       ),
@@ -757,14 +1093,18 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // VOICE
   // =============================================================
 
-  Future<void> _startVoice(ContactModel contact) {
+  Future<void> _startVoice(
+      ContactModel contact,
+      ) {
     return _startCall(
       contact,
       video: false,
     );
   }
 
-  Future<void> _startDiscoveryVoice(DiscoveryUser user) {
+  Future<void> _startDiscoveryVoice(
+      DiscoveryUser user,
+      ) {
     return _startVoice(
       _toContact(user),
     );
@@ -774,14 +1114,18 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // VIDEO
   // =============================================================
 
-  Future<void> _startVideo(ContactModel contact) {
+  Future<void> _startVideo(
+      ContactModel contact,
+      ) {
     return _startCall(
       contact,
       video: true,
     );
   }
 
-  Future<void> _startDiscoveryVideo(DiscoveryUser user) {
+  Future<void> _startDiscoveryVideo(
+      DiscoveryUser user,
+      ) {
     return _startVideo(
       _toContact(user),
     );
@@ -791,8 +1135,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // MESSAGE
   // =============================================================
 
-  Future<void> _message(ContactModel contact) async {
-    if (!await _requireAuthentication('send messages')) {
+  Future<void> _message(
+      ContactModel contact,
+      ) async {
+    if (!await _requireAuthentication(
+      'send messages',
+    )) {
       return;
     }
 
@@ -800,7 +1148,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
       return;
     }
 
-    final String? receiverUid = _resolvedTargetUid(contact);
+    final String? receiverUid =
+    _resolvedTargetUid(
+      contact,
+    );
 
     if (receiverUid == null) {
       _showMessage(
@@ -820,17 +1171,22 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // =============================================================
 
   @override
-  Widget build(BuildContext context) {
-    final bool hasQuery = _search.text.trim().isNotEmpty;
+  Widget build(
+      BuildContext context,
+      ) {
+    final bool hasQuery =
+        _search.text.trim().isNotEmpty;
 
     return Scaffold(
-      backgroundColor: JrColors.background,
+      backgroundColor:
+      JrColors.background,
       appBar: _appBar(),
       body: SafeArea(
         top: false,
         child: Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(
+            constraints:
+            const BoxConstraints(
               maxWidth: _maxWidth,
             ),
             child: Column(
@@ -855,9 +1211,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   PreferredSizeWidget _appBar() {
     return AppBar(
-      backgroundColor: JrColors.surface,
-      foregroundColor: JrColors.textPrimary,
-      surfaceTintColor: Colors.transparent,
+      backgroundColor:
+      JrColors.surface,
+      foregroundColor:
+      JrColors.textPrimary,
+      surfaceTintColor:
+      Colors.transparent,
       elevation: 0,
       scrolledUnderElevation: 0,
       titleSpacing: 18,
@@ -867,20 +1226,24 @@ class _ContactsScreenState extends State<ContactsScreen> {
           SizedBox(width: 10),
           Expanded(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment:
+              CrossAxisAlignment.start,
               children: <Widget>[
                 Text(
                   'JR CALL',
                   style: TextStyle(
-                    color: JrColors.textPrimary,
+                    color:
+                    JrColors.textPrimary,
                     fontSize: 17,
-                    fontWeight: FontWeight.w800,
+                    fontWeight:
+                    FontWeight.w800,
                   ),
                 ),
                 Text(
                   'Find People',
                   style: TextStyle(
-                    color: JrColors.textSecondary,
+                    color:
+                    JrColors.textSecondary,
                     fontSize: 11,
                   ),
                 ),
@@ -899,7 +1262,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
   Widget _searchArea() {
     return Container(
       color: JrColors.surface,
-      padding: const EdgeInsets.fromLTRB(
+      padding:
+      const EdgeInsets.fromLTRB(
         16,
         8,
         16,
@@ -908,71 +1272,100 @@ class _ContactsScreenState extends State<ContactsScreen> {
       child: TextField(
         controller: _search,
         focusNode: _searchFocus,
-
-        // -------------------------------------------------------
-        // JR CALL PUBLIC DISCOVERY SEARCH
-        //
-        // This field is NOT a credential field.
-        // Do not expose it to Android/Web autofill services.
-        // -------------------------------------------------------
         autofillHints: null,
-
-        keyboardType: TextInputType.text,
-        textInputAction: TextInputAction.search,
-        textCapitalization: TextCapitalization.none,
+        keyboardType:
+        TextInputType.text,
+        textInputAction:
+        TextInputAction.search,
+        textCapitalization:
+        TextCapitalization.none,
         autocorrect: false,
         enableSuggestions: false,
-        enableIMEPersonalizedLearning: false,
-
+        enableIMEPersonalizedLearning:
+        false,
         style: const TextStyle(
-          color: JrColors.textPrimary,
+          color:
+          JrColors.textPrimary,
           fontSize: 15,
-          fontWeight: FontWeight.w500,
+          fontWeight:
+          FontWeight.w500,
         ),
         decoration: InputDecoration(
           hintText:
           'Name, Username, JR CALL ID, Email or Phone',
           prefixIcon: const Icon(
             Icons.search_rounded,
-            color: JrColors.primaryBlue,
+            color:
+            JrColors.primaryBlue,
           ),
-          suffixIcon: _search.text.isEmpty
+          suffixIcon:
+          _search.text.isEmpty
               ? null
               : IconButton(
-            tooltip: 'Clear search',
-            onPressed: _clearSearch,
-            icon: const Icon(
-              Icons.close_rounded,
+            tooltip:
+            'Clear search',
+            onPressed:
+            _clearSearch,
+            icon:
+            const Icon(
+              Icons
+                  .close_rounded,
             ),
           ),
           filled: true,
-          fillColor: const Color(0xFFF8FAFF),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(19),
-            borderSide: BorderSide.none,
+          fillColor:
+          const Color(
+            0xFFF8FAFF,
           ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(19),
-            borderSide: const BorderSide(
-              color: JrColors.border,
+          border:
+          OutlineInputBorder(
+            borderRadius:
+            BorderRadius.circular(
+              19,
+            ),
+            borderSide:
+            BorderSide.none,
+          ),
+          enabledBorder:
+          OutlineInputBorder(
+            borderRadius:
+            BorderRadius.circular(
+              19,
+            ),
+            borderSide:
+            const BorderSide(
+              color:
+              JrColors.border,
             ),
           ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(19),
-            borderSide: const BorderSide(
-              color: JrColors.primaryBlue,
+          focusedBorder:
+          OutlineInputBorder(
+            borderRadius:
+            BorderRadius.circular(
+              19,
+            ),
+            borderSide:
+            const BorderSide(
+              color:
+              JrColors.primaryBlue,
               width: 1.35,
             ),
           ),
         ),
-        onSubmitted: (String value) {
+        onSubmitted: (
+            String value,
+            ) {
           _timer?.cancel();
+          _timer = null;
 
-          final String query = value.trim();
+          final String query =
+          value.trim();
 
           if (query.isNotEmpty) {
             unawaited(
-              _searchRemote(query),
+              _searchRemote(
+                query,
+              ),
             );
           }
         },
@@ -993,25 +1386,37 @@ class _ContactsScreenState extends State<ContactsScreen> {
       );
     }
 
-    return _contactList(_localResults);
+    return _contactList(
+      _localResults,
+    );
   }
 
-  Widget _contactList(List<ContactModel> contacts) {
+  Widget _contactList(
+      List<ContactModel> contacts,
+      ) {
     return ListView.separated(
       controller: _scroll,
       keyboardDismissBehavior:
-      ScrollViewKeyboardDismissBehavior.onDrag,
-      padding: const EdgeInsets.fromLTRB(
+      ScrollViewKeyboardDismissBehavior
+          .onDrag,
+      padding:
+      const EdgeInsets.fromLTRB(
         14,
         14,
         14,
         28,
       ),
-      itemCount: contacts.length,
+      itemCount:
+      contacts.length,
       separatorBuilder: (_, _) {
-        return const SizedBox(height: 10);
+        return const SizedBox(
+          height: 10,
+        );
       },
-      itemBuilder: (_, int index) {
+      itemBuilder: (
+          _,
+          int index,
+          ) {
         return _localCard(
           contacts[index],
         );
@@ -1024,13 +1429,16 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // =============================================================
 
   Widget _discoveryBody() {
-    if (_searching && _remoteResults.isEmpty) {
+    if (_searching &&
+        _remoteResults.isEmpty) {
       return const Center(
-        child: CircularProgressIndicator(),
+        child:
+        CircularProgressIndicator(),
       );
     }
 
-    if (_error != null && _remoteResults.isEmpty) {
+    if (_error != null &&
+        _remoteResults.isEmpty) {
       return _errorState();
     }
 
@@ -1056,26 +1464,38 @@ class _ContactsScreenState extends State<ContactsScreen> {
       },
       child: ListView.separated(
         controller: _scroll,
-        physics: const AlwaysScrollableScrollPhysics(),
+        physics:
+        const AlwaysScrollableScrollPhysics(),
         keyboardDismissBehavior:
-        ScrollViewKeyboardDismissBehavior.onDrag,
-        padding: const EdgeInsets.fromLTRB(
+        ScrollViewKeyboardDismissBehavior
+            .onDrag,
+        padding:
+        const EdgeInsets.fromLTRB(
           14,
           14,
           14,
           28,
         ),
         itemCount:
-        _remoteResults.length + (_loadingMore ? 1 : 0),
+        _remoteResults.length +
+            (_loadingMore ? 1 : 0),
         separatorBuilder: (_, _) {
-          return const SizedBox(height: 10);
+          return const SizedBox(
+            height: 10,
+          );
         },
-        itemBuilder: (_, int index) {
-          if (index >= _remoteResults.length) {
+        itemBuilder: (
+            _,
+            int index,
+            ) {
+          if (index >=
+              _remoteResults.length) {
             return const Padding(
-              padding: EdgeInsets.all(20),
+              padding:
+              EdgeInsets.all(20),
               child: Center(
-                child: CircularProgressIndicator(),
+                child:
+                CircularProgressIndicator(),
               ),
             );
           }
@@ -1092,46 +1512,79 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // DISCOVERY CARD
   // =============================================================
 
-  Widget _discoveryCard(DiscoveryUser user) {
-    final String name = _safeName(
+  Widget _discoveryCard(
+      DiscoveryUser user,
+      ) {
+    final String name =
+    _safeName(
       user.displayName,
+    );
+
+    final String uid =
+    user.uid.trim();
+
+    final bool voiceStarting =
+    _isStartingCallFor(
+      uid,
+      video: false,
+    );
+
+    final bool videoStarting =
+    _isStartingCallFor(
+      uid,
+      video: true,
     );
 
     return _PremiumContactCard(
       onTap: () {
         unawaited(
-          _openDiscoveryProfile(user),
+          _openDiscoveryProfile(
+            user,
+          ),
         );
       },
       avatar: CallerAvatar(
         name: name,
-        imageUrl: _nonEmpty(
+        imageUrl:
+        _nonEmpty(
           user.profilePhotoUrl,
         ),
         radius: 25,
-        isOnline: user.online,
+        isOnline:
+        user.online,
       ),
       title: name,
-      subtitle: _discoverySubtitle(user),
-      verified: user.verified,
+      subtitle:
+      _discoverySubtitle(
+        user,
+      ),
+      verified:
+      user.verified,
       actions: <Widget>[
         _VoiceButton(
-          enabled: !_startingCall,
+          enabled:
+          !voiceStarting,
           onPressed: () {
             unawaited(
-              _startDiscoveryVoice(user),
+              _startDiscoveryVoice(
+                user,
+              ),
             );
           },
         ),
         const SizedBox(width: 7),
         VideoButton(
           size: 42,
-          tooltip: 'Video call',
-          onPressed: _startingCall
+          tooltip:
+          'Video call',
+          onPressed:
+          videoStarting
               ? null
               : () {
             unawaited(
-              _startDiscoveryVideo(user),
+              _startDiscoveryVideo(
+                user,
+              ),
             );
           },
         ),
@@ -1139,27 +1592,35 @@ class _ContactsScreenState extends State<ContactsScreen> {
           tooltip: 'More',
           icon: const Icon(
             Icons.more_vert_rounded,
-            color: JrColors.textSecondary,
+            color:
+            JrColors.textSecondary,
           ),
-          onSelected: (String value) {
+          onSelected: (
+              String value,
+              ) {
             switch (value) {
               case 'profile':
                 unawaited(
-                  _openDiscoveryProfile(user),
+                  _openDiscoveryProfile(
+                    user,
+                  ),
                 );
                 break;
 
               case 'message':
                 unawaited(
                   _message(
-                    _toContact(user),
+                    _toContact(
+                      user,
+                    ),
                   ),
                 );
                 break;
             }
           },
           itemBuilder: (_) {
-            return const <PopupMenuEntry<String>>[
+            return const <
+                PopupMenuEntry<String>>[
               PopupMenuItem<String>(
                 value: 'profile',
                 child: Text(
@@ -1183,46 +1644,81 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // LOCAL CARD
   // =============================================================
 
-  Widget _localCard(ContactModel contact) {
-    final String name = _safeName(
+  Widget _localCard(
+      ContactModel contact,
+      ) {
+    final String name =
+    _safeName(
       contact.displayName,
+    );
+
+    final String? uid =
+    _resolvedTargetUid(
+      contact,
+    );
+
+    final bool voiceStarting =
+    _isStartingCallFor(
+      uid,
+      video: false,
+    );
+
+    final bool videoStarting =
+    _isStartingCallFor(
+      uid,
+      video: true,
     );
 
     return _PremiumContactCard(
       onTap: () {
         unawaited(
-          _openProfile(contact),
+          _openProfile(
+            contact,
+          ),
         );
       },
       avatar: CallerAvatar(
         name: name,
-        imageUrl: _nonEmpty(
+        imageUrl:
+        _nonEmpty(
           contact.photoUrl,
         ),
         radius: 25,
-        isOnline: contact.isOnline,
+        isOnline:
+        contact.isOnline,
       ),
       title: name,
-      subtitle: _localSubtitle(contact),
-      verified: contact.isVerified,
+      subtitle:
+      _localSubtitle(
+        contact,
+      ),
+      verified:
+      contact.isVerified,
       actions: <Widget>[
         _VoiceButton(
-          enabled: !_startingCall,
+          enabled:
+          !voiceStarting,
           onPressed: () {
             unawaited(
-              _startVoice(contact),
+              _startVoice(
+                contact,
+              ),
             );
           },
         ),
         const SizedBox(width: 7),
         VideoButton(
           size: 42,
-          tooltip: 'Video call',
-          onPressed: _startingCall
+          tooltip:
+          'Video call',
+          onPressed:
+          videoStarting
               ? null
               : () {
             unawaited(
-              _startVideo(contact),
+              _startVideo(
+                contact,
+              ),
             );
           },
         ),
@@ -1237,7 +1733,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
   String _discoverySubtitle(
       DiscoveryUser user,
       ) {
-    final List<String> values = <String>[];
+    final List<String> values =
+    <String>[];
 
     _addIfNotEmpty(
       values,
@@ -1249,20 +1746,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
       user.jrCallUserId,
     );
 
-    if (values.isEmpty) {
-      _addIfNotEmpty(
-        values,
-        user.email,
-      );
-    }
-
-    if (values.isEmpty) {
-      _addIfNotEmpty(
-        values,
-        user.phoneNumber,
-      );
-    }
-
     return values.isEmpty
         ? 'JR CALL user'
         : values.join('  •  ');
@@ -1271,7 +1754,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
   String _localSubtitle(
       ContactModel contact,
       ) {
-    final List<String> values = <String>[];
+    final List<String> values =
+    <String>[];
 
     _addIfNotEmpty(
       values,
@@ -1310,10 +1794,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
       List<String> target,
       String? value,
       ) {
-    final String? normalized = _nonEmpty(value);
+    final String? normalized =
+    _nonEmpty(value);
 
     if (normalized != null) {
-      target.add(normalized);
+      target.add(
+        normalized,
+      );
     }
   }
 
@@ -1327,10 +1814,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
       String message,
       ) {
     return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(32),
+      child:
+      SingleChildScrollView(
+        padding:
+        const EdgeInsets.all(32),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisSize:
+          MainAxisSize.min,
           children: <Widget>[
             _stateIcon(
               icon,
@@ -1339,19 +1829,26 @@ class _ContactsScreenState extends State<ContactsScreen> {
             const SizedBox(height: 20),
             Text(
               title,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: JrColors.textPrimary,
+              textAlign:
+              TextAlign.center,
+              style:
+              const TextStyle(
+                color:
+                JrColors.textPrimary,
                 fontSize: 19,
-                fontWeight: FontWeight.w800,
+                fontWeight:
+                FontWeight.w800,
               ),
             ),
             const SizedBox(height: 7),
             Text(
               message,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: JrColors.textSecondary,
+              textAlign:
+              TextAlign.center,
+              style:
+              const TextStyle(
+                color:
+                JrColors.textSecondary,
                 fontSize: 13,
                 height: 1.45,
               ),
@@ -1364,10 +1861,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   Widget _errorState() {
     return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(32),
+      child:
+      SingleChildScrollView(
+        padding:
+        const EdgeInsets.all(32),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisSize:
+          MainAxisSize.min,
           children: <Widget>[
             _stateIcon(
               Icons.cloud_off_rounded,
@@ -1377,24 +1877,30 @@ class _ContactsScreenState extends State<ContactsScreen> {
             const Text(
               'Search unavailable',
               style: TextStyle(
-                color: JrColors.textPrimary,
+                color:
+                JrColors.textPrimary,
                 fontSize: 19,
-                fontWeight: FontWeight.w800,
+                fontWeight:
+                FontWeight.w800,
               ),
             ),
             const SizedBox(height: 7),
             Text(
               _error ??
                   'Unable to search JR CALL users.',
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: JrColors.textSecondary,
+              textAlign:
+              TextAlign.center,
+              style:
+              const TextStyle(
+                color:
+                JrColors.textSecondary,
                 height: 1.45,
               ),
             ),
             const SizedBox(height: 20),
             FilledButton.icon(
-              onPressed: _retrySearch,
+              onPressed:
+              _retrySearch,
               icon: const Icon(
                 Icons.refresh_rounded,
               ),
@@ -1415,14 +1921,18 @@ class _ContactsScreenState extends State<ContactsScreen> {
     return Container(
       width: 86,
       height: 86,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
+      alignment:
+      Alignment.center,
+      decoration:
+      BoxDecoration(
         shape: BoxShape.circle,
-        color: color.withValues(
+        color:
+        color.withValues(
           alpha: 0.07,
         ),
         border: Border.all(
-          color: color.withValues(
+          color:
+          color.withValues(
             alpha: 0.11,
           ),
         ),
@@ -1436,18 +1946,89 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 
   // =============================================================
-  // HELPERS
+  // SEARCH NORMALIZATION
   // =============================================================
 
-  String _safeName(String value) {
-    final String normalized = value.trim();
+  String _normalizeSearchText(
+      String value,
+      ) {
+    return value
+        .trim()
+        .toLowerCase()
+        .replaceAll(
+      RegExp(r'\s+'),
+      ' ',
+    );
+  }
+
+  String _normalizePublicIdentityQuery(
+      String value,
+      ) {
+    String normalized =
+    value.trim().toLowerCase();
+
+    if (normalized.startsWith('@')) {
+      normalized =
+          normalized.substring(1);
+    }
+
+    return normalized.trim();
+  }
+
+  String _normalizeEmailQuery(
+      String value,
+      ) {
+    return value
+        .trim()
+        .toLowerCase();
+  }
+
+  String? _normalizePhoneQuery(
+      String value,
+      ) {
+    final String trimmed =
+    value.trim();
+
+    if (trimmed.isEmpty) {
+      return null;
+    }
+
+    final bool hasPlus =
+    trimmed.startsWith('+');
+
+    final String digits =
+    trimmed.replaceAll(
+      RegExp(r'[^0-9]'),
+      '',
+    );
+
+    if (digits.isEmpty) {
+      return null;
+    }
+
+    return hasPlus
+        ? '+$digits'
+        : digits;
+  }
+
+  // =============================================================
+  // GENERAL HELPERS
+  // =============================================================
+
+  String _safeName(
+      String value,
+      ) {
+    final String normalized =
+    value.trim();
 
     return normalized.isEmpty
         ? 'JR CALL User'
         : normalized;
   }
 
-  String? _nonEmpty(String? value) {
+  String? _nonEmpty(
+      String? value,
+      ) {
     final String normalized =
         value?.trim() ?? '';
 
@@ -1463,17 +2044,21 @@ class _ContactsScreenState extends State<ContactsScreen> {
         value?.trim() ?? '';
 
     if (normalized.startsWith('@')) {
-      normalized = normalized.substring(1);
+      normalized =
+          normalized.substring(1);
     }
 
-    normalized = normalized.trim();
+    normalized =
+        normalized.trim();
 
     return normalized.isEmpty
         ? null
         : normalized;
   }
 
-  String _friendlySearchError(Object error) {
+  String _friendlySearchError(
+      Object error,
+      ) {
     if (error is FirebaseException) {
       switch (error.code) {
         case 'permission-denied':
@@ -1488,14 +2073,20 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
         case 'deadline-exceeded':
           return 'Search took too long. Try again.';
+
+        case 'resource-exhausted':
+          return 'Search is temporarily busy. Please try again.';
       }
     }
 
     return 'Unable to search JR CALL users right now.';
   }
 
-  void _showMessage(String message) {
-    if (!mounted || message.trim().isEmpty) {
+  void _showMessage(
+      String message,
+      ) {
+    if (!mounted ||
+        message.trim().isEmpty) {
       return;
     }
 
@@ -1503,8 +2094,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: Text(message),
-          behavior: SnackBarBehavior.floating,
+          content:
+          Text(message),
+          behavior:
+          SnackBarBehavior.floating,
         ),
       );
   }
@@ -1514,7 +2107,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
 // CONTACT CARD
 // ===============================================================
 
-class _PremiumContactCard extends StatelessWidget {
+class _PremiumContactCard
+    extends StatelessWidget {
   const _PremiumContactCard({
     required this.onTap,
     required this.avatar,
@@ -1525,41 +2119,59 @@ class _PremiumContactCard extends StatelessWidget {
   });
 
   final VoidCallback onTap;
+
   final Widget avatar;
+
   final String title;
+
   final String subtitle;
+
   final bool verified;
+
   final List<Widget> actions;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+      BuildContext context,
+      ) {
     return Material(
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(21),
+        borderRadius:
+        BorderRadius.circular(21),
         child: Ink(
-          padding: const EdgeInsets.fromLTRB(
+          padding:
+          const EdgeInsets.fromLTRB(
             14,
             13,
             9,
             13,
           ),
-          decoration: BoxDecoration(
-            color: JrColors.surface.withValues(
+          decoration:
+          BoxDecoration(
+            color:
+            JrColors.surface.withValues(
               alpha: 0.96,
             ),
-            borderRadius: BorderRadius.circular(21),
+            borderRadius:
+            BorderRadius.circular(21),
             border: Border.all(
-              color: JrColors.border,
+              color:
+              JrColors.border,
             ),
             boxShadow: <BoxShadow>[
               BoxShadow(
-                color: Colors.black.withValues(
+                color:
+                Colors.black.withValues(
                   alpha: 0.035,
                 ),
                 blurRadius: 20,
-                offset: const Offset(0, 7),
+                offset:
+                const Offset(
+                  0,
+                  7,
+                ),
               ),
             ],
           ),
@@ -1570,7 +2182,8 @@ class _PremiumContactCard extends StatelessWidget {
               Expanded(
                 child: Column(
                   crossAxisAlignment:
-                  CrossAxisAlignment.start,
+                  CrossAxisAlignment
+                      .start,
                   children: <Widget>[
                     Row(
                       children: <Widget>[
@@ -1579,37 +2192,53 @@ class _PremiumContactCard extends StatelessWidget {
                             title,
                             maxLines: 1,
                             overflow:
-                            TextOverflow.ellipsis,
-                            style: const TextStyle(
+                            TextOverflow
+                                .ellipsis,
+                            style:
+                            const TextStyle(
                               color:
-                              JrColors.textPrimary,
-                              fontSize: 15.5,
+                              JrColors
+                                  .textPrimary,
+                              fontSize:
+                              15.5,
                               fontWeight:
-                              FontWeight.w700,
+                              FontWeight
+                                  .w700,
                             ),
                           ),
                         ),
-                        if (verified) ...<Widget>[
-                          const SizedBox(width: 5),
-                          const Icon(
-                            Icons.verified_rounded,
-                            size: 16,
-                            color:
-                            JrColors.primaryBlue,
-                          ),
-                        ],
+                        if (verified)
+                          ...<Widget>[
+                            const SizedBox(
+                              width: 5,
+                            ),
+                            const Icon(
+                              Icons
+                                  .verified_rounded,
+                              size: 16,
+                              color:
+                              JrColors
+                                  .primaryBlue,
+                            ),
+                          ],
                       ],
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(
+                      height: 4,
+                    ),
                     Text(
                       subtitle,
                       maxLines: 1,
                       overflow:
-                      TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      TextOverflow
+                          .ellipsis,
+                      style:
+                      const TextStyle(
                         color:
-                        JrColors.textSecondary,
-                        fontSize: 12.5,
+                        JrColors
+                            .textSecondary,
+                        fontSize:
+                        12.5,
                       ),
                     ),
                   ],
@@ -1617,8 +2246,10 @@ class _PremiumContactCard extends StatelessWidget {
               ),
               const SizedBox(width: 6),
               Row(
-                mainAxisSize: MainAxisSize.min,
-                children: actions,
+                mainAxisSize:
+                MainAxisSize.min,
+                children:
+                actions,
               ),
             ],
           ),
@@ -1632,17 +2263,21 @@ class _PremiumContactCard extends StatelessWidget {
 // VOICE BUTTON
 // ===============================================================
 
-class _VoiceButton extends StatelessWidget {
+class _VoiceButton
+    extends StatelessWidget {
   const _VoiceButton({
     required this.onPressed,
     this.enabled = true,
   });
 
   final VoidCallback onPressed;
+
   final bool enabled;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+      BuildContext context,
+      ) {
     return Tooltip(
       message: 'Voice call',
       child: Semantics(
@@ -1651,34 +2286,53 @@ class _VoiceButton extends StatelessWidget {
         label: 'Voice call',
         child: Material(
           color: Colors.transparent,
-          shape: const CircleBorder(),
+          shape:
+          const CircleBorder(),
           child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: enabled ? onPressed : null,
-            child: AnimatedOpacity(
-              opacity: enabled ? 1 : 0.45,
-              duration: const Duration(
+            customBorder:
+            const CircleBorder(),
+            onTap:
+            enabled
+                ? onPressed
+                : null,
+            child:
+            AnimatedOpacity(
+              opacity:
+              enabled
+                  ? 1
+                  : 0.45,
+              duration:
+              const Duration(
                 milliseconds: 150,
               ),
               child: Container(
                 width: 42,
                 height: 42,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: JrColors.callGreen.withValues(
+                alignment:
+                Alignment.center,
+                decoration:
+                BoxDecoration(
+                  shape:
+                  BoxShape.circle,
+                  color:
+                  JrColors.callGreen
+                      .withValues(
                     alpha: 0.09,
                   ),
-                  border: Border.all(
+                  border:
+                  Border.all(
                     color:
-                    JrColors.callGreen.withValues(
-                      alpha: 0.18,
+                    JrColors.callGreen
+                        .withValues(
+                      alpha:
+                      0.18,
                     ),
                   ),
                 ),
                 child: const Icon(
                   Icons.call_rounded,
-                  color: JrColors.callGreen,
+                  color:
+                  JrColors.callGreen,
                   size: 21,
                 ),
               ),
@@ -1694,16 +2348,20 @@ class _VoiceButton extends StatelessWidget {
 // BRAND LOGO
 // ===============================================================
 
-class _BrandLogo extends StatelessWidget {
+class _BrandLogo
+    extends StatelessWidget {
   const _BrandLogo();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+      BuildContext context,
+      ) {
     return SizedBox(
       width: 38,
       height: 38,
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(9),
+        borderRadius:
+        BorderRadius.circular(9),
         child: Image.asset(
           'assets/images/logo.png',
           fit: BoxFit.contain,
@@ -1715,7 +2373,8 @@ class _BrandLogo extends StatelessWidget {
             return const Center(
               child: Icon(
                 Icons.call_rounded,
-                color: JrColors.primaryBlue,
+                color:
+                JrColors.primaryBlue,
                 size: 24,
               ),
             );
@@ -1729,26 +2388,28 @@ class _BrandLogo extends StatelessWidget {
 // ===============================================================
 // END OF FILE
 //
-// FIXED:
-// BUG 03 — Discovery result uses resolved Firebase UID
-// BUG 05 — Public search removed from autofill/password-manager
-// BUG 07 — Voice call starts through CallService
-// BUG 08 — Video call starts through CallService
+// OUTGOING CALL INTEGRATION:
 //
-// PRESERVED:
-// - Existing ContactsScreen API
-// - Existing UI/colors/layout
-// - UserDiscoveryService automatic search
-// - Name / Username / JR CALL ID / Email / Phone search
-// - Firebase UID handoff
-// - Public profile navigation
-// - CallService ownership
-// - OutgoingCallScreen flow
+// ✓ Public identity resolves to Firebase UID.
+// ✓ Self-call blocked.
+// ✓ Duplicate start blocked.
+// ✓ CallService creates one canonical call.
+// ✓ No second CallService.startCall() in CallSessionScreen.
 //
-// STATUS: SAVE THIS FILE
+// ✓ Existing CALLING screen preserved.
+// ✓ Real CallService status drives transition.
+// ✓ Real WebRTC CONNECTED opens active Voice/Video screen.
+// ✓ Real CallService duration preserved.
+// ✓ Real CallScreenProvider media available to Video screen.
+// ✓ Real NetworkProvider quality available.
+// ✓ Real VideoProvider controls available.
 //
-// REMAINING MAIN FILE: 1
+// SEARCH/UI:
 //
-// NEXT FILE: call_service.dart
-// Location: lib/services/call/call_service.dart
+// ✓ Existing search architecture preserved.
+// ✓ Existing contact cards preserved.
+// ✓ Existing colors preserved.
+// ✓ Existing layout preserved.
+// ✓ Existing ProfileScreen callbacks preserved.
+// ✓ No Firebase UID exposed as public search keyword.
 // ===============================================================

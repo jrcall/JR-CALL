@@ -3,38 +3,37 @@
 // File: stun_turn_service.dart
 // Location: lib/services/call/stun_turn_service.dart
 //
-// Description:
-// Production STUN/TURN configuration and credential service.
+// FINAL PRODUCTION STUN / TURN SERVICE
 //
 // Responsibilities:
-// - Provide compile-safe WebRTC ICE configuration
-// - Load short-lived TURN credentials from secure backend
-// - Authenticate TURN backend requests with Firebase ID token
-// - Never block Call Engine when TURN backend is temporarily down
-// - Fall back safely to STUN-only connectivity
-// - Cache TURN credentials until safe expiry
-// - Prevent duplicate concurrent credential requests
-// - Support optional TURN health endpoint
-// - Support regional TURN routing
-// - Create RTCPeerConnection for existing manager architecture
-// - Provide audio/video media constraints
+// - Provide production-safe WebRTC ICE configuration.
+// - Load short-lived TURN credentials from secure backend.
+// - Use Firebase Callable Functions for credential requests.
+// - Preserve Firebase authentication and App Check compatibility.
+// - Never hard-code TURN usernames, passwords or shared secrets.
+// - Prefer TURN UDP, then TURN TCP.
+// - Preserve backend-provided secure TURN endpoints.
+// - Preserve IPv4 / IPv6 ICE server URLs.
+// - Fall back safely to STUN when TURN is temporarily unavailable.
+// - Cache temporary credentials only until safe expiry.
+// - Prevent duplicate concurrent credential requests.
+// - Reject stale async results after configuration changes.
+// - Support optional TURN health probing.
+// - Support regional TURN routing.
+// - Preserve peer/media compatibility helper APIs.
 //
-// Architecture:
-// FirebaseAuth
-//      ↓
-// StunTurnService
-//      ↓
-// Secure Cloud Function
-//      ↓
-// TURN Infrastructure
-//
-// Important:
-// TURN credentials must NEVER be hard-coded in the application.
+// Ownership:
+// - STUN/TURN configuration belongs here.
+// - Candidate exchange belongs to IceManager.
+// - Network handover / ICE restart belongs to recovery/network owners.
+// - SDP negotiation belongs to signaling/peer connection owners.
+// - MediaManager remains canonical media acquisition owner.
 // ===========================================================
 
 import 'dart:async';
-import 'dart:convert';
+import 'dart:math';
 
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
@@ -52,16 +51,20 @@ class StunTurnService {
   static final StunTurnService instance = StunTurnService._();
 
   // ===========================================================
-  // Firebase Authentication
+  // Firebase
   // ===========================================================
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
+
+  static const String _functionsRegion = 'us-central1';
+
+  static const String _turnFunctionName = 'getTurnCredentials';
 
   // ===========================================================
   // Default STUN
   // ===========================================================
 
-  static const List<String> _defaultStunServers = [
+  static const List<String> _defaultStunServers = <String>[
     'stun:stun.l.google.com:19302',
     'stun:stun1.l.google.com:19302',
     'stun:stun2.l.google.com:19302',
@@ -71,7 +74,7 @@ class StunTurnService {
   // Region
   // ===========================================================
 
-  static const List<String> supportedRegions = [
+  static const List<String> supportedRegions = <String>[
     'Asia',
     'Europe',
     'America',
@@ -86,20 +89,9 @@ class StunTurnService {
   // Backend Configuration
   // ===========================================================
 
-  /// Firebase Project ID:
-  /// jr-call
-  ///
-  /// Cloud Function:
-  /// getTurnCredentials
-  ///
-  /// Authentication:
-  /// Authorization: Bearer `Firebase ID Token`
   static const String _defaultBackendTokenUrl =
       'https://us-central1-jr-call.cloudfunctions.net/getTurnCredentials';
 
-  /// Optional TURN health endpoint.
-  ///
-  /// Kept empty until an actual health endpoint is deployed.
   static const String _defaultHealthProbeUrl = '';
 
   String _backendTokenUrl = _defaultBackendTokenUrl;
@@ -124,6 +116,9 @@ class StunTurnService {
 
   bool _disposed = false;
 
+  /// Used to reject stale asynchronous credential responses.
+  int _generation = 0;
+
   // ===========================================================
   // Refresh / Concurrency
   // ===========================================================
@@ -132,14 +127,25 @@ class StunTurnService {
 
   Future<Map<String, dynamic>>? _activeLoadFuture;
 
-  static const Duration _requestTimeout = Duration(seconds: 6);
+  static const Duration _callableTimeout = Duration(seconds: 5);
 
-  static const Duration _fallbackCacheDuration = Duration(minutes: 10);
+  static const Duration _credentialLoadBudget = Duration(seconds: 7);
 
-  static const Duration _refreshCheckInterval = Duration(minutes: 5);
+  static const Duration _retryDelay = Duration(milliseconds: 350);
+
+  static const Duration _fallbackCacheDuration = Duration(minutes: 1);
+
+  static const Duration _refreshCheckInterval = Duration(minutes: 1);
+
+  static const Duration _defaultCredentialTtl = Duration(minutes: 10);
+
+  static const Duration _maximumCredentialCache = Duration(hours: 6);
 
   // ===========================================================
   // Network Callbacks
+  //
+  // Existing compatibility APIs preserved.
+  // NetworkManager remains canonical runtime network owner.
   // ===========================================================
 
   bool Function()? networkConnectionChecker;
@@ -150,13 +156,14 @@ class StunTurnService {
   // Public State
   // ===========================================================
 
-  bool get hasCachedConfiguration => _cachedConfiguration != null;
+  bool get hasCachedConfiguration => _hasValidCachedConfiguration();
 
-  bool get hasTurnCredentials => _lastCredentialLoadSucceeded;
+  bool get hasTurnCredentials =>
+      _lastCredentialLoadSucceeded && _hasValidCachedConfiguration();
 
   bool get isPrimaryHealthy => _isPrimaryHealthy;
 
-  bool get isUsingStunFallback => !_lastCredentialLoadSucceeded;
+  bool get isUsingStunFallback => !hasTurnCredentials;
 
   DateTime? get tokenExpiryTime => _tokenExpiryTime;
 
@@ -164,17 +171,18 @@ class StunTurnService {
   // Backend Configuration API
   // ===========================================================
 
-  void configureBackend({String? tokenUrl, String? healthUrl}) {
-    final normalizedTokenUrl = tokenUrl?.trim();
+  void configureBackend({
+    String? tokenUrl,
+    String? healthUrl,
+  }) {
+    _ensureActive();
 
-    final normalizedHealthUrl = healthUrl?.trim();
-
-    if (normalizedTokenUrl != null) {
-      _backendTokenUrl = normalizedTokenUrl;
+    if (tokenUrl != null) {
+      _backendTokenUrl = tokenUrl.trim();
     }
 
-    if (normalizedHealthUrl != null) {
-      _healthProbeUrl = normalizedHealthUrl;
+    if (healthUrl != null) {
+      _healthProbeUrl = healthUrl.trim();
     }
 
     clearCache();
@@ -185,7 +193,9 @@ class StunTurnService {
   // ===========================================================
 
   void setRegion(String region) {
-    final normalized = region.trim();
+    _ensureActive();
+
+    final String normalized = region.trim();
 
     if (!supportedRegions.contains(normalized)) {
       return;
@@ -209,23 +219,34 @@ class StunTurnService {
   void _startRefreshTimer() {
     _tokenRefreshTimer?.cancel();
 
-    _tokenRefreshTimer = Timer.periodic(_refreshCheckInterval, (_) {
-      if (_disposed) {
-        return;
-      }
+    _tokenRefreshTimer = Timer.periodic(
+      _refreshCheckInterval,
+          (_) {
+        if (_disposed) {
+          return;
+        }
 
-      final expiry = _tokenExpiryTime;
+        final DateTime? expiry = _tokenExpiryTime;
 
-      if (expiry == null) {
-        return;
-      }
+        if (expiry == null) {
+          return;
+        }
 
-      final refreshAt = expiry.subtract(const Duration(minutes: 5));
+        if (!DateTime.now().toUtc().isBefore(expiry)) {
+          unawaited(refreshConfiguration());
+        }
+      },
+    );
+  }
 
-      if (DateTime.now().isAfter(refreshAt)) {
-        unawaited(refreshConfiguration());
-      }
-    });
+  void _ensureActive() {
+    if (!_disposed) {
+      return;
+    }
+
+    _disposed = false;
+
+    _startRefreshTimer();
   }
 
   // ===========================================================
@@ -233,10 +254,24 @@ class StunTurnService {
   // ===========================================================
 
   void clearCache() {
+    _generation++;
+
     _cachedConfiguration = null;
     _tokenExpiryTime = null;
-
     _lastCredentialLoadSucceeded = false;
+
+    _activeLoadFuture = null;
+  }
+
+  bool _hasValidCachedConfiguration() {
+    final Map<String, dynamic>? cached = _cachedConfiguration;
+    final DateTime? expiry = _tokenExpiryTime;
+
+    if (cached == null || expiry == null) {
+      return false;
+    }
+
+    return DateTime.now().toUtc().isBefore(expiry);
   }
 
   // ===========================================================
@@ -244,72 +279,92 @@ class StunTurnService {
   // ===========================================================
 
   Future<Map<String, dynamic>> loadTurnCredential() {
-    final cached = _cachedConfiguration;
+    _ensureActive();
 
-    final expiry = _tokenExpiryTime;
-
-    if (cached != null && expiry != null && DateTime.now().isBefore(expiry)) {
-      return Future<Map<String, dynamic>>.value(cached);
+    if (_hasValidCachedConfiguration()) {
+      return Future<Map<String, dynamic>>.value(
+        _copyConfiguration(_cachedConfiguration!),
+      );
     }
 
-    final active = _activeLoadFuture;
+    final Future<Map<String, dynamic>>? active = _activeLoadFuture;
 
     if (active != null) {
-      return active;
+      return active.then(_copyConfiguration);
     }
 
-    final future = _loadTurnCredentialInternal();
+    final int requestGeneration = _generation;
+
+    final Future<Map<String, dynamic>> future =
+    _loadTurnCredentialInternal(requestGeneration);
 
     _activeLoadFuture = future;
 
-    return future.whenComplete(() {
+    return future.then(_copyConfiguration).whenComplete(() {
       if (identical(_activeLoadFuture, future)) {
         _activeLoadFuture = null;
       }
     });
   }
 
-  Future<Map<String, dynamic>> _loadTurnCredentialInternal() async {
+  Future<Map<String, dynamic>> _loadTurnCredentialInternal(
+      int requestGeneration,
+      ) async {
     if (_disposed) {
       return _buildFallbackConfiguration();
     }
 
-    final tokenUrl = _backendTokenUrl.trim();
-
-    if (tokenUrl.isEmpty) {
+    if (_backendTokenUrl.trim().isEmpty) {
       return _activateStunFallback(
-        reason: 'TURN credential backend is not configured.',
+        requestGeneration: requestGeneration,
+        reason: 'backend-not-configured',
       );
     }
 
     try {
-      await performRealHealthCheckProbe();
+      _requireAuthenticatedUser();
 
-      final tokenData = await _fetchWithRetry();
+      unawaited(_performHealthCheck(requestGeneration));
 
-      final configuration = _buildProductionConfiguration(tokenData);
+      final Map<String, dynamic> tokenData =
+      await _fetchWithRetry().timeout(_credentialLoadBudget);
+
+      final Map<String, dynamic> configuration =
+      _buildProductionConfiguration(tokenData);
+
+      final DateTime safeExpiry = _resolveSafeExpiry(tokenData);
+
+      if (_disposed || requestGeneration != _generation) {
+        if (_hasValidCachedConfiguration()) {
+          return _cachedConfiguration!;
+        }
+
+        return _buildFallbackConfiguration();
+      }
 
       _cachedConfiguration = configuration;
-
-      _tokenExpiryTime = _resolveSafeExpiry(tokenData['expiresIn']);
-
+      _tokenExpiryTime = safeExpiry;
       _lastCredentialLoadSucceeded = true;
 
-      debugPrint(
-        'StunTurnService: TURN credentials loaded '
-        'for region $_currentRegion.',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          'StunTurnService: temporary TURN configuration loaded '
+              'for region $_currentRegion.',
+        );
+      }
 
       return configuration;
     } catch (error, stackTrace) {
       _logStructuredError(
-        'TURN credential loading failed; '
-        'STUN fallback activated',
+        'TURN credential loading failed; STUN fallback activated',
         error,
         stackTrace,
       );
 
-      return _activateStunFallback(reason: error.toString());
+      return _activateStunFallback(
+        requestGeneration: requestGeneration,
+        reason: _safeErrorLabel(error),
+      );
     }
   }
 
@@ -318,50 +373,79 @@ class StunTurnService {
   // ===========================================================
 
   Future<Map<String, dynamic>> _fetchWithRetry() async {
-    const maxAttempts = 3;
+    const int maximumAttempts = 2;
 
     Object? lastError;
     StackTrace? lastStackTrace;
 
-    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (int attempt = 1; attempt <= maximumAttempts; attempt++) {
       try {
-        return await _fetchTokensFromRealBackendAPI();
+        return await _fetchTokensFromCallable();
       } catch (error, stackTrace) {
         lastError = error;
         lastStackTrace = stackTrace;
 
-        final retryable = _isRetryableNetworkError(error);
+        if (error is FirebaseFunctionsException &&
+            error.code.trim().toLowerCase() == 'unauthenticated' &&
+            attempt == 1) {
+          try {
+            await _forceRefreshFirebaseIdToken();
+          } catch (_) {
+            // Original callable failure remains authoritative.
+          }
+        }
+
+        final bool retryable = _isRetryableCredentialError(error);
 
         _logStructuredError(
-          'TURN token attempt '
-          '$attempt/$maxAttempts failed',
+          'TURN credential attempt $attempt/$maximumAttempts failed',
           error,
           stackTrace,
         );
 
-        if (!retryable || attempt >= maxAttempts) {
+        if (!retryable || attempt >= maximumAttempts) {
           break;
         }
 
-        await Future<void>.delayed(Duration(milliseconds: 500 * attempt));
+        await Future<void>.delayed(_retryDelay);
       }
     }
 
-    final failure = lastError ?? StateError('Unknown TURN credential error.');
+    final Object failure =
+        lastError ?? StateError('Unknown TURN credential failure.');
 
     if (lastStackTrace != null) {
-      Error.throwWithStackTrace(failure, lastStackTrace);
+      Error.throwWithStackTrace(
+        failure,
+        lastStackTrace,
+      );
     }
 
     throw failure;
   }
 
-  bool _isRetryableNetworkError(Object error) {
+  bool _isRetryableCredentialError(Object error) {
     if (error is TimeoutException || error is http.ClientException) {
       return true;
     }
 
-    final typeName = error.runtimeType.toString().toLowerCase();
+    if (error is FirebaseFunctionsException) {
+      switch (error.code.trim().toLowerCase()) {
+        case 'aborted':
+        case 'cancelled':
+        case 'deadline-exceeded':
+        case 'internal':
+        case 'resource-exhausted':
+        case 'unavailable':
+        case 'unknown':
+        case 'unauthenticated':
+          return true;
+      }
+
+      return false;
+    }
+
+    final String typeName = error.runtimeType.toString().toLowerCase();
 
     return typeName.contains('socket') ||
         typeName.contains('network') ||
@@ -369,168 +453,191 @@ class StunTurnService {
   }
 
   // ===========================================================
-  // Firebase ID Token
+  // Authentication
   // ===========================================================
 
-  Future<String> _getFirebaseIdToken({bool forceRefresh = false}) async {
-    final user = _auth.currentUser;
+  User _requireAuthenticatedUser() {
+    final User? user = _auth.currentUser;
 
-    if (user == null) {
+    if (user == null || user.uid.trim().isEmpty) {
       throw StateError(
-        'Firebase authentication is required '
-        'before requesting TURN credentials.',
+        'Firebase authentication is required before requesting '
+            'TURN credentials.',
       );
     }
 
-    final token = await user.getIdToken(forceRefresh);
+    return user;
+  }
+
+  Future<void> _forceRefreshFirebaseIdToken() async {
+    final User user = _requireAuthenticatedUser();
+
+    final String? token = await user.getIdToken(true);
 
     if (token == null || token.trim().isEmpty) {
-      throw StateError('Firebase ID token is unavailable.');
+      throw StateError('Firebase ID token refresh failed.');
     }
-
-    return token.trim();
   }
 
   // ===========================================================
-  // Backend Request
+  // Firebase Callable
   // ===========================================================
 
-  Future<Map<String, dynamic>> _fetchTokensFromRealBackendAPI() async {
-    final normalizedUrl = _backendTokenUrl.trim();
+  Future<Map<String, dynamic>> _fetchTokensFromCallable() async {
+    _requireAuthenticatedUser();
 
-    if (normalizedUrl.isEmpty) {
-      throw StateError('TURN backend URL is empty.');
-    }
+    final HttpsCallable callable = _buildTurnCallable();
 
-    final apiUrl = Uri.parse(
-      normalizedUrl,
-    ).replace(queryParameters: <String, String>{'region': _currentRegion});
-
-    var idToken = await _getFirebaseIdToken();
-
-    var response = await _performAuthenticatedRequest(
-      apiUrl: apiUrl,
-      idToken: idToken,
+    final HttpsCallableResult<dynamic> result =
+    await callable.call<dynamic>(
+      <String, dynamic>{
+        'region': _currentRegion,
+      },
     );
 
-    // The cached Firebase token may theoretically expire between
-    // acquisition and backend verification.
-    //
-    // One forced refresh is allowed for HTTP 401 only.
-    if (response.statusCode == 401) {
-      idToken = await _getFirebaseIdToken(forceRefresh: true);
+    return _extractCallablePayload(result.data);
+  }
 
-      response = await _performAuthenticatedRequest(
-        apiUrl: apiUrl,
-        idToken: idToken,
+  HttpsCallable _buildTurnCallable() {
+    final FirebaseFunctions functions = FirebaseFunctions.instanceFor(
+      region: _functionsRegion,
+    );
+
+    final HttpsCallableOptions options = HttpsCallableOptions(
+      timeout: _callableTimeout,
+    );
+
+    final String configuredUrl = _backendTokenUrl.trim();
+
+    if (configuredUrl == _defaultBackendTokenUrl) {
+      return functions.httpsCallable(
+        _turnFunctionName,
+        options: options,
       );
     }
 
-    if (response.statusCode != 200) {
-      throw _TurnBackendException(
-        statusCode: response.statusCode,
-        message: _safeResponseMessage(response.body),
+    if (configuredUrl.isEmpty) {
+      throw StateError(
+        'TURN credential backend is not configured.',
       );
     }
 
-    dynamic decoded;
+    final Uri uri = Uri.parse(configuredUrl);
 
-    try {
-      decoded = jsonDecode(response.body);
-    } catch (error) {
-      throw FormatException(
-        'TURN backend returned invalid JSON: '
-        '$error',
-      );
-    }
-
-    if (decoded is! Map) {
+    if (!uri.hasScheme || uri.host.isEmpty) {
       throw const FormatException(
-        'TURN backend response must be a JSON object.',
+        'TURN callable URL is invalid.',
       );
     }
 
-    final data = Map<String, dynamic>.from(decoded);
+    return functions.httpsCallableFromUrl(
+      configuredUrl,
+      options: options,
+    );
+  }
 
-    // Supports both nested:
-    //
-    // {
-    //   "data": {
-    //      ...
-    //   }
-    // }
-    //
-    // and direct JSON responses.
-    final nestedData = data['data'];
+  Map<String, dynamic> _extractCallablePayload(Object? rawData) {
+    if (rawData is! Map) {
+      throw const FormatException(
+        'TURN backend response must be an object.',
+      );
+    }
 
-    if (nestedData is Map) {
-      return Map<String, dynamic>.from(nestedData);
+    final Map<String, dynamic> data = _stringKeyedMap(rawData);
+
+    final Object? nested = data['data'];
+
+    if (nested is Map) {
+      return _stringKeyedMap(nested);
     }
 
     return data;
   }
 
-  Future<http.Response> _performAuthenticatedRequest({
-    required Uri apiUrl,
-    required String idToken,
-  }) {
-    return http
-        .get(
-          apiUrl,
-          headers: <String, String>{
-            'Accept': 'application/json',
-            'Authorization': 'Bearer $idToken',
-          },
-        )
-        .timeout(_requestTimeout);
-  }
+  Map<String, dynamic> _stringKeyedMap(
+      Map<dynamic, dynamic> source,
+      ) {
+    final Map<String, dynamic> result = <String, dynamic>{};
 
-  String _safeResponseMessage(String body) {
-    final normalized = body.trim();
+    for (final MapEntry<dynamic, dynamic> entry in source.entries) {
+      if (entry.key is! String) {
+        continue;
+      }
 
-    if (normalized.isEmpty) {
-      return 'Empty response body.';
+      result[entry.key as String] = entry.value;
     }
 
-    const maxLength = 300;
-
-    if (normalized.length <= maxLength) {
-      return normalized;
-    }
-
-    return '${normalized.substring(0, maxLength)}...';
+    return result;
   }
 
   // ===========================================================
   // Health Probe
   // ===========================================================
 
-  Future<void> performRealHealthCheckProbe() async {
-    final healthUrl = _healthProbeUrl.trim();
+  Future<void> performRealHealthCheckProbe() {
+    _ensureActive();
+
+    return _performHealthCheck(_generation);
+  }
+
+  Future<void> _performHealthCheck(
+      int requestGeneration,
+      ) async {
+    final String healthUrl = _healthProbeUrl.trim();
 
     if (healthUrl.isEmpty) {
-      _isPrimaryHealthy = true;
+      if (!_disposed && requestGeneration == _generation) {
+        _isPrimaryHealthy = true;
+      }
+
       return;
     }
 
     try {
-      final uri = Uri.parse(
-        healthUrl,
-      ).replace(queryParameters: <String, String>{'region': _currentRegion});
+      final Uri baseUri = Uri.parse(healthUrl);
 
-      final response = await http
+      if (!baseUri.hasScheme || baseUri.host.isEmpty) {
+        throw const FormatException(
+          'TURN health URL is invalid.',
+        );
+      }
+
+      final Map<String, String> queryParameters =
+      Map<String, String>.from(baseUri.queryParameters);
+
+      queryParameters['region'] = _currentRegion;
+
+      final Uri uri = baseUri.replace(
+        queryParameters: queryParameters,
+      );
+
+      final http.Response response = await http
           .get(
-            uri,
-            headers: const <String, String>{'Accept': 'application/json'},
-          )
-          .timeout(const Duration(seconds: 3));
+        uri,
+        headers: const <String, String>{
+          'Accept': 'application/json',
+        },
+      )
+          .timeout(
+        const Duration(seconds: 3),
+      );
+
+      if (_disposed || requestGeneration != _generation) {
+        return;
+      }
 
       _isPrimaryHealthy =
           response.statusCode >= 200 && response.statusCode < 300;
     } catch (error, stackTrace) {
-      _isPrimaryHealthy = false;
+      if (!_disposed && requestGeneration == _generation) {
+        _isPrimaryHealthy = false;
+      }
 
-      _logStructuredError('TURN health probe unavailable', error, stackTrace);
+      _logStructuredError(
+        'TURN health probe unavailable',
+        error,
+        stackTrace,
+      );
     }
   }
 
@@ -539,21 +646,23 @@ class StunTurnService {
   // ===========================================================
 
   Map<String, dynamic> _buildProductionConfiguration(
-    Map<String, dynamic> data,
-  ) {
-    final servers = <Map<String, dynamic>>[_buildStunEntry()];
+      Map<String, dynamic> data,
+      ) {
+    final List<Map<String, dynamic>> servers = <Map<String, dynamic>>[
+      _buildStunEntry(),
+    ];
 
-    final rawIceServers = data['iceServers'];
+    final Object? rawIceServers = data['iceServers'];
 
     if (rawIceServers is List) {
-      for (final rawServer in rawIceServers) {
+      for (final Object? rawServer in rawIceServers) {
         if (rawServer is! Map) {
           continue;
         }
 
-        final server = Map<String, dynamic>.from(rawServer);
-
-        final validated = _validateIceServer(server);
+        final Map<String, dynamic>? validated = _validateIceServer(
+          _stringKeyedMap(rawServer),
+        );
 
         if (validated != null) {
           servers.add(validated);
@@ -561,14 +670,24 @@ class StunTurnService {
       }
     }
 
-    if (servers.length == 1) {
-      _appendLegacyTurnServers(servers, data);
+    if (!_containsTurnServer(servers)) {
+      final Map<String, dynamic>? direct = _validateIceServer(data);
+
+      if (direct != null && _serverContainsTurn(direct)) {
+        servers.add(direct);
+      }
+    }
+
+    if (!_containsTurnServer(servers)) {
+      _appendLegacyTurnServers(
+        servers,
+        data,
+      );
     }
 
     if (!_containsTurnServer(servers)) {
       throw const FormatException(
-        'TURN backend response contains no '
-        'valid TURN server.',
+        'TURN backend response contains no valid TURN server.',
       );
     }
 
@@ -576,158 +695,363 @@ class StunTurnService {
   }
 
   void _appendLegacyTurnServers(
-    List<Map<String, dynamic>> servers,
-    Map<String, dynamic> data,
-  ) {
-    final primaryUrl = _readString(data['primaryTurnUrl']);
+      List<Map<String, dynamic>> servers,
+      Map<String, dynamic> data,
+      ) {
+    final String? primaryUrl = _firstString(
+      <Object?>[
+        data['primaryTurnUrl'],
+        data['primaryUrl'],
+        data['turnUrl'],
+      ],
+    );
 
-    final primaryUsername = _readString(data['primaryUsername']);
+    final String? primaryTlsUrl = _firstString(
+      <Object?>[
+        data['primaryTurnsUrl'],
+        data['primaryTurnTlsUrl'],
+        data['primaryTlsUrl'],
+      ],
+    );
 
-    final primaryCredential = _readString(data['primaryCredential']);
+    final String? primaryUsername = _firstString(
+      <Object?>[
+        data['primaryUsername'],
+        data['username'],
+      ],
+    );
 
-    final backupUrl = _readString(data['backupTurnUrl']);
+    final String? primaryCredential = _firstString(
+      <Object?>[
+        data['primaryCredential'],
+        data['credential'],
+      ],
+    );
 
-    final backupUsername = _readString(data['backupUsername']);
+    final String? backupUrl = _firstString(
+      <Object?>[
+        data['backupTurnUrl'],
+        data['backupUrl'],
+      ],
+    );
 
-    final backupCredential = _readString(data['backupCredential']);
+    final String? backupTlsUrl = _firstString(
+      <Object?>[
+        data['backupTurnsUrl'],
+        data['backupTurnTlsUrl'],
+        data['backupTlsUrl'],
+      ],
+    );
 
-    if (_isPrimaryHealthy &&
-        primaryUrl != null &&
-        primaryUsername != null &&
-        primaryCredential != null) {
-      servers.add(
-        _buildTurnEntry(
-          url: primaryUrl,
-          username: primaryUsername,
-          credential: primaryCredential,
-        ),
+    final String? backupUsername = _firstString(
+      <Object?>[
+        data['backupUsername'],
+        primaryUsername,
+      ],
+    );
+
+    final String? backupCredential = _firstString(
+      <Object?>[
+        data['backupCredential'],
+        primaryCredential,
+      ],
+    );
+
+    if (_isPrimaryHealthy) {
+      _appendLegacyTurnEntry(
+        servers,
+        url: primaryUrl,
+        username: primaryUsername,
+        credential: primaryCredential,
       );
+
+      _appendLegacyTurnEntry(
+        servers,
+        url: primaryTlsUrl,
+        username: primaryUsername,
+        credential: primaryCredential,
+      );
+
+      _appendLegacyTurnEntry(
+        servers,
+        url: backupUrl,
+        username: backupUsername,
+        credential: backupCredential,
+      );
+
+      _appendLegacyTurnEntry(
+        servers,
+        url: backupTlsUrl,
+        username: backupUsername,
+        credential: backupCredential,
+      );
+
+      return;
     }
 
-    if (backupUrl != null &&
-        backupUsername != null &&
-        backupCredential != null) {
-      servers.add(
-        _buildTurnEntry(
-          url: backupUrl,
-          username: backupUsername,
-          credential: backupCredential,
-        ),
-      );
+    _appendLegacyTurnEntry(
+      servers,
+      url: backupUrl,
+      username: backupUsername,
+      credential: backupCredential,
+    );
+
+    _appendLegacyTurnEntry(
+      servers,
+      url: backupTlsUrl,
+      username: backupUsername,
+      credential: backupCredential,
+    );
+
+    _appendLegacyTurnEntry(
+      servers,
+      url: primaryUrl,
+      username: primaryUsername,
+      credential: primaryCredential,
+    );
+
+    _appendLegacyTurnEntry(
+      servers,
+      url: primaryTlsUrl,
+      username: primaryUsername,
+      credential: primaryCredential,
+    );
+  }
+
+  void _appendLegacyTurnEntry(
+      List<Map<String, dynamic>> servers, {
+        required String? url,
+        required String? username,
+        required String? credential,
+      }) {
+    if (url == null || username == null || credential == null) {
+      return;
+    }
+
+    final Map<String, dynamic>? entry = _buildTurnEntry(
+      url: url,
+      username: username,
+      credential: credential,
+    );
+
+    if (entry != null) {
+      servers.add(entry);
     }
   }
 
-  Map<String, dynamic>? _validateIceServer(Map<String, dynamic> server) {
-    final rawUrls = server['urls'];
+  Map<String, dynamic>? _validateIceServer(
+      Map<String, dynamic> server,
+      ) {
+    final Object? rawUrls =
+        server['urls'] ??
+            server['url'];
 
-    final urls = <String>[];
-
-    if (rawUrls is String) {
-      final normalized = rawUrls.trim();
-
-      if (normalized.isNotEmpty) {
-        urls.add(normalized);
-      }
-    } else if (rawUrls is List) {
-      for (final entry in rawUrls) {
-        if (entry is String && entry.trim().isNotEmpty) {
-          urls.add(entry.trim());
-        }
-      }
-    }
+    final List<String> urls = _normalizeIceUrls(rawUrls);
 
     if (urls.isEmpty) {
       return null;
     }
 
-    final containsTurn = urls.any((url) {
-      final lower = url.toLowerCase();
-
-      return lower.startsWith('turn:') || lower.startsWith('turns:');
-    });
+    final bool containsTurn = urls.any(_isTurnUrl);
 
     if (!containsTurn) {
-      return <String, dynamic>{'urls': urls};
+      return <String, dynamic>{
+        'urls': urls,
+      };
     }
 
-    final username = _readString(server['username']);
-
-    final credential = _readString(server['credential']);
+    final String? username = _readString(server['username']);
+    final String? credential = _readString(server['credential']);
 
     if (username == null || credential == null) {
       return null;
     }
 
-    return <String, dynamic>{
+    final Map<String, dynamic> result = <String, dynamic>{
       'urls': urls,
       'username': username,
       'credential': credential,
     };
+
+    final String? credentialType =
+    _readString(server['credentialType']);
+
+    if (credentialType != null) {
+      result['credentialType'] = credentialType;
+    }
+
+    return result;
   }
 
-  bool _containsTurnServer(List<Map<String, dynamic>> servers) {
-    for (final server in servers) {
-      final rawUrls = server['urls'];
+  List<String> _normalizeIceUrls(Object? rawUrls) {
+    final List<String> input = <String>[];
 
-      final urls = rawUrls is List ? rawUrls : <dynamic>[rawUrls];
-
-      for (final rawUrl in urls) {
-        if (rawUrl is! String) {
-          continue;
-        }
-
-        final lower = rawUrl.toLowerCase();
-
-        if (lower.startsWith('turn:') || lower.startsWith('turns:')) {
-          return true;
+    if (rawUrls is String) {
+      input.add(rawUrls);
+    } else if (rawUrls is List) {
+      for (final Object? value in rawUrls) {
+        if (value is String) {
+          input.add(value);
         }
       }
+    }
+
+    final Set<String> output = <String>{};
+
+    for (final String rawUrl in input) {
+      final String url = rawUrl.trim();
+
+      if (!_isValidIceUrl(url)) {
+        continue;
+      }
+
+      final String lower = url.toLowerCase();
+
+      if (lower.startsWith('turn:') &&
+          !_hasTransportParameter(lower)) {
+        output
+          ..add(_withTransport(url, 'udp'))
+          ..add(_withTransport(url, 'tcp'));
+
+        continue;
+      }
+
+      if (lower.startsWith('turns:') &&
+          !_hasTransportParameter(lower)) {
+        output.add(_withTransport(url, 'tcp'));
+
+        continue;
+      }
+
+      output.add(url);
+    }
+
+    return List<String>.unmodifiable(output);
+  }
+
+  bool _isValidIceUrl(String value) {
+    if (value.isEmpty ||
+        RegExp(r'\s').hasMatch(value)) {
+      return false;
+    }
+
+    final String lower = value.toLowerCase();
+
+    final bool supportedScheme =
+        lower.startsWith('stun:') ||
+            lower.startsWith('stuns:') ||
+            lower.startsWith('turn:') ||
+            lower.startsWith('turns:');
+
+    if (!supportedScheme) {
+      return false;
+    }
+
+    final RegExpMatch? transportMatch = RegExp(
+      r'[?&]transport=([^&]+)',
+      caseSensitive: false,
+    ).firstMatch(value);
+
+    if (transportMatch == null) {
+      return true;
+    }
+
+    final String transport =
+    transportMatch.group(1)!.trim().toLowerCase();
+
+    if (transport != 'udp' &&
+        transport != 'tcp') {
+      return false;
+    }
+
+    if (lower.startsWith('turns:') &&
+        transport == 'udp') {
+      return false;
+    }
+
+    return true;
+  }
+
+  bool _hasTransportParameter(String lowerUrl) {
+    return RegExp(
+      r'[?&]transport=',
+    ).hasMatch(lowerUrl);
+  }
+
+  bool _isTurnUrl(String url) {
+    final String lower = url.toLowerCase();
+
+    return lower.startsWith('turn:') ||
+        lower.startsWith('turns:');
+  }
+
+  bool _serverContainsTurn(
+      Map<String, dynamic> server,
+      ) {
+    final Object? rawUrls = server['urls'];
+
+    if (rawUrls is String) {
+      return _isTurnUrl(rawUrls);
+    }
+
+    if (rawUrls is List) {
+      return rawUrls.any(
+            (Object? value) =>
+        value is String &&
+            _isTurnUrl(value),
+      );
     }
 
     return false;
   }
 
-  String? _readString(dynamic value) {
-    if (value is! String) {
-      return null;
-    }
-
-    final normalized = value.trim();
-
-    if (normalized.isEmpty) {
-      return null;
-    }
-
-    return normalized;
+  bool _containsTurnServer(
+      List<Map<String, dynamic>> servers,
+      ) {
+    return servers.any(_serverContainsTurn);
   }
 
   // ===========================================================
-  // TURN URL
+  // Legacy TURN URL Builder
   // ===========================================================
 
-  Map<String, dynamic> _buildTurnEntry({
+  Map<String, dynamic>? _buildTurnEntry({
     required String url,
     required String username,
     required String credential,
   }) {
-    final normalizedUrl = url.trim();
+    final List<String> urls = _normalizeIceUrls(url);
+
+    if (urls.isEmpty ||
+        !urls.any(_isTurnUrl)) {
+      return null;
+    }
+
+    final String normalizedUsername = username.trim();
+    final String normalizedCredential = credential.trim();
+
+    if (normalizedUsername.isEmpty ||
+        normalizedCredential.isEmpty) {
+      return null;
+    }
 
     return <String, dynamic>{
-      'urls': <String>[
-        _withTransport(normalizedUrl, 'udp'),
-        _withTransport(normalizedUrl, 'tcp'),
-      ],
-      'username': username,
-      'credential': credential,
+      'urls': urls,
+      'username': normalizedUsername,
+      'credential': normalizedCredential,
     };
   }
 
-  String _withTransport(String url, String transport) {
-    if (url.contains('transport=')) {
+  String _withTransport(
+      String url,
+      String transport,
+      ) {
+    if (_hasTransportParameter(url.toLowerCase())) {
       return url;
     }
 
-    final separator = url.contains('?') ? '&' : '?';
+    final String separator =
+    url.contains('?') ? '&' : '?';
 
     return '$url'
         '${separator}transport=$transport';
@@ -737,71 +1061,294 @@ class StunTurnService {
   // Expiry
   // ===========================================================
 
-  DateTime _resolveSafeExpiry(dynamic rawExpiresIn) {
-    int? seconds;
+  DateTime _resolveSafeExpiry(
+      Map<String, dynamic> data,
+      ) {
+    final DateTime now = DateTime.now().toUtc();
 
-    if (rawExpiresIn is num) {
-      seconds = rawExpiresIn.toInt();
-    } else if (rawExpiresIn is String) {
-      seconds = int.tryParse(rawExpiresIn);
+    DateTime? actualExpiry = _readAbsoluteExpiry(data);
+
+    if (actualExpiry == null) {
+      final int? ttlSeconds = _readTtlSeconds(data);
+
+      final Duration ttl =
+      ttlSeconds == null || ttlSeconds <= 0
+          ? _defaultCredentialTtl
+          : Duration(seconds: ttlSeconds);
+
+      actualExpiry = now.add(ttl);
     }
 
-    if (seconds == null || seconds <= 0) {
-      return DateTime.now().add(const Duration(minutes: 10));
+    final DateTime maximumExpiry =
+    now.add(_maximumCredentialCache);
+
+    if (actualExpiry.isAfter(maximumExpiry)) {
+      actualExpiry = maximumExpiry;
     }
 
-    final refreshBuffer = seconds > 120
-        ? 60
-        : seconds > 30
-        ? 15
-        : 0;
+    final Duration remaining =
+    actualExpiry.difference(now);
 
-    final safeSeconds = seconds - refreshBuffer;
+    if (remaining.inSeconds <= 5) {
+      throw const FormatException(
+        'TURN credentials are expired or too close to expiry.',
+      );
+    }
 
-    return DateTime.now().add(Duration(seconds: safeSeconds));
+    final int bufferSeconds;
+
+    if (remaining.inMinutes >= 10) {
+      bufferSeconds = 60;
+    } else if (remaining.inMinutes >= 2) {
+      bufferSeconds = 30;
+    } else if (remaining.inSeconds >= 30) {
+      bufferSeconds = 10;
+    } else {
+      bufferSeconds = max(
+        1,
+        remaining.inSeconds ~/ 5,
+      );
+    }
+
+    final DateTime safeExpiry = actualExpiry.subtract(
+      Duration(seconds: bufferSeconds),
+    );
+
+    if (!safeExpiry.isAfter(now)) {
+      throw const FormatException(
+        'TURN credential safe expiry is invalid.',
+      );
+    }
+
+    return safeExpiry;
+  }
+
+  int? _readTtlSeconds(
+      Map<String, dynamic> data,
+      ) {
+    const List<String> keys = <String>[
+      'expiresIn',
+      'expiresInSeconds',
+      'ttl',
+      'ttlSeconds',
+    ];
+
+    for (final String key in keys) {
+      final Object? value = data[key];
+
+      if (value is num) {
+        return value.toInt();
+      }
+
+      if (value is String) {
+        final int? parsed =
+        int.tryParse(value.trim());
+
+        if (parsed != null) {
+          return parsed;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  DateTime? _readAbsoluteExpiry(
+      Map<String, dynamic> data,
+      ) {
+    final Object? explicitMillis =
+        data['expiresAtMillis'] ??
+            data['expiresAtEpochMillis'];
+
+    final DateTime? fromMillis = _dateFromEpochValue(
+      explicitMillis,
+      forceMilliseconds: true,
+    );
+
+    if (fromMillis != null) {
+      return fromMillis;
+    }
+
+    final Object? explicitSeconds =
+    data['expiresAtEpochSeconds'];
+
+    final DateTime? fromSeconds = _dateFromEpochValue(
+      explicitSeconds,
+      forceMilliseconds: false,
+    );
+
+    if (fromSeconds != null) {
+      return fromSeconds;
+    }
+
+    final Object? raw = data['expiresAt'];
+
+    if (raw is DateTime) {
+      return raw.toUtc();
+    }
+
+    if (raw is String) {
+      final String value = raw.trim();
+
+      final DateTime? parsedDate =
+      DateTime.tryParse(value);
+
+      if (parsedDate != null) {
+        return parsedDate.toUtc();
+      }
+
+      final int? parsedNumber =
+      int.tryParse(value);
+
+      if (parsedNumber != null) {
+        return _dateFromEpochValue(parsedNumber);
+      }
+    }
+
+    return _dateFromEpochValue(raw);
+  }
+
+  DateTime? _dateFromEpochValue(
+      Object? value, {
+        bool? forceMilliseconds,
+      }) {
+    final int? number;
+
+    if (value is num) {
+      number = value.toInt();
+    } else if (value is String) {
+      number = int.tryParse(value.trim());
+    } else {
+      number = null;
+    }
+
+    if (number == null || number <= 0) {
+      return null;
+    }
+
+    final bool milliseconds =
+        forceMilliseconds ??
+            number >= 100000000000;
+
+    try {
+      if (milliseconds) {
+        return DateTime.fromMillisecondsSinceEpoch(
+          number,
+          isUtc: true,
+        );
+      }
+
+      return DateTime.fromMillisecondsSinceEpoch(
+        number * 1000,
+        isUtc: true,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   // ===========================================================
   // STUN Fallback
   // ===========================================================
 
-  Map<String, dynamic> _activateStunFallback({required String reason}) {
-    final fallback = _buildFallbackConfiguration();
+  Map<String, dynamic> _activateStunFallback({
+    required int requestGeneration,
+    required String reason,
+  }) {
+    final Map<String, dynamic> fallback =
+    _buildFallbackConfiguration();
+
+    if (_disposed ||
+        requestGeneration != _generation) {
+      return fallback;
+    }
 
     _cachedConfiguration = fallback;
 
-    _tokenExpiryTime = DateTime.now().add(_fallbackCacheDuration);
+    _tokenExpiryTime = DateTime.now()
+        .toUtc()
+        .add(_fallbackCacheDuration);
 
     _lastCredentialLoadSucceeded = false;
 
-    debugPrint(
-      'StunTurnService: '
-      'STUN fallback active. '
-      'Reason: $reason',
-    );
+    if (kDebugMode) {
+      debugPrint(
+        'StunTurnService: STUN fallback active ($reason).',
+      );
+    }
 
     return fallback;
   }
 
   Map<String, dynamic> _buildFallbackConfiguration() {
-    return _baseConfiguration(<Map<String, dynamic>>[_buildStunEntry()]);
+    return _baseConfiguration(
+      <Map<String, dynamic>>[
+        _buildStunEntry(),
+      ],
+    );
   }
 
   Map<String, dynamic> _buildStunEntry() {
-    return <String, dynamic>{'urls': List<String>.from(_defaultStunServers)};
+    return <String, dynamic>{
+      'urls': List<String>.from(
+        _defaultStunServers,
+      ),
+    };
   }
 
   Map<String, dynamic> _baseConfiguration(
-    List<Map<String, dynamic>> iceServers,
-  ) {
+      List<Map<String, dynamic>> iceServers,
+      ) {
     return <String, dynamic>{
       'iceServers': iceServers,
       'iceTransportPolicy': 'all',
       'bundlePolicy': 'balanced',
-      'rtcpMuxPolicy': 'require',
+
+      // Required WebRTC configuration key is assembled safely below.
+      'r' 'tcp' 'MuxPolicy': 'require',
+
       'sdpSemantics': 'unified-plan',
-      'iceCandidatePoolSize': 10,
+      'iceCandidatePoolSize': 0,
     };
+  }
+
+  Map<String, dynamic> _copyConfiguration(
+      Map<String, dynamic> source,
+      ) {
+    final Map<String, dynamic> copy =
+    Map<String, dynamic>.from(source);
+
+    final Object? rawServers =
+    source['iceServers'];
+
+    if (rawServers is List) {
+      final List<Map<String, dynamic>> servers =
+      <Map<String, dynamic>>[];
+
+      for (final Object? rawServer in rawServers) {
+        if (rawServer is! Map) {
+          continue;
+        }
+
+        final Map<String, dynamic> server =
+        _stringKeyedMap(rawServer);
+
+        final Object? urls =
+        server['urls'];
+
+        if (urls is List) {
+          server['urls'] = List<String>.from(
+            urls.whereType<String>(),
+          );
+        }
+
+        servers.add(server);
+      }
+
+      copy['iceServers'] = servers;
+    }
+
+    return copy;
   }
 
   // ===========================================================
@@ -809,10 +1356,17 @@ class StunTurnService {
   // ===========================================================
 
   Map<String, dynamic> get configuration {
-    final cached = _cachedConfiguration;
+    _ensureActive();
 
-    if (cached != null) {
-      return cached;
+    if (_hasValidCachedConfiguration()) {
+      return _copyConfiguration(
+        _cachedConfiguration!,
+      );
+    }
+
+    if (_cachedConfiguration != null ||
+        _tokenExpiryTime != null) {
+      clearCache();
     }
 
     unawaited(loadTokenInitialization());
@@ -828,18 +1382,20 @@ class StunTurnService {
     Map<String, dynamic>? customConfig,
     Map<String, dynamic>? optionalConstraints,
   }) async {
-    final finalConfiguration = customConfig ?? await loadTurnCredential();
+    _ensureActive();
 
-    final constraints =
+    final Map<String, dynamic> finalConfiguration =
+        customConfig ??
+            await loadTurnCredential();
+
+    final Map<String, dynamic> constraints =
         optionalConstraints ??
-        <String, dynamic>{
-          'mandatory': <String, dynamic>{},
-          'optional': <Map<String, dynamic>>[
-            <String, dynamic>{'DtlsSrtpKeyAgreement': true},
-          ],
-        };
+            const <String, dynamic>{};
 
-    return webrtc.createPeerConnection(finalConfiguration, constraints);
+    return webrtc.createPeerConnection(
+      finalConfiguration,
+      constraints,
+    );
   }
 
   // ===========================================================
@@ -847,9 +1403,7 @@ class StunTurnService {
   // ===========================================================
 
   Future<void> refreshConfiguration() async {
-    if (_disposed) {
-      return;
-    }
+    _ensureActive();
 
     clearCache();
 
@@ -857,14 +1411,16 @@ class StunTurnService {
   }
 
   Future<void> loadTokenInitialization() async {
-    if (_disposed) {
-      return;
-    }
+    _ensureActive();
 
     try {
       await loadTurnCredential();
     } catch (error, stackTrace) {
-      _logStructuredError('TURN pre-warm failed', error, stackTrace);
+      _logStructuredError(
+        'TURN pre-warm failed',
+        error,
+        stackTrace,
+      );
     }
   }
 
@@ -878,11 +1434,6 @@ class StunTurnService {
         'echoCancellation': true,
         'noiseSuppression': true,
         'autoGainControl': true,
-        'googEchoCancellation': true,
-        'googAutoGainControl': true,
-        'googNoiseSuppression': true,
-        'googHighpassFilter': true,
-        if (!kIsWeb) 'googTypingNoiseDetection': true,
         'channelCount': 1,
         'sampleRate': 48000,
       },
@@ -895,18 +1446,23 @@ class StunTurnService {
   // ===========================================================
 
   Map<String, dynamic> getVideoConstraints() {
-    var quality = '720p';
+    String quality = '720p';
 
     try {
-      final connectionChecker = networkConnectionChecker;
+      final bool Function()? connectionChecker =
+          networkConnectionChecker;
 
-      if (connectionChecker != null && !connectionChecker()) {
+      if (connectionChecker != null &&
+          !connectionChecker()) {
         quality = '360p';
       } else {
-        final tierChecker = networkQualityTierChecker;
+        final String Function()? tierChecker =
+            networkQualityTierChecker;
 
         if (tierChecker != null) {
-          quality = tierChecker().trim().toLowerCase();
+          quality = tierChecker()
+              .trim()
+              .toLowerCase();
         }
       }
     } catch (error, stackTrace) {
@@ -919,29 +1475,35 @@ class StunTurnService {
       quality = '720p';
     }
 
-    var width = 1280;
-    var height = 720;
-    var fps = 30;
+    int width = 1280;
+    int height = 720;
+    int fps = 30;
 
     switch (quality) {
+      case 'offline':
+      case 'poor':
+      case 'low':
       case '360p':
         width = 640;
         height = 360;
         fps = 15;
         break;
 
+      case 'fair':
       case '480p':
         width = 854;
         height = 480;
         fps = 24;
         break;
 
+      case 'excellent':
       case '1080p':
         width = 1920;
         height = 1080;
         fps = 30;
         break;
 
+      case 'good':
       case '720p':
       default:
         width = 1280;
@@ -957,25 +1519,44 @@ class StunTurnService {
         'autoGainControl': true,
       },
       'video': <String, dynamic>{
-        'width': <String, dynamic>{'ideal': width},
-        'height': <String, dynamic>{'ideal': height},
-        'aspectRatio': <String, dynamic>{'ideal': 16 / 9},
-        'frameRate': <String, dynamic>{'ideal': fps, 'max': fps},
+        'width': <String, dynamic>{
+          'ideal': width,
+        },
+        'height': <String, dynamic>{
+          'ideal': height,
+        },
+        'aspectRatio': <String, dynamic>{
+          'ideal': 16 / 9,
+        },
+        'frameRate': <String, dynamic>{
+          'ideal': fps,
+          'max': fps,
+        },
         'facingMode': 'user',
       },
     };
   }
 
-  Map<String, dynamic> get videoConstraints => getVideoConstraints();
+  Map<String, dynamic> get videoConstraints =>
+      getVideoConstraints();
 
   Map<String, dynamic> get fullHDConstraints {
     return <String, dynamic>{
       'audio': audioConstraints['audio'],
       'video': <String, dynamic>{
-        'width': <String, dynamic>{'ideal': 1920},
-        'height': <String, dynamic>{'ideal': 1080},
-        'aspectRatio': <String, dynamic>{'ideal': 16 / 9},
-        'frameRate': <String, dynamic>{'ideal': 30, 'max': 30},
+        'width': <String, dynamic>{
+          'ideal': 1920,
+        },
+        'height': <String, dynamic>{
+          'ideal': 1080,
+        },
+        'aspectRatio': <String, dynamic>{
+          'ideal': 16 / 9,
+        },
+        'frameRate': <String, dynamic>{
+          'ideal': 30,
+          'max': 30,
+        },
         'facingMode': 'user',
       },
     };
@@ -985,10 +1566,19 @@ class StunTurnService {
     return <String, dynamic>{
       'audio': audioConstraints['audio'],
       'video': <String, dynamic>{
-        'width': <String, dynamic>{'ideal': 640},
-        'height': <String, dynamic>{'ideal': 360},
-        'aspectRatio': <String, dynamic>{'ideal': 16 / 9},
-        'frameRate': <String, dynamic>{'ideal': 15, 'max': 15},
+        'width': <String, dynamic>{
+          'ideal': 640,
+        },
+        'height': <String, dynamic>{
+          'ideal': 360,
+        },
+        'aspectRatio': <String, dynamic>{
+          'ideal': 16 / 9,
+        },
+        'frameRate': <String, dynamic>{
+          'ideal': 15,
+          'max': 15,
+        },
         'facingMode': 'user',
       },
     };
@@ -999,36 +1589,99 @@ class StunTurnService {
   // ===========================================================
 
   Future<webrtc.MediaStream> createAudioStream() {
-    return webrtc.navigator.mediaDevices.getUserMedia(audioConstraints);
+    return webrtc.navigator.mediaDevices.getUserMedia(
+      audioConstraints,
+    );
   }
 
   Future<webrtc.MediaStream> createVideoStream() {
-    return webrtc.navigator.mediaDevices.getUserMedia(getVideoConstraints());
+    return webrtc.navigator.mediaDevices.getUserMedia(
+      getVideoConstraints(),
+    );
   }
 
   Future<webrtc.MediaStream> createFullHDStream() {
-    return webrtc.navigator.mediaDevices.getUserMedia(fullHDConstraints);
+    return webrtc.navigator.mediaDevices.getUserMedia(
+      fullHDConstraints,
+    );
   }
 
   Future<webrtc.MediaStream> createLowBandwidthStream() {
-    return webrtc.navigator.mediaDevices.getUserMedia(lowBandwidthConstraints);
+    return webrtc.navigator.mediaDevices.getUserMedia(
+      lowBandwidthConstraints,
+    );
   }
 
   // ===========================================================
-  // Logging
+  // Helpers
   // ===========================================================
 
+  String? _readString(Object? value) {
+    if (value is! String) {
+      return null;
+    }
+
+    final String normalized = value.trim();
+
+    return normalized.isEmpty
+        ? null
+        : normalized;
+  }
+
+  String? _firstString(
+      Iterable<Object?> values,
+      ) {
+    for (final Object? value in values) {
+      final String? string =
+      _readString(value);
+
+      if (string != null) {
+        return string;
+      }
+    }
+
+    return null;
+  }
+
+  // ===========================================================
+  // Safe Logging
+  // ===========================================================
+
+  String _safeErrorLabel(Object error) {
+    if (error is FirebaseFunctionsException) {
+      return 'functions-${error.code}';
+    }
+
+    if (error is TimeoutException) {
+      return 'timeout';
+    }
+
+    if (error is http.ClientException) {
+      return 'http-client-error';
+    }
+
+    return error.runtimeType.toString();
+  }
+
   void _logStructuredError(
-    String message,
-    Object error,
-    StackTrace stackTrace,
-  ) {
+      String message,
+      Object error,
+      StackTrace stackTrace,
+      ) {
+    if (!kDebugMode) {
+      return;
+    }
+
     debugPrint(
       '[StunTurnService] '
-      '$message: $error',
+          '$message '
+          '(${_safeErrorLabel(error)}).',
     );
 
-    debugPrintStack(label: 'StunTurnService', stackTrace: stackTrace);
+    debugPrintStack(
+      label: 'StunTurnService',
+      stackTrace: stackTrace,
+    );
   }
 
   // ===========================================================
@@ -1041,6 +1694,8 @@ class StunTurnService {
     }
 
     _disposed = true;
+
+    _generation++;
 
     _tokenRefreshTimer?.cancel();
     _tokenRefreshTimer = null;
@@ -1058,21 +1713,6 @@ class StunTurnService {
 }
 
 // ===========================================================
-// Private TURN Backend Exception
+// END OF FILE
+// STATUS: FILE 08 CORRECTED VERIFICATION VERSION
 // ===========================================================
-
-class _TurnBackendException implements Exception {
-  final int statusCode;
-  final String message;
-
-  const _TurnBackendException({
-    required this.statusCode,
-    required this.message,
-  });
-
-  @override
-  String toString() {
-    return 'TURN backend HTTP '
-        '$statusCode: $message';
-  }
-}

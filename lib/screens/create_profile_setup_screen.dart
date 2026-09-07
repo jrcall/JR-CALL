@@ -8,35 +8,17 @@
 // Canonical optional profile-personalization step after successful
 // JR CALL account verification.
 //
-// DESIGN:
-// - Premium light / glass JR CALL visual style.
-// - Step indicator: Step 1 completed -> Step 2 active.
-// - Profile Photo (Optional).
-// - Cover Photo (Optional).
-// - FINISH.
-// - Skip for now.
+// OTP/AUTH MASTER CONTRACT:
 //
-// ARCHITECTURE:
-//
-// UI
-//  ↓
-// CreateProfileSetupScreen
-//  ↓
-// ProfileService
-//   ├── AuthService
-//   ├── FirestoreService
-//   └── StorageService
-//
-// IMPORTANT:
-// - This screen does NOT directly write Firebase Storage.
-// - This screen does NOT directly write Firestore.
-// - ProfileService remains the coordinator.
-// - StorageService remains binary-media owner.
-// - FirestoreService remains profile-data owner.
-// - Passwords and OTP values are NEVER stored here.
-// - Media is optional.
-// - Skip never invalidates a verified account.
-// - Final authenticated routing remains owned by SessionGate.
+// - This screen NEVER owns OTP.
+// - This screen NEVER signs in/out.
+// - This screen NEVER creates Firebase Auth users.
+// - This screen NEVER performs final Home routing.
+// - Caller owns final authentication navigation.
+// - FINISH/SKIP closes ONLY this screen.
+// - Missing-profile creation must already be resolved by caller.
+// - ProfileService remains profile/media coordinator.
+// - Call Engine / Message Engine / WebRTC untouched.
 // ===============================================================
 
 import 'package:flutter/foundation.dart';
@@ -55,7 +37,6 @@ class CreateProfileSetupScreen extends StatefulWidget {
     this.initialCoverPhotoBytes,
   });
 
-  /// Backward-compatible optional media.
   final Uint8List? initialProfilePhotoBytes;
   final Uint8List? initialCoverPhotoBytes;
 
@@ -64,53 +45,26 @@ class CreateProfileSetupScreen extends StatefulWidget {
       _CreateProfileSetupScreenState();
 }
 
-class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
-  // =============================================================
-  // SERVICES
-  // =============================================================
-
+class _CreateProfileSetupScreenState
+    extends State<CreateProfileSetupScreen> {
   final ProfileService _profileService = ProfileService.instance;
-
   final ImagePicker _imagePicker = ImagePicker();
 
-  // =============================================================
-  // MEDIA LIMITS
-  //
-  // These are deliberately conservative.
-  //
-  // Final authoritative limits also remain enforced by:
-  // - StorageService
-  // - Firebase Storage Rules
-  // =============================================================
-
   static const int _maximumProfileImageBytes = 5 * 1024 * 1024;
-
   static const int _maximumCoverImageBytes = 10 * 1024 * 1024;
 
-  // =============================================================
-  // STATE
-  // =============================================================
-
   Uint8List? _profilePhotoBytes;
-
   Uint8List? _coverPhotoBytes;
 
   bool _loading = false;
-
   bool _pickingMedia = false;
-
   bool _completed = false;
-
-  // =============================================================
-  // LIFECYCLE
-  // =============================================================
 
   @override
   void initState() {
     super.initState();
 
     _profilePhotoBytes = widget.initialProfilePhotoBytes;
-
     _coverPhotoBytes = widget.initialCoverPhotoBytes;
   }
 
@@ -123,19 +77,27 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
       return;
     }
 
-    final ImageSource? source = await showModalBottomSheet<ImageSource>(
+    final ImageSource? source =
+    await showModalBottomSheet<ImageSource>(
       context: context,
       showDragHandle: true,
       backgroundColor: JrColors.surface,
       builder: (BuildContext sheetContext) {
         return SafeArea(
           child: Padding(
-            padding: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.only(
+              bottom: 10,
+            ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
                 const Padding(
-                  padding: EdgeInsets.fromLTRB(20, 6, 20, 12),
+                  padding: EdgeInsets.fromLTRB(
+                    20,
+                    6,
+                    20,
+                    12,
+                  ),
                   child: Text(
                     'Profile Photo',
                     style: TextStyle(
@@ -145,7 +107,6 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
                     ),
                   ),
                 ),
-
                 if (_supportsDirectCamera)
                   ListTile(
                     leading: const Icon(
@@ -160,10 +121,11 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
                       ),
                     ),
                     onTap: () {
-                      Navigator.of(sheetContext).pop(ImageSource.camera);
+                      Navigator.of(sheetContext).pop(
+                        ImageSource.camera,
+                      );
                     },
                   ),
-
                 ListTile(
                   leading: const Icon(
                     Icons.photo_library_outlined,
@@ -177,10 +139,11 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
                     ),
                   ),
                   onTap: () {
-                    Navigator.of(sheetContext).pop(ImageSource.gallery);
+                    Navigator.of(sheetContext).pop(
+                      ImageSource.gallery,
+                    );
                   },
                 ),
-
                 if (_profilePhotoBytes != null)
                   ListTile(
                     leading: const Icon(
@@ -206,7 +169,6 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
                       });
                     },
                   ),
-
                 ListTile(
                   leading: const Icon(
                     Icons.close_rounded,
@@ -214,7 +176,9 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
                   ),
                   title: const Text(
                     'Cancel',
-                    style: TextStyle(color: JrColors.textSecondary),
+                    style: TextStyle(
+                      color: JrColors.textSecondary,
+                    ),
                   ),
                   onTap: () {
                     Navigator.of(sheetContext).pop();
@@ -231,14 +195,18 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
       return;
     }
 
-    await _pickProfilePhoto(source);
+    await _pickProfilePhoto(
+      source,
+    );
   }
 
   // =============================================================
   // PROFILE PHOTO PICK + CROP
   // =============================================================
 
-  Future<void> _pickProfilePhoto(ImageSource source) async {
+  Future<void> _pickProfilePhoto(
+      ImageSource source,
+      ) async {
     if (_actionBusy) {
       return;
     }
@@ -246,8 +214,10 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
     _setPickingMedia(true);
 
     try {
-      if (source == ImageSource.camera && _isAndroidOrIOS) {
-        final bool granted = await AppPermissions.requestCamera();
+      if (source == ImageSource.camera &&
+          _isAndroidOrIOS) {
+        final bool granted =
+        await AppPermissions.requestCamera();
 
         if (!granted) {
           _showMessage(
@@ -258,7 +228,8 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
         }
       }
 
-      final XFile? picked = await _imagePicker.pickImage(
+      final XFile? picked =
+      await _imagePicker.pickImage(
         source: source,
         imageQuality: 95,
         maxWidth: 2400,
@@ -270,10 +241,14 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
         return;
       }
 
-      final Uint8List? bytes = await _cropOrReadImage(
+      final Uint8List? bytes =
+      await _cropOrReadImage(
         picked: picked,
         title: 'Crop Profile Photo',
-        aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
+        aspectRatio: const CropAspectRatio(
+          ratioX: 1,
+          ratioY: 1,
+        ),
         maxWidth: 1200,
         maxHeight: 1200,
       );
@@ -282,7 +257,9 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
         return;
       }
 
-      _validateProfileImage(bytes);
+      _validateProfileImage(
+        bytes,
+      );
 
       if (!mounted) {
         return;
@@ -293,14 +270,22 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
       });
     } on ArgumentError catch (error) {
       _showMessage(
-        error.message?.toString() ?? 'The selected image is invalid.',
+        error.message?.toString() ??
+            'The selected image is invalid.',
       );
     } on StateError catch (error) {
-      _showMessage(error.message);
+      _showMessage(
+        error.message,
+      );
     } catch (error, stackTrace) {
-      debugPrint('JR CALL profile photo selection error: $error');
+      debugPrint(
+        'JR CALL profile photo selection error: $error',
+      );
 
-      debugPrintStack(label: 'JR CALL profile photo', stackTrace: stackTrace);
+      debugPrintStack(
+        label: 'JR CALL profile photo',
+        stackTrace: stackTrace,
+      );
 
       _showMessage(
         'The profile photo could not be prepared. Please try again.',
@@ -322,7 +307,8 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
     _setPickingMedia(true);
 
     try {
-      final XFile? picked = await _imagePicker.pickImage(
+      final XFile? picked =
+      await _imagePicker.pickImage(
         source: ImageSource.gallery,
         imageQuality: 95,
         maxWidth: 3200,
@@ -334,10 +320,14 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
         return;
       }
 
-      final Uint8List? bytes = await _cropOrReadImage(
+      final Uint8List? bytes =
+      await _cropOrReadImage(
         picked: picked,
         title: 'Crop Cover Photo',
-        aspectRatio: const CropAspectRatio(ratioX: 16, ratioY: 9),
+        aspectRatio: const CropAspectRatio(
+          ratioX: 16,
+          ratioY: 9,
+        ),
         maxWidth: 1920,
         maxHeight: 1080,
       );
@@ -346,7 +336,9 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
         return;
       }
 
-      _validateCoverImage(bytes);
+      _validateCoverImage(
+        bytes,
+      );
 
       if (!mounted) {
         return;
@@ -357,16 +349,26 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
       });
     } on ArgumentError catch (error) {
       _showMessage(
-        error.message?.toString() ?? 'The selected image is invalid.',
+        error.message?.toString() ??
+            'The selected image is invalid.',
       );
     } on StateError catch (error) {
-      _showMessage(error.message);
+      _showMessage(
+        error.message,
+      );
     } catch (error, stackTrace) {
-      debugPrint('JR CALL cover photo selection error: $error');
+      debugPrint(
+        'JR CALL cover photo selection error: $error',
+      );
 
-      debugPrintStack(label: 'JR CALL cover photo', stackTrace: stackTrace);
+      debugPrintStack(
+        label: 'JR CALL cover photo',
+        stackTrace: stackTrace,
+      );
 
-      _showMessage('The cover photo could not be prepared. Please try again.');
+      _showMessage(
+        'The cover photo could not be prepared. Please try again.',
+      );
     } finally {
       _setPickingMedia(false);
     }
@@ -387,7 +389,8 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
       return picked.readAsBytes();
     }
 
-    final CroppedFile? cropped = await ImageCropper().cropImage(
+    final CroppedFile? cropped =
+    await ImageCropper().cropImage(
       sourcePath: picked.path,
       aspectRatio: aspectRatio,
       compressFormat: ImageCompressFormat.jpg,
@@ -408,7 +411,10 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
         WebUiSettings(
           context: context,
           presentStyle: WebPresentStyle.dialog,
-          size: const CropperSize(width: 560, height: 560),
+          size: const CropperSize(
+            width: 560,
+            height: 560,
+          ),
         ),
       ],
     );
@@ -432,18 +438,22 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
     if (!_profileService.hasAuthenticatedUser) {
       _showMessage(
         'Your authenticated session is no longer available. '
-        'Please Login again.',
+            'Please Login again.',
       );
 
       return;
     }
 
-    final Uint8List? profileBytes = _profilePhotoBytes;
+    final Uint8List? profileBytes =
+        _profilePhotoBytes;
 
-    final Uint8List? coverBytes = _coverPhotoBytes;
+    final Uint8List? coverBytes =
+        _coverPhotoBytes;
 
-    if (profileBytes == null && coverBytes == null) {
+    if (profileBytes == null &&
+        coverBytes == null) {
       _completeSetup();
+
       return;
     }
 
@@ -451,7 +461,9 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
 
     try {
       if (profileBytes != null) {
-        _validateProfileImage(profileBytes);
+        _validateProfileImage(
+          profileBytes,
+        );
 
         await _profileService.uploadProfilePhoto(
           bytes: profileBytes,
@@ -460,7 +472,9 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
       }
 
       if (coverBytes != null) {
-        _validateCoverImage(coverBytes);
+        _validateCoverImage(
+          coverBytes,
+        );
 
         await _profileService.uploadCoverPhoto(
           bytes: coverBytes,
@@ -475,16 +489,26 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
       _completeSetup();
     } on ArgumentError catch (error) {
       _showMessage(
-        error.message?.toString() ?? 'The selected media is invalid.',
+        error.message?.toString() ??
+            'The selected media is invalid.',
       );
     } on StateError catch (error) {
-      _showMessage(error.message);
+      _showMessage(
+        error.message,
+      );
     } catch (error, stackTrace) {
-      debugPrint('JR CALL profile setup completion error: $error');
+      debugPrint(
+        'JR CALL profile setup completion error: $error',
+      );
 
-      debugPrintStack(label: 'JR CALL profile setup', stackTrace: stackTrace);
+      debugPrintStack(
+        label: 'JR CALL profile setup',
+        stackTrace: stackTrace,
+      );
 
-      _showMessage('Profile setup could not be completed. Please try again.');
+      _showMessage(
+        'Profile setup could not be completed. Please try again.',
+      );
     } finally {
       if (mounted && !_completed) {
         _setLoading(false);
@@ -504,7 +528,7 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
     if (!_profileService.hasAuthenticatedUser) {
       _showMessage(
         'Your authenticated session is no longer available. '
-        'Please Login again.',
+            'Please Login again.',
       );
 
       return;
@@ -515,6 +539,19 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
 
   // =============================================================
   // COMPLETE
+  //
+  // CRITICAL OTP/AUTH REPAIR:
+  //
+  // This screen closes ONLY itself.
+  //
+  // It must NEVER pop LoginScreen/OtpScreen/root routes.
+  //
+  // Caller remains responsible for:
+  // - OTP result completion
+  // - guestReturn
+  // - requestedAction
+  // - Home routing
+  // - SessionGate routing
   // =============================================================
 
   void _completeSetup() {
@@ -526,17 +563,16 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
 
     FocusScope.of(context).unfocus();
 
-    // SessionGate is the only owner of the final authenticated
-    // destination. Returning to the root allows it to resolve
-    // HomeScreen from the latest Firebase/Firestore state.
-    Navigator.of(context).popUntil((Route<dynamic> route) => route.isFirst);
+    Navigator.of(context).pop();
   }
 
   // =============================================================
   // IMAGE VALIDATION
   // =============================================================
 
-  void _validateProfileImage(Uint8List bytes) {
+  void _validateProfileImage(
+      Uint8List bytes,
+      ) {
     _validateImageBytes(
       bytes: bytes,
       maximumBytes: _maximumProfileImageBytes,
@@ -544,7 +580,9 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
     );
   }
 
-  void _validateCoverImage(Uint8List bytes) {
+  void _validateCoverImage(
+      Uint8List bytes,
+      ) {
     _validateImageBytes(
       bytes: bytes,
       maximumBytes: _maximumCoverImageBytes,
@@ -558,13 +596,18 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
     required String mediaName,
   }) {
     if (bytes.isEmpty) {
-      throw ArgumentError('$mediaName image data cannot be empty.');
+      throw ArgumentError(
+        '$mediaName image data cannot be empty.',
+      );
     }
 
     if (bytes.lengthInBytes > maximumBytes) {
-      final int maximumMb = maximumBytes ~/ (1024 * 1024);
+      final int maximumMb =
+          maximumBytes ~/ (1024 * 1024);
 
-      throw ArgumentError('$mediaName must be $maximumMb MB or smaller.');
+      throw ArgumentError(
+        '$mediaName must be $maximumMb MB or smaller.',
+      );
     }
   }
 
@@ -577,8 +620,10 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
       return true;
     }
 
-    return defaultTargetPlatform == TargetPlatform.android ||
-        defaultTargetPlatform == TargetPlatform.iOS;
+    return defaultTargetPlatform ==
+        TargetPlatform.android ||
+        defaultTargetPlatform ==
+            TargetPlatform.iOS;
   }
 
   bool get _isAndroidOrIOS {
@@ -586,22 +631,30 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
       return false;
     }
 
-    return defaultTargetPlatform == TargetPlatform.android ||
-        defaultTargetPlatform == TargetPlatform.iOS;
+    return defaultTargetPlatform ==
+        TargetPlatform.android ||
+        defaultTargetPlatform ==
+            TargetPlatform.iOS;
   }
 
-  bool get _supportsDirectCamera => _isAndroidOrIOS;
+  bool get _supportsDirectCamera =>
+      _isAndroidOrIOS;
 
   // =============================================================
   // STATE HELPERS
   // =============================================================
 
   bool get _actionBusy {
-    return _loading || _pickingMedia || _completed;
+    return _loading ||
+        _pickingMedia ||
+        _completed;
   }
 
-  void _setLoading(bool value) {
-    if (!mounted || _loading == value) {
+  void _setLoading(
+      bool value,
+      ) {
+    if (!mounted ||
+        _loading == value) {
       return;
     }
 
@@ -610,8 +663,11 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
     });
   }
 
-  void _setPickingMedia(bool value) {
-    if (!mounted || _pickingMedia == value) {
+  void _setPickingMedia(
+      bool value,
+      ) {
+    if (!mounted ||
+        _pickingMedia == value) {
       return;
     }
 
@@ -621,7 +677,8 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
   }
 
   void _removeProfilePhoto() {
-    if (_actionBusy || _profilePhotoBytes == null) {
+    if (_actionBusy ||
+        _profilePhotoBytes == null) {
       return;
     }
 
@@ -631,7 +688,8 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
   }
 
   void _removeCoverPhoto() {
-    if (_actionBusy || _coverPhotoBytes == null) {
+    if (_actionBusy ||
+        _coverPhotoBytes == null) {
       return;
     }
 
@@ -640,7 +698,9 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
     });
   }
 
-  void _showMessage(String message) {
+  void _showMessage(
+      String message,
+      ) {
     if (!mounted) {
       return;
     }
@@ -648,7 +708,13 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+        SnackBar(
+          content: Text(
+            message,
+          ),
+          behavior:
+          SnackBarBehavior.floating,
+        ),
       );
   }
 
@@ -659,18 +725,32 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
   Widget _buildStepIndicator() {
     return Row(
       children: <Widget>[
-        _buildStepCircle(number: '1', active: false, completed: true),
+        _buildStepCircle(
+          number: '1',
+          active: false,
+          completed: true,
+        ),
         Expanded(
           child: Container(
             height: 2,
-            margin: const EdgeInsets.symmetric(horizontal: 14),
+            margin: const EdgeInsets.symmetric(
+              horizontal: 14,
+            ),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(999),
-              color: JrColors.primaryBlue.withValues(alpha: 0.24),
+              borderRadius:
+              BorderRadius.circular(999),
+              color: JrColors.primaryBlue
+                  .withValues(
+                alpha: 0.24,
+              ),
             ),
           ),
         ),
-        _buildStepCircle(number: '2', active: true, completed: false),
+        _buildStepCircle(
+          number: '2',
+          active: true,
+          completed: false,
+        ),
       ],
     );
   }
@@ -680,39 +760,55 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
     required bool active,
     required bool completed,
   }) {
-    final bool highlighted = active || completed;
+    final bool highlighted =
+        active || completed;
 
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 180),
+      duration: const Duration(
+        milliseconds: 180,
+      ),
       width: 34,
       height: 34,
       alignment: Alignment.center,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: highlighted ? JrColors.primaryBlue : JrColors.surface,
+        color: highlighted
+            ? JrColors.primaryBlue
+            : JrColors.surface,
         border: Border.all(
-          color: highlighted ? JrColors.primaryBlue : JrColors.border,
+          color: highlighted
+              ? JrColors.primaryBlue
+              : JrColors.border,
         ),
         boxShadow: active
             ? <BoxShadow>[
-                BoxShadow(
-                  color: JrColors.primaryBlue.withValues(alpha: 0.20),
-                  blurRadius: 14,
-                  spreadRadius: 1,
-                ),
-              ]
+          BoxShadow(
+            color: JrColors.primaryBlue
+                .withValues(
+              alpha: 0.20,
+            ),
+            blurRadius: 14,
+            spreadRadius: 1,
+          ),
+        ]
             : null,
       ),
       child: completed
-          ? const Icon(Icons.check_rounded, size: 18, color: Colors.white)
+          ? const Icon(
+        Icons.check_rounded,
+        size: 18,
+        color: Colors.white,
+      )
           : Text(
-              number,
-              style: TextStyle(
-                color: active ? Colors.white : JrColors.textSecondary,
-                fontSize: 14,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
+        number,
+        style: TextStyle(
+          color: active
+              ? Colors.white
+              : JrColors.textSecondary,
+          fontSize: 14,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
     );
   }
 
@@ -729,39 +825,56 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
           padding: const EdgeInsets.all(2),
           decoration: BoxDecoration(
             color: JrColors.surface,
-            borderRadius: BorderRadius.circular(15),
+            borderRadius:
+            BorderRadius.circular(15),
             boxShadow: <BoxShadow>[
               BoxShadow(
-                color: JrColors.primaryBlue.withValues(alpha: 0.13),
+                color: JrColors.primaryBlue
+                    .withValues(
+                  alpha: 0.13,
+                ),
                 blurRadius: 18,
-                offset: const Offset(0, 6),
+                offset: const Offset(
+                  0,
+                  6,
+                ),
               ),
             ],
           ),
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(13),
+            borderRadius:
+            BorderRadius.circular(13),
             child: Image.asset(
               'assets/images/logo.png',
               fit: BoxFit.cover,
-              errorBuilder:
-                  (BuildContext context, Object error, StackTrace? stackTrace) {
-                    return Container(
-                      color: JrColors.primaryBlue.withValues(alpha: 0.08),
-                      alignment: Alignment.center,
-                      child: const Icon(
-                        Icons.phone_in_talk_rounded,
-                        color: JrColors.primaryBlue,
-                        size: 28,
-                      ),
-                    );
-                  },
+              errorBuilder: (
+                  BuildContext context,
+                  Object error,
+                  StackTrace? stackTrace,
+                  ) {
+                return Container(
+                  color: JrColors.primaryBlue
+                      .withValues(
+                    alpha: 0.08,
+                  ),
+                  alignment: Alignment.center,
+                  child: const Icon(
+                    Icons.phone_in_talk_rounded,
+                    color: JrColors.primaryBlue,
+                    size: 28,
+                  ),
+                );
+              },
             ),
           ),
         ),
-        const SizedBox(width: 13),
+        const SizedBox(
+          width: 13,
+        ),
         const Expanded(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment:
+            CrossAxisAlignment.start,
             children: <Widget>[
               Text(
                 'JR CALL',
@@ -773,11 +886,14 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
                   letterSpacing: 0.2,
                 ),
               ),
-              SizedBox(height: 5),
+              SizedBox(
+                height: 5,
+              ),
               Text(
                 'Premium Calling Experience',
                 style: TextStyle(
-                  color: JrColors.textSecondary,
+                  color:
+                  JrColors.textSecondary,
                   fontSize: 12,
                   fontWeight: FontWeight.w500,
                 ),
@@ -804,7 +920,9 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
             fontWeight: FontWeight.w600,
           ),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(
+          height: 14,
+        ),
         Stack(
           clipBehavior: Clip.none,
           children: <Widget>[
@@ -812,44 +930,65 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
               color: Colors.transparent,
               shape: const CircleBorder(),
               child: InkWell(
-                customBorder: const CircleBorder(),
-                onTap: _actionBusy ? null : _chooseProfilePhoto,
+                customBorder:
+                const CircleBorder(),
+                onTap: _actionBusy
+                    ? null
+                    : _chooseProfilePhoto,
                 child: Container(
                   width: 132,
                   height: 132,
-                  padding: const EdgeInsets.all(4),
+                  padding:
+                  const EdgeInsets.all(4),
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: JrColors.surface,
-                    border: Border.all(color: JrColors.primaryBlue, width: 2.2),
+                    border: Border.all(
+                      color:
+                      JrColors.primaryBlue,
+                      width: 2.2,
+                    ),
                     boxShadow: <BoxShadow>[
                       BoxShadow(
-                        color: JrColors.primaryBlue.withValues(alpha: 0.17),
+                        color: JrColors
+                            .primaryBlue
+                            .withValues(
+                          alpha: 0.17,
+                        ),
                         blurRadius: 22,
                         spreadRadius: 1,
                       ),
                     ],
                   ),
                   child: ClipOval(
-                    child: _profilePhotoBytes == null
+                    child:
+                    _profilePhotoBytes ==
+                        null
                         ? Container(
-                            color: JrColors.primaryBlue.withValues(alpha: 0.05),
-                            child: const Icon(
-                              Icons.person_rounded,
-                              size: 66,
-                              color: JrColors.textSecondary,
-                            ),
-                          )
+                      color: JrColors
+                          .primaryBlue
+                          .withValues(
+                        alpha: 0.05,
+                      ),
+                      child:
+                      const Icon(
+                        Icons
+                            .person_rounded,
+                        size: 66,
+                        color: JrColors
+                            .textSecondary,
+                      ),
+                    )
                         : Image.memory(
-                            _profilePhotoBytes!,
-                            fit: BoxFit.cover,
-                            gaplessPlayback: true,
-                          ),
+                      _profilePhotoBytes!,
+                      fit: BoxFit.cover,
+                      gaplessPlayback:
+                      true,
+                    ),
                   ),
                 ),
               ),
             ),
-
             Positioned(
               right: -4,
               bottom: 5,
@@ -858,32 +997,39 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
                 shape: const CircleBorder(),
                 elevation: 4,
                 child: InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: _actionBusy ? null : _chooseProfilePhoto,
+                  customBorder:
+                  const CircleBorder(),
+                  onTap: _actionBusy
+                      ? null
+                      : _chooseProfilePhoto,
                   child: const SizedBox(
                     width: 44,
                     height: 44,
                     child: Icon(
                       Icons.camera_alt_rounded,
                       size: 22,
-                      color: JrColors.primaryBlue,
+                      color:
+                      JrColors.primaryBlue,
                     ),
                   ),
                 ),
               ),
             ),
-
             if (_profilePhotoBytes != null)
               Positioned(
                 left: -3,
                 bottom: 5,
                 child: Material(
                   color: JrColors.surface,
-                  shape: const CircleBorder(),
+                  shape:
+                  const CircleBorder(),
                   elevation: 3,
                   child: InkWell(
-                    customBorder: const CircleBorder(),
-                    onTap: _actionBusy ? null : _removeProfilePhoto,
+                    customBorder:
+                    const CircleBorder(),
+                    onTap: _actionBusy
+                        ? null
+                        : _removeProfilePhoto,
                     child: const SizedBox(
                       width: 38,
                       height: 38,
@@ -917,7 +1063,9 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
             fontWeight: FontWeight.w600,
           ),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(
+          height: 14,
+        ),
         AspectRatio(
           aspectRatio: 16 / 7.7,
           child: Stack(
@@ -925,104 +1073,156 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
             children: <Widget>[
               Material(
                 color: Colors.transparent,
-                borderRadius: BorderRadius.circular(22),
-                clipBehavior: Clip.antiAlias,
+                borderRadius:
+                BorderRadius.circular(22),
+                clipBehavior:
+                Clip.antiAlias,
                 child: InkWell(
-                  onTap: _actionBusy ? null : _chooseCoverPhoto,
+                  onTap: _actionBusy
+                      ? null
+                      : _chooseCoverPhoto,
                   child: Container(
                     decoration: BoxDecoration(
-                      color: JrColors.primaryBlue.withValues(alpha: 0.045),
-                      borderRadius: BorderRadius.circular(22),
-                      border: Border.all(color: JrColors.border),
-                      boxShadow: <BoxShadow>[
+                      color: JrColors.primaryBlue
+                          .withValues(
+                        alpha: 0.045,
+                      ),
+                      borderRadius:
+                      BorderRadius.circular(
+                        22,
+                      ),
+                      border: Border.all(
+                        color: JrColors.border,
+                      ),
+                      boxShadow:
+                      <BoxShadow>[
                         BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.045),
+                          color: Colors.black
+                              .withValues(
+                            alpha: 0.045,
+                          ),
                           blurRadius: 20,
-                          offset: const Offset(0, 7),
+                          offset:
+                          const Offset(
+                            0,
+                            7,
+                          ),
                         ),
                       ],
                     ),
-                    child: _coverPhotoBytes != null
+                    child:
+                    _coverPhotoBytes !=
+                        null
                         ? Image.memory(
-                            _coverPhotoBytes!,
-                            fit: BoxFit.cover,
-                            gaplessPlayback: true,
-                          )
+                      _coverPhotoBytes!,
+                      fit: BoxFit.cover,
+                      gaplessPlayback:
+                      true,
+                    )
                         : Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: <Widget>[
-                                Container(
-                                  width: 58,
-                                  height: 58,
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: JrColors.surface,
-                                    boxShadow: <BoxShadow>[
-                                      BoxShadow(
-                                        color: JrColors.primaryBlue.withValues(
-                                          alpha: 0.10,
-                                        ),
-                                        blurRadius: 16,
-                                      ),
-                                    ],
+                      child: Column(
+                        mainAxisSize:
+                        MainAxisSize
+                            .min,
+                        children:
+                        <Widget>[
+                          Container(
+                            width: 58,
+                            height: 58,
+                            decoration:
+                            BoxDecoration(
+                              shape: BoxShape
+                                  .circle,
+                              color: JrColors
+                                  .surface,
+                              boxShadow:
+                              <BoxShadow>[
+                                BoxShadow(
+                                  color: JrColors
+                                      .primaryBlue
+                                      .withValues(
+                                    alpha:
+                                    0.10,
                                   ),
-                                  child: const Icon(
-                                    Icons.add_photo_alternate_outlined,
-                                    size: 28,
-                                    color: JrColors.primaryBlue,
-                                  ),
-                                ),
-                                const SizedBox(height: 10),
-                                const Text(
-                                  'Add Cover Photo',
-                                  style: TextStyle(
-                                    color: JrColors.textPrimary,
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w700,
-                                  ),
+                                  blurRadius:
+                                  16,
                                 ),
                               ],
                             ),
+                            child:
+                            const Icon(
+                              Icons
+                                  .add_photo_alternate_outlined,
+                              size: 28,
+                              color: JrColors
+                                  .primaryBlue,
+                            ),
                           ),
-                  ),
-                ),
-              ),
-
-              Positioned(
-                right: 12,
-                bottom: 12,
-                child: Material(
-                  color: JrColors.surface,
-                  shape: const CircleBorder(),
-                  elevation: 4,
-                  child: InkWell(
-                    customBorder: const CircleBorder(),
-                    onTap: _actionBusy ? null : _chooseCoverPhoto,
-                    child: const SizedBox(
-                      width: 42,
-                      height: 42,
-                      child: Icon(
-                        Icons.camera_alt_rounded,
-                        size: 22,
-                        color: JrColors.primaryBlue,
+                          const SizedBox(
+                            height: 10,
+                          ),
+                          const Text(
+                            'Add Cover Photo',
+                            style:
+                            TextStyle(
+                              color: JrColors
+                                  .textPrimary,
+                              fontSize:
+                              14,
+                              fontWeight:
+                              FontWeight
+                                  .w700,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 ),
               ),
-
+              Positioned(
+                right: 12,
+                bottom: 12,
+                child: Material(
+                  color: JrColors.surface,
+                  shape:
+                  const CircleBorder(),
+                  elevation: 4,
+                  child: InkWell(
+                    customBorder:
+                    const CircleBorder(),
+                    onTap: _actionBusy
+                        ? null
+                        : _chooseCoverPhoto,
+                    child: const SizedBox(
+                      width: 42,
+                      height: 42,
+                      child: Icon(
+                        Icons
+                            .camera_alt_rounded,
+                        size: 22,
+                        color: JrColors
+                            .primaryBlue,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
               if (_coverPhotoBytes != null)
                 Positioned(
                   left: 12,
                   bottom: 12,
                   child: Material(
                     color: JrColors.surface,
-                    shape: const CircleBorder(),
+                    shape:
+                    const CircleBorder(),
                     elevation: 3,
                     child: InkWell(
-                      customBorder: const CircleBorder(),
-                      onTap: _actionBusy ? null : _removeCoverPhoto,
+                      customBorder:
+                      const CircleBorder(),
+                      onTap: _actionBusy
+                          ? null
+                          : _removeCoverPhoto,
                       child: const SizedBox(
                         width: 42,
                         height: 42,
@@ -1051,50 +1251,70 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
       width: double.infinity,
       height: 58,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(18),
+        borderRadius:
+        BorderRadius.circular(18),
         gradient: _actionBusy
             ? null
             : const LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: <Color>[Color(0xFF4194FF), JrColors.primaryBlue],
-              ),
-        color: _actionBusy ? JrColors.disabled : null,
+          begin:
+          Alignment.topCenter,
+          end:
+          Alignment.bottomCenter,
+          colors: <Color>[
+            Color(0xFF4194FF),
+            JrColors.primaryBlue,
+          ],
+        ),
+        color: _actionBusy
+            ? JrColors.disabled
+            : null,
         boxShadow: _actionBusy
             ? null
             : <BoxShadow>[
-                BoxShadow(
-                  color: JrColors.primaryBlue.withValues(alpha: 0.20),
-                  blurRadius: 18,
-                  offset: const Offset(0, 7),
-                ),
-              ],
+          BoxShadow(
+            color: JrColors.primaryBlue
+                .withValues(
+              alpha: 0.20,
+            ),
+            blurRadius: 18,
+            offset: const Offset(
+              0,
+              7,
+            ),
+          ),
+        ],
       ),
       child: Material(
         color: Colors.transparent,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius:
+        BorderRadius.circular(18),
         child: InkWell(
-          borderRadius: BorderRadius.circular(18),
-          onTap: _actionBusy ? null : _finishProfileSetup,
+          borderRadius:
+          BorderRadius.circular(18),
+          onTap: _actionBusy
+              ? null
+              : _finishProfileSetup,
           child: Center(
             child: _loading
                 ? const SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.4,
-                      color: Colors.white,
-                    ),
-                  )
+              width: 24,
+              height: 24,
+              child:
+              CircularProgressIndicator(
+                strokeWidth: 2.4,
+                color: Colors.white,
+              ),
+            )
                 : const Text(
-                    'FINISH',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.2,
-                    ),
-                  ),
+              'FINISH',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight:
+                FontWeight.w800,
+                letterSpacing: 0.2,
+              ),
+            ),
           ),
         ),
       ),
@@ -1106,146 +1326,237 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
   // =============================================================
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+      BuildContext context,
+      ) {
     return PopScope(
-      canPop: !_loading && !_pickingMedia,
+      canPop:
+      !_loading &&
+          !_pickingMedia,
       child: Scaffold(
-        backgroundColor: JrColors.background,
+        backgroundColor:
+        JrColors.background,
         body: SafeArea(
           child: Center(
-            child: SingleChildScrollView(
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              padding: const EdgeInsets.fromLTRB(20, 18, 20, 30),
+            child:
+            SingleChildScrollView(
+              keyboardDismissBehavior:
+              ScrollViewKeyboardDismissBehavior
+                  .onDrag,
+              padding:
+              const EdgeInsets.fromLTRB(
+                20,
+                18,
+                20,
+                30,
+              ),
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 560),
+                constraints:
+                const BoxConstraints(
+                  maxWidth: 560,
+                ),
                 child: Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.fromLTRB(22, 20, 22, 26),
+                  padding:
+                  const EdgeInsets.fromLTRB(
+                    22,
+                    20,
+                    22,
+                    26,
+                  ),
                   decoration: BoxDecoration(
                     color: JrColors.surface,
-                    borderRadius: BorderRadius.circular(28),
-                    border: Border.all(color: JrColors.border),
-                    boxShadow: <BoxShadow>[
+                    borderRadius:
+                    BorderRadius.circular(
+                      28,
+                    ),
+                    border: Border.all(
+                      color: JrColors.border,
+                    ),
+                    boxShadow:
+                    <BoxShadow>[
                       BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.045),
+                        color: Colors.black
+                            .withValues(
+                          alpha: 0.045,
+                        ),
                         blurRadius: 28,
-                        offset: const Offset(0, 10),
+                        offset:
+                        const Offset(
+                          0,
+                          10,
+                        ),
                       ),
                       BoxShadow(
-                        color: JrColors.primaryBlue.withValues(alpha: 0.025),
+                        color: JrColors
+                            .primaryBlue
+                            .withValues(
+                          alpha: 0.025,
+                        ),
                         blurRadius: 36,
                         spreadRadius: 2,
                       ),
                     ],
                   ),
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    crossAxisAlignment:
+                    CrossAxisAlignment
+                        .stretch,
                     children: <Widget>[
                       Row(
-                        children: <Widget>[
+                        children:
+                        <Widget>[
                           Material(
-                            color: JrColors.surface,
-                            shape: const CircleBorder(),
+                            color:
+                            JrColors
+                                .surface,
+                            shape:
+                            const CircleBorder(),
                             child: InkWell(
-                              customBorder: const CircleBorder(),
-                              onTap: _actionBusy
+                              customBorder:
+                              const CircleBorder(),
+                              onTap:
+                              _actionBusy
                                   ? null
                                   : () {
-                                      Navigator.of(context).maybePop();
-                                    },
-                              child: Container(
+                                Navigator.of(
+                                  context,
+                                ).maybePop();
+                              },
+                              child:
+                              Container(
                                 width: 44,
                                 height: 44,
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  border: Border.all(color: JrColors.border),
+                                alignment:
+                                Alignment
+                                    .center,
+                                decoration:
+                                BoxDecoration(
+                                  shape: BoxShape
+                                      .circle,
+                                  border:
+                                  Border.all(
+                                    color:
+                                    JrColors
+                                        .border,
+                                  ),
                                 ),
-                                child: const Icon(
-                                  Icons.arrow_back_rounded,
-                                  color: JrColors.textPrimary,
+                                child:
+                                const Icon(
+                                  Icons
+                                      .arrow_back_rounded,
+                                  color: JrColors
+                                      .textPrimary,
                                   size: 22,
                                 ),
                               ),
                             ),
                           ),
-
-                          const SizedBox(width: 14),
-
-                          Expanded(child: _buildBrandHeader()),
+                          const SizedBox(
+                            width: 14,
+                          ),
+                          Expanded(
+                            child:
+                            _buildBrandHeader(),
+                          ),
                         ],
                       ),
-
-                      const SizedBox(height: 32),
-
+                      const SizedBox(
+                        height: 32,
+                      ),
                       _buildStepIndicator(),
-
-                      const SizedBox(height: 30),
-
+                      const SizedBox(
+                        height: 30,
+                      ),
                       const Text(
                         'Your Profile',
-                        textAlign: TextAlign.center,
+                        textAlign:
+                        TextAlign.center,
                         style: TextStyle(
-                          color: JrColors.textPrimary,
+                          color: JrColors
+                              .textPrimary,
                           fontSize: 28,
                           height: 1.1,
-                          fontWeight: FontWeight.w900,
+                          fontWeight:
+                          FontWeight.w900,
                         ),
                       ),
-
-                      const SizedBox(height: 10),
-
+                      const SizedBox(
+                        height: 10,
+                      ),
                       const Text(
                         'Add profile & cover photos to personalize '
-                        'your account (Optional)',
-                        textAlign: TextAlign.center,
+                            'your account (Optional)',
+                        textAlign:
+                        TextAlign.center,
                         style: TextStyle(
-                          color: JrColors.textSecondary,
+                          color: JrColors
+                              .textSecondary,
                           fontSize: 14,
                           height: 1.45,
-                          fontWeight: FontWeight.w500,
+                          fontWeight:
+                          FontWeight.w500,
                         ),
                       ),
-
-                      const SizedBox(height: 32),
-
+                      const SizedBox(
+                        height: 32,
+                      ),
                       _buildProfilePhoto(),
-
-                      const SizedBox(height: 34),
-
+                      const SizedBox(
+                        height: 34,
+                      ),
                       _buildCoverPhoto(),
-
-                      const SizedBox(height: 34),
-
+                      const SizedBox(
+                        height: 34,
+                      ),
                       _buildFinishButton(),
-
-                      const SizedBox(height: 10),
-
+                      const SizedBox(
+                        height: 10,
+                      ),
                       TextButton(
-                        onPressed: _actionBusy ? null : _skipForNow,
-                        style: TextButton.styleFrom(
-                          foregroundColor: JrColors.primaryBlue,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        onPressed:
+                        _actionBusy
+                            ? null
+                            : _skipForNow,
+                        style:
+                        TextButton.styleFrom(
+                          foregroundColor:
+                          JrColors
+                              .primaryBlue,
+                          padding:
+                          const EdgeInsets
+                              .symmetric(
+                            vertical: 12,
+                          ),
                         ),
-                        child: const Text(
+                        child:
+                        const Text(
                           'Skip for now',
                           style: TextStyle(
                             fontSize: 15,
-                            fontWeight: FontWeight.w800,
+                            fontWeight:
+                            FontWeight
+                                .w800,
                           ),
                         ),
                       ),
-
-                      if (_pickingMedia) ...<Widget>[
-                        const SizedBox(height: 10),
-                        const Center(
-                          child: SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2.2),
+                      if (_pickingMedia)
+                        ...<Widget>[
+                          const SizedBox(
+                            height: 10,
                           ),
-                        ),
-                      ],
+                          const Center(
+                            child: SizedBox(
+                              width: 20,
+                              height: 20,
+                              child:
+                              CircularProgressIndicator(
+                                strokeWidth:
+                                2.2,
+                              ),
+                            ),
+                          ),
+                        ],
                     ],
                   ),
                 ),
@@ -1260,4 +1571,26 @@ class _CreateProfileSetupScreenState extends State<CreateProfileSetupScreen> {
 
 // ===============================================================
 // END OF FILE
+//
+// OTP/AUTH MASTER REPAIR:
+//
+// ✓ OTP logic not duplicated.
+// ✓ Firebase Auth ownership untouched.
+// ✓ ProfileService ownership preserved.
+// ✓ Firestore ownership preserved.
+// ✓ Storage ownership preserved.
+// ✓ FINISH closes only this screen.
+// ✓ SKIP closes only this screen.
+// ✓ OtpScreen/LoginScreen caller is no longer destroyed.
+// ✓ guestReturn/requestedAction flow remains available to caller.
+// ✓ Profile photo preserved.
+// ✓ Cover photo preserved.
+// ✓ Camera/cropper preserved.
+// ✓ No OTP stored.
+// ✓ No password stored.
+// ✓ Call Engine untouched.
+// ✓ Message Engine untouched.
+// ✓ WebRTC untouched.
+//
+// REPLACE WHOLE FILE.
 // ===============================================================

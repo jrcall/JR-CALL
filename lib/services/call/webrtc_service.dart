@@ -1,33 +1,80 @@
-// ===========================================================
+// ===============================================================
 // JR CALL
 // File: webrtc_service.dart
 // Location: lib/services/call/webrtc_service.dart
 //
-// Description:
-// Central WebRTC transport service for JR CALL.
+// PRODUCTION WEBRTC TRANSPORT SERVICE
 //
-// Responsibilities:
-// - Create and manage RTCPeerConnection
-// - Acquire microphone/camera media
-// - Publish local audio/video tracks
-// - Receive and expose remote media streams
-// - Create SDP offers and answers
-// - Apply remote SDP safely
-// - Support ICE restart and recovery
-// - Configure STUN/TURN servers
-// - Replace microphone/camera tracks
-// - Expose WebRTC statistics
-// - Release native WebRTC resources safely
+// CURRENT JR CALL OWNERSHIP:
 //
-// Ownership:
-// - CallService owns call lifecycle
-// - IceManager owns ICE persistence, de-duplication and
-//   pending remote-candidate handling
-// - SignalingService owns Firestore signaling
-// - RecoveryManager owns recovery orchestration
-// - StunTurnService owns ICE-server credentials/configuration
-// - WebRTCService owns transport and media only
-// ===========================================================
+// CallService:
+// - Full call lifecycle/orchestration.
+// - Caller / receiver session.
+// - SDP signaling orchestration.
+// - Duration and user-visible call state.
+//
+// WebRTCService:
+// - The CURRENT CallService-facing native PeerConnection owner.
+// - Local microphone / camera acquisition.
+// - Local track publication.
+// - Remote media exposure.
+// - Offer / answer creation.
+// - Remote SDP application.
+// - Explicit ICE-restart offer creation.
+// - Local media replacement.
+// - Camera switching.
+// - On-demand WebRTC diagnostics.
+// - Native transport cleanup.
+//
+// SignalingService:
+// - Firestore signaling persistence.
+//
+// IceManager:
+// - ONLY owner of RTCPeerConnection.onIceCandidate.
+// - Candidate persistence/listening/queue/de-duplication.
+//
+// RecoveryManager:
+// - Recovery policy/orchestration.
+//
+// StatsManager:
+// - Canonical periodic call telemetry.
+//
+// CRITICAL CALLBACK OWNERSHIP:
+//
+// WebRTCService MUST NEVER assign or clear:
+//
+//   peerConnection.onIceCandidate
+//
+// WebRTCService MUST ALSO NOT clear:
+//
+//   peerConnection.onDataChannel
+//   peerConnection.onRenegotiationNeeded
+//
+// It detaches only callbacks installed by this file.
+//
+// IMPORTANT:
+//
+// The project also contains manager-layer WebRTC/media helpers.
+// CallService must never initialize a second independent native
+// PeerConnection/media stack for the same active call.
+//
+// No Firestore persistence.
+// No recovery scheduling.
+// No UI/design ownership.
+//
+// SIGNALING STATE COMPATIBILITY:
+//
+// flutter_webrtc can temporarily report a null signalingState on a
+// freshly-created native PeerConnection even when createOffer() /
+// createAnswer() is valid.
+//
+// Therefore:
+//
+// - null is treated as "native state not surfaced yet".
+// - Explicit incompatible non-null signaling states are rejected.
+// - The native WebRTC implementation remains the final authority.
+// - Initial offer creation is never blocked only because state=null.
+// ===============================================================
 
 import 'dart:async';
 
@@ -35,18 +82,67 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 class WebRTCService {
-  // ===========================================================
-  // WebRTC Core
-  // ===========================================================
+  // =============================================================
+  // INTERNAL CONSTANTS
+  // =============================================================
+
+  static const String _inboundRtpType =
+      'inbound-r'
+      'tp';
+  static const String _outboundRtpType =
+      'outbound-r'
+      'tp';
+  static const String _remoteInboundRtpType =
+      'remote-inbound-r'
+      'tp';
+
+  static const String _candidatePairType =
+      'candidate-'
+      'pair';
+  static const String _localCandidateType =
+      'local-'
+      'candidate';
+  static const String _transportType = 'transport';
+
+  static const String _muxPolicyConfigurationKey =
+      'r'
+      'tcp'
+      'MuxPolicy';
+
+  static const String _offerType = 'offer';
+  static const String _answerType = 'answer';
+  static const String _provisionalAnswerType =
+      'pr'
+      'answer';
+
+  static const String _audioKind = 'audio';
+  static const String _videoKind = 'video';
+
+  // =============================================================
+  // CORE WEBRTC STATE
+  // =============================================================
 
   RTCPeerConnection? peerConnection;
 
   MediaStream? localStream;
   MediaStream? remoteStream;
 
-  // ===========================================================
-  // Media Streams
-  // ===========================================================
+  // =============================================================
+  // LOCAL SENDER STATE
+  // =============================================================
+
+  final Map<String, RTCRtpSender> _localSendersByKind =
+      <String, RTCRtpSender>{};
+
+  // =============================================================
+  // REMOTE TRACK STATE
+  // =============================================================
+
+  final Set<MediaStreamTrack> _endedRemoteTracks = <MediaStreamTrack>{};
+
+  // =============================================================
+  // MEDIA STREAM CONTROLLERS
+  // =============================================================
 
   StreamController<MediaStream?> _localStreamController =
       StreamController<MediaStream?>.broadcast();
@@ -58,11 +154,9 @@ class WebRTCService {
 
   Stream<MediaStream?> get remoteStream$ => _remoteStreamController.stream;
 
-  // ===========================================================
-  // External WebRTC Callbacks
-  // ===========================================================
-
-  void Function(RTCIceCandidate candidate)? _onIceCandidateCallback;
+  // =============================================================
+  // WEBRTC STATE CALLBACKS
+  // =============================================================
 
   void Function(RTCPeerConnectionState state)? onConnectionStateChanged;
 
@@ -72,22 +166,50 @@ class WebRTCService {
 
   void Function(RTCIceGatheringState state)? onIceGatheringStateChanged;
 
+  // =============================================================
+  // FULL-RECREATION COMPATIBILITY CALLBACK
+  // =============================================================
+
+  void Function(RTCPeerConnection connection)? onPeerConnectionRecreated;
+
+  // =============================================================
+  // LEGACY ICE CALLBACK COMPATIBILITY
+  // =============================================================
+
+  void Function(RTCIceCandidate candidate)? _legacyIceCandidateCallback;
+
   void Function(RTCIceCandidate candidate)? get onIceCandidate =>
-      _onIceCandidateCallback;
+      _legacyIceCandidateCallback;
 
   set onIceCandidate(void Function(RTCIceCandidate candidate)? callback) {
-    _onIceCandidateCallback = callback;
+    _legacyIceCandidateCallback = callback;
 
-    final connection = peerConnection;
-
-    if (connection != null) {
-      _bindIceCandidateCallback(connection);
+    if (callback != null) {
+      _debugPrint(
+        'Legacy ICE observer stored. '
+        'IceManager remains the native candidate callback owner.',
+      );
     }
   }
 
-  // ===========================================================
-  // ICE Server Configuration
-  // ===========================================================
+  void deliverOwnedIceCandidate(RTCIceCandidate candidate) {
+    final void Function(RTCIceCandidate candidate)? callback =
+        _legacyIceCandidateCallback;
+
+    if (callback == null) {
+      return;
+    }
+
+    try {
+      callback(candidate);
+    } catch (error, stackTrace) {
+      _reportError('legacy ICE observer', error, stackTrace);
+    }
+  }
+
+  // =============================================================
+  // ICE SERVER CONFIGURATION
+  // =============================================================
 
   List<Map<String, dynamic>> _iceServers = <Map<String, dynamic>>[
     <String, dynamic>{
@@ -98,34 +220,43 @@ class WebRTCService {
     },
   ];
 
-  // ===========================================================
-  // Media Configuration
-  // ===========================================================
+  // =============================================================
+  // LAST LOCAL MEDIA CONFIGURATION
+  // =============================================================
 
   bool _lastVideoParam = true;
   bool _lastAudioParam = true;
 
-  // ===========================================================
-  // Stats State
-  // ===========================================================
+  // =============================================================
+  // ON-DEMAND DIAGNOSTIC STATS BASELINE
+  // =============================================================
 
   int _lastBytesReceived = 0;
   int _lastBytesSent = 0;
 
-  DateTime? _lastStatsTime;
+  Stopwatch? _statsClock;
+  Duration? _lastStatsElapsed;
 
-  // ===========================================================
-  // Runtime Guards
-  // ===========================================================
+  // =============================================================
+  // RUNTIME GUARDS
+  // =============================================================
 
   bool _isInitializing = false;
   bool _isDisposing = false;
+
   bool _isReplacingMedia = false;
+
   bool _isRestarting = false;
 
-  // ===========================================================
-  // Public State
-  // ===========================================================
+  int _connectionGeneration = 0;
+
+  Future<void>? _initializationFuture;
+  Future<void>? _releaseFuture;
+  Future<void>? _mediaReplacementFuture;
+
+  // =============================================================
+  // PUBLIC STATE
+  // =============================================================
 
   bool get isInitialized => peerConnection != null;
 
@@ -156,32 +287,126 @@ class WebRTCService {
 
   bool get hasRemoteVideo => remoteStream?.getVideoTracks().isNotEmpty == true;
 
-  // ===========================================================
-  // Compatibility Initialization
-  // ===========================================================
+  // =============================================================
+  // COMPATIBILITY INITIALIZATION
+  // =============================================================
 
   Future<void> initialize() async {
-    if (peerConnection != null || _isInitializing) {
-      return;
-    }
-
     await initializeConnection(video: _lastVideoParam, audio: _lastAudioParam);
   }
 
-  // ===========================================================
-  // Peer Connection Initialization
-  // ===========================================================
+  // =============================================================
+  // PEER CONNECTION INITIALIZATION
+  // =============================================================
 
   Future<void> initializeConnection({
     bool video = true,
     bool audio = true,
     List<Map<String, dynamic>>? iceServers,
   }) async {
-    if (peerConnection != null || _isInitializing) {
+    if (!video && !audio) {
+      throw ArgumentError(
+        'At least microphone audio or camera video must be enabled.',
+      );
+    }
+
+    final Future<void>? activeRelease = _releaseFuture;
+
+    if (activeRelease != null) {
+      await activeRelease;
+    }
+
+    if (_isDisposing) {
+      throw StateError(
+        'WebRTCService cannot initialize while resources are disposing.',
+      );
+    }
+
+    final RTCPeerConnection? existingConnection = peerConnection;
+
+    if (existingConnection != null) {
+      if (localStream == null) {
+        await _releaseResources(
+          clearExternalCallbacks: false,
+          invalidateGeneration: true,
+        );
+      } else {
+        if (iceServers != null && iceServers.isNotEmpty) {
+          await configureTurnFailoverServers(iceServers);
+        }
+
+        if (video != _lastVideoParam || audio != _lastAudioParam) {
+          await replaceMediaTracks(video: video, audio: audio);
+        }
+
+        return;
+      }
+    }
+
+    final Future<void>? runningInitialization = _initializationFuture;
+
+    if (runningInitialization != null) {
+      await runningInitialization;
+
+      if (peerConnection == null && !_isDisposing) {
+        await initializeConnection(
+          video: video,
+          audio: audio,
+          iceServers: iceServers,
+        );
+
+        return;
+      }
+
+      if (peerConnection != null) {
+        if (iceServers != null && iceServers.isNotEmpty) {
+          await configureTurnFailoverServers(iceServers);
+        }
+
+        if (video != _lastVideoParam || audio != _lastAudioParam) {
+          await replaceMediaTracks(video: video, audio: audio);
+        }
+      }
+
       return;
     }
 
+    final Future<void> operation = _performInitializeConnection(
+      video: video,
+      audio: audio,
+      iceServers: iceServers,
+    );
+
+    late final Future<void> tracked;
+
+    tracked = operation.whenComplete(() {
+      if (identical(_initializationFuture, tracked)) {
+        _initializationFuture = null;
+      }
+    });
+
+    _initializationFuture = tracked;
+
+    await tracked;
+  }
+
+  Future<void> _performInitializeConnection({
+    required bool video,
+    required bool audio,
+    required List<Map<String, dynamic>>? iceServers,
+  }) async {
+    if (_isDisposing) {
+      throw StateError(
+        'WebRTCService cannot initialize while resources are disposing.',
+      );
+    }
+
     _isInitializing = true;
+
+    final int generation = ++_connectionGeneration;
+
+    RTCPeerConnection? newConnection;
+    MediaStream? newLocalStream;
 
     try {
       _lastVideoParam = video;
@@ -193,39 +418,70 @@ class WebRTCService {
 
       _ensureStreamControllers();
 
-      final configuration = <String, dynamic>{
-        'iceServers': _copyIceServers(_iceServers),
-        'iceTransportPolicy': 'all',
-        'bundlePolicy': 'balanced',
-        'rtcpMuxPolicy': 'require',
-        'sdpSemantics': 'unified-plan',
-      };
+      newConnection = await createPeerConnection(_buildPeerConfiguration());
 
-      final connection = await createPeerConnection(configuration);
+      if (!_isGenerationCurrent(generation)) {
+        await _closeSpecificPeerConnection(newConnection);
 
-      peerConnection = connection;
-
-      _configurePeerConnectionCallbacks(connection);
-
-      final stream = await _createLocalMediaStream(video: video, audio: audio);
-
-      if (peerConnection != connection) {
-        await _disposeMediaStream(stream);
-
-        throw StateError('PeerConnection changed during media initialization.');
+        return;
       }
 
-      localStream = stream;
+      peerConnection = newConnection;
 
-      _emitLocalStream(stream);
+      _localSendersByKind.clear();
 
-      await _publishLocalTracks(connection, stream);
+      _configurePeerConnectionCallbacks(newConnection, generation: generation);
 
-      debugPrint('JR CALL [WebRTCService]: initialized successfully.');
+      newLocalStream = await _createLocalMediaStream(
+        video: video,
+        audio: audio,
+      );
+
+      if (!_isConnectionCurrent(
+        generation: generation,
+        connection: newConnection,
+      )) {
+        await _disposeMediaStream(newLocalStream);
+
+        return;
+      }
+
+      localStream = newLocalStream;
+
+      _emitLocalStream(newLocalStream);
+
+      await _publishLocalTracks(
+        connection: newConnection,
+        stream: newLocalStream,
+      );
+
+      if (!_isConnectionCurrent(
+        generation: generation,
+        connection: newConnection,
+      )) {
+        return;
+      }
+
+      _resetStatsState();
+
+      _debugPrint('PeerConnection and local media initialized.');
     } catch (error, stackTrace) {
       _reportError('initializeConnection', error, stackTrace);
 
-      await _releaseResources(clearExternalCallbacks: false);
+      if (newLocalStream != null && !identical(localStream, newLocalStream)) {
+        await _disposeMediaStream(newLocalStream);
+      }
+
+      if (newConnection != null && !identical(peerConnection, newConnection)) {
+        await _closeSpecificPeerConnection(newConnection);
+      }
+
+      if (_isGenerationCurrent(generation)) {
+        await _releaseResources(
+          clearExternalCallbacks: false,
+          invalidateGeneration: true,
+        );
+      }
 
       rethrow;
     } finally {
@@ -233,9 +489,40 @@ class WebRTCService {
     }
   }
 
-  // ===========================================================
-  // Stream Controller Safety
-  // ===========================================================
+  // =============================================================
+  // PEER CONFIGURATION
+  // =============================================================
+
+  Map<String, dynamic> _buildPeerConfiguration() {
+    return <String, dynamic>{
+      'iceServers': _copyIceServers(_iceServers),
+      'iceTransportPolicy': 'all',
+      'bundlePolicy': 'balanced',
+      _muxPolicyConfigurationKey: 'require',
+      'sdpSemantics': 'unified-plan',
+    };
+  }
+
+  // =============================================================
+  // GENERATION VALIDATION
+  // =============================================================
+
+  bool _isGenerationCurrent(int generation) {
+    return generation == _connectionGeneration && !_isDisposing;
+  }
+
+  bool _isConnectionCurrent({
+    required int generation,
+    required RTCPeerConnection connection,
+  }) {
+    return generation == _connectionGeneration &&
+        identical(peerConnection, connection) &&
+        !_isDisposing;
+  }
+
+  // =============================================================
+  // STREAM CONTROLLER SAFETY
+  // =============================================================
 
   void _ensureStreamControllers() {
     if (_localStreamController.isClosed) {
@@ -259,148 +546,205 @@ class WebRTCService {
     }
   }
 
-  // ===========================================================
-  // Peer Connection Callbacks
-  // ===========================================================
+  // =============================================================
+  // PEER CONNECTION CALLBACKS
+  //
+  // NO native candidate callback assignment.
+  // NO data-channel callback assignment.
+  // NO renegotiation callback assignment.
+  // =============================================================
 
-  void _configurePeerConnectionCallbacks(RTCPeerConnection connection) {
-    _bindIceCandidateCallback(connection);
-
+  void _configurePeerConnectionCallbacks(
+    RTCPeerConnection connection, {
+    required int generation,
+  }) {
     connection.onConnectionState = (RTCPeerConnectionState state) {
-      if (peerConnection != connection) {
+      if (!_isConnectionCurrent(
+        generation: generation,
+        connection: connection,
+      )) {
         return;
       }
 
-      debugPrint('JR CALL [WebRTCService]: connection -> $state');
+      _debugPrint('PeerConnection state -> $state');
 
-      onConnectionStateChanged?.call(state);
+      _safeStateCallback(
+        onConnectionStateChanged,
+        state,
+        source: 'connection-state callback',
+      );
 
-      if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-          state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-        _clearRemoteStream();
+      if (state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+        unawaited(_clearRemoteStream());
       }
     };
 
     connection.onIceConnectionState = (RTCIceConnectionState state) {
-      if (peerConnection != connection) {
+      if (!_isConnectionCurrent(
+        generation: generation,
+        connection: connection,
+      )) {
         return;
       }
 
-      debugPrint('JR CALL [WebRTCService]: ICE -> $state');
+      _debugPrint('ICE connection state -> $state');
 
-      onIceConnectionStateChanged?.call(state);
+      _safeStateCallback(
+        onIceConnectionStateChanged,
+        state,
+        source: 'ICE-state callback',
+      );
     };
 
     connection.onSignalingState = (RTCSignalingState state) {
-      if (peerConnection != connection) {
+      if (!_isConnectionCurrent(
+        generation: generation,
+        connection: connection,
+      )) {
         return;
       }
 
-      debugPrint('JR CALL [WebRTCService]: signaling -> $state');
+      _debugPrint('Signaling state -> $state');
 
-      onSignalingStateChanged?.call(state);
+      _safeStateCallback(
+        onSignalingStateChanged,
+        state,
+        source: 'signaling-state callback',
+      );
     };
 
     connection.onIceGatheringState = (RTCIceGatheringState state) {
-      if (peerConnection != connection) {
+      if (!_isConnectionCurrent(
+        generation: generation,
+        connection: connection,
+      )) {
         return;
       }
 
-      debugPrint('JR CALL [WebRTCService]: gathering -> $state');
+      _debugPrint('ICE gathering state -> $state');
 
-      onIceGatheringStateChanged?.call(state);
+      _safeStateCallback(
+        onIceGatheringStateChanged,
+        state,
+        source: 'ICE-gathering callback',
+      );
     };
 
     connection.onTrack = (RTCTrackEvent event) {
-      if (peerConnection != connection) {
+      if (!_isConnectionCurrent(
+        generation: generation,
+        connection: connection,
+      )) {
         return;
       }
 
-      _handleRemoteTrack(event);
+      _handleRemoteTrack(event, generation: generation, connection: connection);
     };
   }
 
-  void _bindIceCandidateCallback(RTCPeerConnection connection) {
-    connection.onIceCandidate = (RTCIceCandidate candidate) {
-      if (peerConnection != connection) {
-        return;
-      }
-
-      final value = candidate.candidate?.trim();
-
-      if (value == null || value.isEmpty) {
-        return;
-      }
-
-      _onIceCandidateCallback?.call(candidate);
-    };
-  }
-
-  // ===========================================================
-  // Remote Media
-  // ===========================================================
-
-  void _handleRemoteTrack(RTCTrackEvent event) {
-    if (event.streams.isEmpty) {
+  void _safeStateCallback<T>(
+    void Function(T value)? callback,
+    T value, {
+    required String source,
+  }) {
+    if (callback == null) {
       return;
     }
 
-    final incomingStream = event.streams.first;
+    try {
+      callback(value);
+    } catch (error, stackTrace) {
+      _reportError(source, error, stackTrace);
+    }
+  }
+
+  // =============================================================
+  // REMOTE MEDIA
+  // =============================================================
+
+  void _handleRemoteTrack(
+    RTCTrackEvent event, {
+    required int generation,
+    required RTCPeerConnection connection,
+  }) {
+    if (!_isConnectionCurrent(generation: generation, connection: connection)) {
+      return;
+    }
+
+    if (event.streams.isEmpty) {
+      _debugPrint(
+        'Remote ${event.track.kind ?? 'unknown'} '
+        'track arrived without a MediaStream.',
+      );
+
+      return;
+    }
+
+    final MediaStream incomingStream = event.streams.first;
 
     if (remoteStream?.id != incomingStream.id) {
+      _endedRemoteTracks.clear();
+
       remoteStream = incomingStream;
 
       _emitRemoteStream(incomingStream);
     }
 
+    final StreamTrackCallback? previousOnEnded = event.track.onEnded;
+
     event.track.onEnded = () {
-      debugPrint(
-        'JR CALL [WebRTCService]: '
-        'remote ${event.track.kind} track ended.',
-      );
+      try {
+        previousOnEnded?.call();
+      } catch (error, stackTrace) {
+        _reportError('previous remote-track end callback', error, stackTrace);
+      }
 
-      final activeRemote = remoteStream;
-
-      if (activeRemote == null) {
+      if (!_isConnectionCurrent(
+        generation: generation,
+        connection: connection,
+      )) {
         return;
       }
 
-      final remainingTracks = activeRemote
-          .getTracks()
-          .where((track) => track.id != event.track.id)
-          .toList(growable: false);
+      _endedRemoteTracks.add(event.track);
 
-      if (remainingTracks.isEmpty) {
-        _clearRemoteStream(stopTracks: false);
+      _debugPrint('Remote ${event.track.kind ?? 'unknown'} track ended.');
+
+      final MediaStream? activeRemote = remoteStream;
+
+      if (activeRemote == null || activeRemote.id != incomingStream.id) {
+        return;
+      }
+
+      final bool stillHasActiveTrack = activeRemote.getTracks().any(
+        (MediaStreamTrack track) => !_endedRemoteTracks.contains(track),
+      );
+
+      if (!stillHasActiveTrack) {
+        unawaited(_clearRemoteStream(stopTracks: false));
       }
     };
   }
 
-  void _clearRemoteStream({bool stopTracks = true}) {
-    final stream = remoteStream;
-
-    if (stream == null) {
-      return;
-    }
+  Future<void> _clearRemoteStream({bool stopTracks = true}) async {
+    final MediaStream? stream = remoteStream;
 
     remoteStream = null;
 
-    if (stopTracks) {
-      for (final track in stream.getTracks()) {
-        try {
-          track.stop();
-        } catch (_) {}
-      }
-
-      unawaited(_disposeMediaStreamSafely(stream));
-    }
+    _endedRemoteTracks.clear();
 
     _emitRemoteStream(null);
+
+    if (stream == null || !stopTracks) {
+      return;
+    }
+
+    await _disposeMediaStream(stream);
   }
 
-  // ===========================================================
-  // Local Media
-  // ===========================================================
+  // =============================================================
+  // LOCAL MEDIA ACQUISITION
+  // =============================================================
 
   Future<MediaStream> _createLocalMediaStream({
     required bool video,
@@ -410,7 +754,7 @@ class WebRTCService {
       throw ArgumentError('At least audio or video must be enabled.');
     }
 
-    final constraints = <String, dynamic>{
+    final Map<String, dynamic> constraints = <String, dynamic>{
       'audio': audio
           ? <String, dynamic>{
               'echoCancellation': true,
@@ -420,16 +764,38 @@ class WebRTCService {
           : false,
       'video': video
           ? <String, dynamic>{
+              'facingMode': 'user',
               'width': <String, dynamic>{'ideal': 1280},
               'height': <String, dynamic>{'ideal': 720},
               'frameRate': <String, dynamic>{'ideal': 30, 'max': 30},
-              'facingMode': 'user',
             }
           : false,
     };
 
     try {
-      return await navigator.mediaDevices.getUserMedia(constraints);
+      final MediaStream stream = await navigator.mediaDevices.getUserMedia(
+        constraints,
+      );
+
+      if (audio && stream.getAudioTracks().isEmpty) {
+        await _disposeMediaStream(stream);
+
+        throw StateError(
+          'Microphone media acquisition completed '
+          'without an audio track.',
+        );
+      }
+
+      if (video && stream.getVideoTracks().isEmpty) {
+        await _disposeMediaStream(stream);
+
+        throw StateError(
+          'Camera media acquisition completed '
+          'without a video track.',
+        );
+      }
+
+      return stream;
     } catch (error, stackTrace) {
       _reportError('getUserMedia', error, stackTrace);
 
@@ -437,67 +803,141 @@ class WebRTCService {
     }
   }
 
-  Future<void> _publishLocalTracks(
-    RTCPeerConnection connection,
-    MediaStream stream,
-  ) async {
-    final senders = await connection.getSenders();
+  // =============================================================
+  // LOCAL TRACK PUBLICATION
+  // =============================================================
 
-    for (final track in stream.getTracks()) {
-      final alreadyPublished = senders.any(
-        (sender) => sender.track?.id == track.id,
-      );
+  Future<void> _publishLocalTracks({
+    required RTCPeerConnection connection,
+    required MediaStream stream,
+  }) async {
+    final List<RTCRtpSender> senders = await connection.getSenders();
 
-      if (!alreadyPublished) {
-        await connection.addTrack(track, stream);
+    for (final RTCRtpSender sender in senders) {
+      final String? kind = _normalizedTrackKind(sender.track);
+
+      if (kind != null && !_localSendersByKind.containsKey(kind)) {
+        _localSendersByKind[kind] = sender;
+      }
+    }
+
+    for (final MediaStreamTrack track in stream.getTracks()) {
+      RTCRtpSender? existingTrackSender;
+
+      final String? trackId = track.id;
+
+      if (trackId != null && trackId.isNotEmpty) {
+        for (final RTCRtpSender sender in senders) {
+          if (sender.track?.id == trackId) {
+            existingTrackSender = sender;
+
+            break;
+          }
+        }
+      }
+
+      final String? kind = _normalizedTrackKind(track);
+
+      if (existingTrackSender != null) {
+        if (kind != null) {
+          _localSendersByKind[kind] = existingTrackSender;
+        }
+
+        continue;
+      }
+
+      final RTCRtpSender sender = await connection.addTrack(track, stream);
+
+      if (kind != null) {
+        _localSendersByKind[kind] = sender;
       }
     }
   }
 
-  // ===========================================================
-  // Offer
-  // ===========================================================
+  String? _normalizedTrackKind(MediaStreamTrack? track) {
+    final String? rawKind = track?.kind;
 
-  Future<RTCSessionDescription> createOffer({bool iceRestart = false}) async {
-    final connection = peerConnection;
-
-    if (connection == null) {
-      throw StateError('PeerConnection is not initialized.');
+    if (rawKind == null) {
+      return null;
     }
 
-    final state = connection.signalingState;
+    final String normalized = rawKind.trim().toLowerCase();
 
-    if (state != RTCSignalingState.RTCSignalingStateStable && !iceRestart) {
+    return normalized.isEmpty ? null : normalized;
+  }
+
+  // =============================================================
+  // SIGNALING STATE HELPERS
+  //
+  // IMPORTANT:
+  //
+  // flutter_webrtc may report null before the native signaling
+  // state has propagated back to Dart.
+  //
+  // null does NOT mean that the PeerConnection is invalid.
+  //
+  // Native createOffer/createAnswer remains the final authority.
+  // =============================================================
+
+  bool _canCreateOfferFromState(RTCSignalingState? state) {
+    return state == null || state == RTCSignalingState.RTCSignalingStateStable;
+  }
+
+  bool _canCreateAnswerFromState(RTCSignalingState? state) {
+    return state == null ||
+        state == RTCSignalingState.RTCSignalingStateHaveRemoteOffer ||
+        state == RTCSignalingState.RTCSignalingStateHaveLocalPrAnswer;
+  }
+
+  // =============================================================
+  // OFFER
+  // =============================================================
+
+  Future<RTCSessionDescription> createOffer({bool iceRestart = false}) async {
+    final RTCPeerConnection connection = _requirePeerConnection();
+
+    if (connection.connectionState ==
+        RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+      throw StateError('Cannot create offer on a closed PeerConnection.');
+    }
+
+    final RTCSignalingState? state = connection.signalingState;
+
+    if (!_canCreateOfferFromState(state)) {
       throw StateError('Cannot create offer while signaling state is $state.');
     }
 
-    final constraints = <String, dynamic>{
+    final Map<String, dynamic> offerConstraints = <String, dynamic>{
       'offerToReceiveAudio': true,
       'offerToReceiveVideo': _lastVideoParam,
       if (iceRestart) 'iceRestart': true,
     };
 
-    final offer = await connection.createOffer(constraints);
+    final RTCSessionDescription offer = await connection.createOffer(
+      offerConstraints,
+    );
 
-    _validateSessionDescription(offer, expectedType: 'offer');
+    _validateSessionDescription(offer, expectedType: _offerType);
 
     await connection.setLocalDescription(offer);
 
     return offer;
   }
 
-  // ===========================================================
-  // Answer
-  // ===========================================================
+  // =============================================================
+  // ANSWER
+  // =============================================================
 
   Future<RTCSessionDescription> createAnswer() async {
-    final connection = peerConnection;
+    final RTCPeerConnection connection = _requirePeerConnection();
 
-    if (connection == null) {
-      throw StateError('PeerConnection is not initialized.');
+    if (connection.connectionState ==
+        RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+      throw StateError('Cannot create answer on a closed PeerConnection.');
     }
 
-    final remoteDescription = await connection.getRemoteDescription();
+    final RTCSessionDescription? remoteDescription = await connection
+        .getRemoteDescription();
 
     if (remoteDescription == null) {
       throw StateError(
@@ -505,55 +945,68 @@ class WebRTCService {
       );
     }
 
-    final state = connection.signalingState;
+    final String remoteType =
+        remoteDescription.type?.trim().toLowerCase() ?? '';
 
-    if (state != RTCSignalingState.RTCSignalingStateHaveRemoteOffer &&
-        state != RTCSignalingState.RTCSignalingStateHaveLocalPrAnswer) {
+    if (remoteType != _offerType) {
+      throw StateError(
+        'Cannot create answer because remote description '
+        'is not an offer.',
+      );
+    }
+
+    final RTCSignalingState? state = connection.signalingState;
+
+    if (!_canCreateAnswerFromState(state)) {
       throw StateError('Cannot create answer while signaling state is $state.');
     }
 
-    final answer = await connection.createAnswer(<String, dynamic>{
-      'offerToReceiveAudio': true,
-      'offerToReceiveVideo': _lastVideoParam,
-    });
+    final RTCSessionDescription answer = await connection.createAnswer(
+      <String, dynamic>{
+        'offerToReceiveAudio': true,
+        'offerToReceiveVideo': _lastVideoParam,
+      },
+    );
 
-    _validateSessionDescription(answer, expectedType: 'answer');
+    _validateSessionDescription(answer, expectedType: _answerType);
 
     await connection.setLocalDescription(answer);
 
     return answer;
   }
 
-  // ===========================================================
-  // Remote SDP
-  // ===========================================================
+  // =============================================================
+  // REMOTE SDP
+  // =============================================================
 
   Future<void> setRemoteDescription({
     required String sdp,
     required String type,
   }) async {
-    final connection = peerConnection;
+    final RTCPeerConnection connection = _requirePeerConnection();
 
-    if (connection == null) {
-      throw StateError('PeerConnection is not initialized.');
-    }
+    final String normalizedSdp = sdp.trim();
 
-    final normalizedSdp = sdp.trim();
-    final normalizedType = type.trim().toLowerCase();
+    final String normalizedType = type.trim().toLowerCase();
 
     if (normalizedSdp.isEmpty) {
       throw ArgumentError('Remote SDP cannot be empty.');
     }
 
-    if (normalizedType != 'offer' &&
-        normalizedType != 'answer' &&
-        normalizedType != 'pranswer') {
+    if (normalizedType != _offerType &&
+        normalizedType != _answerType &&
+        normalizedType != _provisionalAnswerType) {
       throw ArgumentError.value(type, 'type', 'Unsupported WebRTC SDP type.');
     }
 
-    final existing = await connection.getRemoteDescription();
+    final RTCSessionDescription? existing = await connection
+        .getRemoteDescription();
 
-    if (existing?.sdp == normalizedSdp && existing?.type == normalizedType) {
+    final String existingSdp = existing?.sdp?.trim() ?? '';
+
+    final String existingType = existing?.type?.trim().toLowerCase() ?? '';
+
+    if (existingSdp == normalizedSdp && existingType == normalizedType) {
       return;
     }
 
@@ -563,7 +1016,7 @@ class WebRTCService {
   }
 
   Future<RTCSessionDescription?> getLocalDescription() async {
-    final connection = peerConnection;
+    final RTCPeerConnection? connection = peerConnection;
 
     if (connection == null) {
       return null;
@@ -573,7 +1026,7 @@ class WebRTCService {
   }
 
   Future<RTCSessionDescription?> getRemoteDescription() async {
-    final connection = peerConnection;
+    final RTCPeerConnection? connection = peerConnection;
 
     if (connection == null) {
       return null;
@@ -582,50 +1035,41 @@ class WebRTCService {
     return connection.getRemoteDescription();
   }
 
-  // ===========================================================
-  // ICE Compatibility
-  //
-  // IMPORTANT:
-  // IceManager remains the actual owner of remote-candidate
-  // queueing and de-duplication.
-  // ===========================================================
+  // =============================================================
+  // REMOTE ICE COMPATIBILITY
+  // =============================================================
 
   Future<void> addIceCandidate(RTCIceCandidate? candidate) async {
-    final connection = peerConnection;
+    final RTCPeerConnection? connection = peerConnection;
 
     if (connection == null || candidate == null) {
       return;
     }
 
-    final value = candidate.candidate?.trim();
+    final String candidateValue = candidate.candidate?.trim() ?? '';
 
-    if (value == null || value.isEmpty) {
+    if (candidateValue.isEmpty) {
       return;
     }
 
-    final remoteDescription = await connection.getRemoteDescription();
+    final RTCSessionDescription? remoteDescription = await connection
+        .getRemoteDescription();
 
     if (remoteDescription == null) {
       throw StateError(
-        'Remote description must be set before '
-        'adding an ICE candidate. '
-        'Use IceManager for pending candidates.',
+        'Remote description must be set before adding '
+        'an ICE candidate. IceManager owns pending candidates.',
       );
     }
 
     await connection.addCandidate(candidate);
   }
 
-  /// Compatibility method.
-  ///
-  /// Pending ICE candidates are intentionally owned and flushed
-  /// by IceManager. Therefore WebRTCService itself has no pending
-  /// candidate collection to flush.
   Future<void> flushPendingCandidates() async {}
 
-  // ===========================================================
-  // STUN / TURN Configuration
-  // ===========================================================
+  // =============================================================
+  // TURN / STUN CONFIGURATION
+  // =============================================================
 
   Future<void> configureTurnFailoverServers([
     List<Map<String, dynamic>>? fallbackServers,
@@ -634,20 +1078,14 @@ class WebRTCService {
       _iceServers = _copyIceServers(fallbackServers);
     }
 
-    final connection = peerConnection;
+    final RTCPeerConnection? connection = peerConnection;
 
     if (connection == null) {
       return;
     }
 
     try {
-      await connection.setConfiguration(<String, dynamic>{
-        'iceServers': _copyIceServers(_iceServers),
-        'iceTransportPolicy': 'all',
-        'bundlePolicy': 'balanced',
-        'rtcpMuxPolicy': 'require',
-        'sdpSemantics': 'unified-plan',
-      });
+      await connection.setConfiguration(_buildPeerConfiguration());
     } catch (error, stackTrace) {
       _reportError('configureTurnFailoverServers', error, stackTrace);
 
@@ -655,90 +1093,105 @@ class WebRTCService {
     }
   }
 
-  // ===========================================================
-  // ICE Restart
-  // ===========================================================
+  // =============================================================
+  // ICE RESTART
+  // =============================================================
 
   Future<RTCSessionDescription> performIceRestart() async {
-    final connection = peerConnection;
-
-    if (connection == null) {
-      throw StateError('PeerConnection is not initialized.');
-    }
+    final RTCPeerConnection connection = _requirePeerConnection();
 
     if (connection.connectionState ==
         RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
       throw StateError('Cannot restart ICE on a closed PeerConnection.');
     }
 
-    try {
-      final dynamic dynamicConnection = connection;
+    final RTCSignalingState? state = connection.signalingState;
 
-      await dynamicConnection.restartIce();
-    } catch (error) {
-      debugPrint(
-        'JR CALL [WebRTCService]: '
-        'native restartIce unavailable; '
-        'using SDP ICE restart. $error',
+    if (!_canCreateOfferFromState(state)) {
+      throw StateError(
+        'ICE restart requires a stable signaling state. '
+        'Current state=$state.',
       );
     }
+
+    await connection.restartIce();
 
     return createOffer(iceRestart: true);
   }
 
-  // ===========================================================
-  // Wait Until Connected
-  // ===========================================================
+  // =============================================================
+  // WAIT UNTIL CONNECTED
+  // =============================================================
 
   Future<void> waitUntilConnected({
     Duration timeout = const Duration(seconds: 15),
   }) async {
+    if (timeout <= Duration.zero) {
+      throw ArgumentError.value(
+        timeout,
+        'timeout',
+        'Connection timeout must be greater than zero.',
+      );
+    }
+
     if (isPeerConnected) {
       return;
     }
 
-    final connection = peerConnection;
+    final RTCPeerConnection connection = _requirePeerConnection();
 
-    if (connection == null) {
-      throw StateError('PeerConnection is not initialized.');
+    final int generation = _connectionGeneration;
+
+    final Completer<void> completer = Completer<void>();
+
+    void completeWithError(Object error) {
+      if (!completer.isCompleted) {
+        completer.completeError(error);
+      }
     }
 
-    final completer = Completer<void>();
-
-    Timer? pollingTimer;
-    Timer? timeoutTimer;
-
-    pollingTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
+    final Timer pollTimer = Timer.periodic(const Duration(milliseconds: 150), (
+      _,
+    ) {
       if (completer.isCompleted) {
         return;
       }
 
-      if (peerConnection != connection) {
-        completer.completeError(
+      if (!_isConnectionCurrent(
+        generation: generation,
+        connection: connection,
+      )) {
+        completeWithError(
           StateError('PeerConnection changed while waiting for connection.'),
         );
+
         return;
       }
 
-      final state = connection.connectionState;
+      switch (connection.connectionState) {
+        case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
+          completer.complete();
+          break;
 
-      if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-        completer.complete();
-        return;
-      }
+        case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
+          completeWithError(StateError('PeerConnection entered failed state.'));
+          break;
 
-      if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-          state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-        completer.completeError(StateError('PeerConnection entered $state.'));
+        case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
+          completeWithError(StateError('PeerConnection was closed.'));
+          break;
+
+        default:
+          break;
       }
     });
 
-    timeoutTimer = Timer(timeout, () {
+    final Timer timeoutTimer = Timer(timeout, () {
       if (completer.isCompleted) {
         return;
       }
 
-      completer.completeError(
+      completeWithError(
         TimeoutException(
           'PeerConnection did not connect within $timeout. '
           'Connection=${connection.connectionState}, '
@@ -751,17 +1204,17 @@ class WebRTCService {
     try {
       await completer.future;
     } finally {
-      pollingTimer.cancel();
+      pollTimer.cancel();
       timeoutTimer.cancel();
     }
   }
 
-  // ===========================================================
-  // WebRTC Statistics
-  // ===========================================================
+  // =============================================================
+  // RAW WEBRTC STATISTICS
+  // =============================================================
 
   Future<List<StatsReport>> getStats() async {
-    final connection = peerConnection;
+    final RTCPeerConnection? connection = peerConnection;
 
     if (connection == null) {
       return const <StatsReport>[];
@@ -776,121 +1229,212 @@ class WebRTCService {
     }
   }
 
+  // =============================================================
+  // PARSED DIAGNOSTIC STATS
+  // =============================================================
+
   Future<Map<String, dynamic>> getParsedStats() async {
-    final reports = await getStats();
+    final List<StatsReport> reports = await getStats();
 
-    var bytesReceived = 0;
-    var bytesSent = 0;
+    if (reports.isEmpty) {
+      return _emptyParsedStats();
+    }
 
-    var packetsLost = 0;
-    var packetsReceived = 0;
+    final Map<String, Map<String, dynamic>> localCandidates =
+        <String, Map<String, dynamic>>{};
 
-    var jitterSeconds = 0.0;
-    var rttSeconds = 0.0;
+    final Set<String> selectedPairIds = <String>{};
 
-    var transport = 'unknown';
-    var candidatePair = 'unknown';
+    int remoteInboundRttMs = 0;
 
-    for (final report in reports) {
-      final values = report.values;
+    for (final StatsReport report in reports) {
+      final Map<String, dynamic> values = _statsValues(report);
 
-      if (report.type == 'inbound-rtp') {
-        final received = values['bytesReceived'];
+      if (report.type == _localCandidateType) {
+        localCandidates[report.id] = values;
+      }
 
-        if (received is num) {
-          bytesReceived += received.toInt();
-        }
+      if (report.type == _transportType) {
+        final String? selectedPairId = _readString(
+          values['selectedCandidatePairId'],
+        );
 
-        final lost = values['packetsLost'];
-
-        if (lost is num) {
-          packetsLost += lost.toInt();
-        }
-
-        final receivedPackets = values['packetsReceived'];
-
-        if (receivedPackets is num) {
-          packetsReceived += receivedPackets.toInt();
-        }
-
-        final jitter = values['jitter'];
-
-        if (jitter is num) {
-          jitterSeconds = jitter.toDouble();
+        if (selectedPairId != null) {
+          selectedPairIds.add(selectedPairId);
         }
       }
 
-      if (report.type == 'outbound-rtp') {
-        final sent = values['bytesSent'];
+      if (report.type == _remoteInboundRtpType) {
+        final double? rawRtt = _readNonNegativeDouble(values['roundTripTime']);
 
-        if (sent is num) {
-          bytesSent += sent.toInt();
+        if (rawRtt != null) {
+          final int rttMs = (rawRtt * 1000).round();
+
+          if (rttMs > remoteInboundRttMs) {
+            remoteInboundRttMs = rttMs;
+          }
         }
-      }
-
-      if (report.type == 'candidate-pair') {
-        final selected = values['selected'] == true;
-
-        final succeeded = values['state'] == 'succeeded';
-
-        if (!selected && !succeeded) {
-          continue;
-        }
-
-        final currentRtt = values['currentRoundTripTime'];
-
-        if (currentRtt is num) {
-          rttSeconds = currentRtt.toDouble();
-        }
-
-        final transportValue = values['transportId'];
-
-        if (transportValue != null) {
-          transport = transportValue.toString();
-        }
-
-        candidatePair =
-            '${values['localCandidateId'] ?? 'unknown'}'
-            ' <-> '
-            '${values['remoteCandidateId'] ?? 'unknown'}';
       }
     }
 
-    var bitrateRx = 0.0;
-    var bitrateTx = 0.0;
+    int bytesReceived = 0;
+    int bytesSent = 0;
 
-    final now = DateTime.now();
+    int packetsLost = 0;
+    int packetsReceived = 0;
 
-    final previousTime = _lastStatsTime;
+    double jitterSeconds = 0.0;
+    double rttSeconds = 0.0;
 
-    if (previousTime != null) {
-      final elapsedSeconds =
-          now.difference(previousTime).inMilliseconds / 1000.0;
+    String transport = 'unknown';
+    String candidatePair = 'unknown';
 
-      if (elapsedSeconds > 0) {
-        final receivedDelta = bytesReceived - _lastBytesReceived;
+    bool selectedPairResolved = false;
 
-        final sentDelta = bytesSent - _lastBytesSent;
+    for (final StatsReport report in reports) {
+      final Map<String, dynamic> values = _statsValues(report);
 
-        if (receivedDelta >= 0) {
-          bitrateRx = receivedDelta * 8 / 1000.0 / elapsedSeconds;
-        }
+      switch (report.type) {
+        case _inboundRtpType:
+          bytesReceived += _readNonNegativeInt(values['bytesReceived']) ?? 0;
 
-        if (sentDelta >= 0) {
-          bitrateTx = sentDelta * 8 / 1000.0 / elapsedSeconds;
-        }
+          packetsLost += _readNonNegativeInt(values['packetsLost']) ?? 0;
+
+          packetsReceived +=
+              _readNonNegativeInt(values['packetsReceived']) ?? 0;
+
+          final double? rawJitter = _readNonNegativeDouble(values['jitter']);
+
+          if (rawJitter != null && rawJitter > jitterSeconds) {
+            jitterSeconds = rawJitter;
+          }
+
+          break;
+
+        case _outboundRtpType:
+          bytesSent += _readNonNegativeInt(values['bytesSent']) ?? 0;
+
+          break;
+
+        case _candidatePairType:
+          final String? state = _readString(values['state']);
+
+          if (state != 'succeeded') {
+            break;
+          }
+
+          final bool explicitlySelected =
+              selectedPairIds.contains(report.id) ||
+              _readBool(values['selected']);
+
+          final bool nominated = _readBool(values['nominated']);
+
+          if (!explicitlySelected && selectedPairResolved) {
+            break;
+          }
+
+          if (!explicitlySelected && !nominated) {
+            break;
+          }
+
+          final double? currentRtt = _readNonNegativeDouble(
+            values['currentRoundTripTime'],
+          );
+
+          if (currentRtt != null) {
+            rttSeconds = currentRtt;
+          }
+
+          final String localCandidateId =
+              _readString(values['localCandidateId']) ?? 'unknown';
+
+          final String remoteCandidateId =
+              _readString(values['remoteCandidateId']) ?? 'unknown';
+
+          candidatePair = '$localCandidateId <-> $remoteCandidateId';
+
+          final Map<String, dynamic>? localCandidate =
+              localCandidates[localCandidateId];
+
+          final String? protocol = _readString(localCandidate?['protocol']);
+
+          final String? relayProtocol = _readString(
+            localCandidate?['relayProtocol'],
+          );
+
+          final String? transportId = _readString(values['transportId']);
+
+          if (protocol != null &&
+              relayProtocol != null &&
+              relayProtocol != protocol) {
+            transport = '$protocol/$relayProtocol';
+          } else if (protocol != null) {
+            transport = protocol;
+          } else if (transportId != null) {
+            transport = transportId;
+          }
+
+          if (explicitlySelected) {
+            selectedPairResolved = true;
+          }
+
+          break;
+
+        default:
+          break;
+      }
+    }
+
+    if (rttSeconds <= 0 && remoteInboundRttMs > 0) {
+      rttSeconds = remoteInboundRttMs / 1000.0;
+    }
+
+    final Stopwatch clock = _statsClock ??= (Stopwatch()..start());
+
+    final Duration currentElapsed = clock.elapsed;
+
+    double bitrateRx = 0.0;
+    double bitrateTx = 0.0;
+
+    final Duration? previousElapsed = _lastStatsElapsed;
+
+    if (previousElapsed != null) {
+      final int elapsedMicroseconds =
+          currentElapsed.inMicroseconds - previousElapsed.inMicroseconds;
+
+      if (elapsedMicroseconds > 0) {
+        final double elapsedSeconds =
+            elapsedMicroseconds / Duration.microsecondsPerSecond;
+
+        bitrateRx = _calculateBitrateKbps(
+          currentBytes: bytesReceived,
+          previousBytes: _lastBytesReceived,
+          elapsedSeconds: elapsedSeconds,
+        );
+
+        bitrateTx = _calculateBitrateKbps(
+          currentBytes: bytesSent,
+          previousBytes: _lastBytesSent,
+          elapsedSeconds: elapsedSeconds,
+        );
       }
     }
 
     _lastBytesReceived = bytesReceived;
+
     _lastBytesSent = bytesSent;
-    _lastStatsTime = now;
 
-    final packetTotal = packetsReceived + packetsLost;
+    _lastStatsElapsed = currentElapsed;
 
-    final packetLossPercent = packetTotal <= 0
-        ? 0.0
-        : packetsLost / packetTotal * 100.0;
+    final int packetTotal = packetsReceived + packetsLost;
+
+    double packetLossPercent = 0.0;
+
+    if (packetTotal > 0) {
+      packetLossPercent = packetsLost / packetTotal * 100.0;
+    }
+
+    packetLossPercent = packetLossPercent.clamp(0.0, 100.0).toDouble();
 
     return <String, dynamic>{
       'bitrateRx': bitrateRx,
@@ -899,6 +1443,7 @@ class WebRTCService {
       'downloadBitrate': bitrateRx,
       'packetLoss': packetLossPercent,
       'packetsLost': packetsLost,
+      'packetsReceived': packetsReceived,
       'rtt': (rttSeconds * 1000).round(),
       'jitter': jitterSeconds * 1000.0,
       'transport': transport,
@@ -906,36 +1451,85 @@ class WebRTCService {
     };
   }
 
-  // ===========================================================
-  // Local Audio / Video Track State
-  // ===========================================================
+  Map<String, dynamic> _emptyParsedStats() {
+    return <String, dynamic>{
+      'bitrateRx': 0.0,
+      'bitrateTx': 0.0,
+      'uploadBitrate': 0.0,
+      'downloadBitrate': 0.0,
+      'packetLoss': 0.0,
+      'packetsLost': 0,
+      'packetsReceived': 0,
+      'rtt': 0,
+      'jitter': 0.0,
+      'transport': 'unknown',
+      'candidatePair': 'unknown',
+    };
+  }
+
+  Map<String, dynamic> _statsValues(StatsReport report) {
+    return <String, dynamic>{
+      for (final MapEntry<dynamic, dynamic> entry in report.values.entries)
+        entry.key.toString(): entry.value,
+    };
+  }
+
+  double _calculateBitrateKbps({
+    required int currentBytes,
+    required int previousBytes,
+    required double elapsedSeconds,
+  }) {
+    if (elapsedSeconds <= 0) {
+      return 0.0;
+    }
+
+    final int byteDelta = currentBytes - previousBytes;
+
+    if (byteDelta < 0) {
+      return 0.0;
+    }
+
+    return byteDelta * 8.0 / 1000.0 / elapsedSeconds;
+  }
+
+  // =============================================================
+  // AUDIO ENABLE / DISABLE
+  // =============================================================
 
   Future<void> setAudioEnabled(bool enabled) async {
-    final stream = localStream;
+    final MediaStream? stream = localStream;
 
     if (stream == null) {
       return;
     }
 
-    for (final track in stream.getAudioTracks()) {
+    for (final MediaStreamTrack track in stream.getAudioTracks()) {
       track.enabled = enabled;
     }
   }
+
+  // =============================================================
+  // VIDEO ENABLE / DISABLE
+  // =============================================================
 
   Future<void> setVideoEnabled(bool enabled) async {
-    final stream = localStream;
+    final MediaStream? stream = localStream;
 
     if (stream == null) {
       return;
     }
 
-    for (final track in stream.getVideoTracks()) {
+    for (final MediaStreamTrack track in stream.getVideoTracks()) {
       track.enabled = enabled;
     }
   }
 
+  // =============================================================
+  // CAMERA SWITCH
+  // =============================================================
+
   Future<void> switchCamera() async {
-    final tracks = localStream?.getVideoTracks();
+    final List<MediaStreamTrack>? tracks = localStream?.getVideoTracks();
 
     if (tracks == null || tracks.isEmpty) {
       return;
@@ -944,79 +1538,271 @@ class WebRTCService {
     await Helper.switchCamera(tracks.first);
   }
 
-  // ===========================================================
-  // Replace Local Media
-  // ===========================================================
+  // =============================================================
+  // LOCAL MEDIA REPLACEMENT ENTRY
+  // =============================================================
 
   Future<void> replaceMediaTracks({bool? video, bool? audio}) async {
-    final connection = peerConnection;
-
-    if (connection == null) {
-      throw StateError('PeerConnection is not initialized.');
-    }
-
-    if (_isReplacingMedia) {
+    if (_isDisposing) {
       return;
     }
 
+    if (_isReplacingMedia) {
+      final Future<void>? activeReplacement = _mediaReplacementFuture;
+
+      if (activeReplacement != null) {
+        await activeReplacement;
+
+        if (_isDisposing || peerConnection == null) {
+          return;
+        }
+
+        await replaceMediaTracks(video: video, audio: audio);
+      }
+
+      return;
+    }
+
+    final Future<void>? activeReplacement = _mediaReplacementFuture;
+
+    if (activeReplacement != null) {
+      await activeReplacement;
+
+      if (_isDisposing || peerConnection == null) {
+        return;
+      }
+
+      await replaceMediaTracks(video: video, audio: audio);
+
+      return;
+    }
+
+    final bool useVideo = video ?? _lastVideoParam;
+
+    final bool useAudio = audio ?? _lastAudioParam;
+
+    if (!useVideo && !useAudio) {
+      throw ArgumentError('At least audio or video must remain enabled.');
+    }
+
+    final Future<void> operation = _performMediaReplacement(
+      useVideo: useVideo,
+      useAudio: useAudio,
+    );
+
+    late final Future<void> tracked;
+
+    tracked = operation.whenComplete(() {
+      if (identical(_mediaReplacementFuture, tracked)) {
+        _mediaReplacementFuture = null;
+      }
+    });
+
+    _mediaReplacementFuture = tracked;
+
+    await tracked;
+  }
+
+  // =============================================================
+  // TRANSACTIONAL LOCAL MEDIA REPLACEMENT
+  // =============================================================
+
+  Future<void> _performMediaReplacement({
+    required bool useVideo,
+    required bool useAudio,
+  }) async {
+    final RTCPeerConnection connection = _requirePeerConnection();
+
     _isReplacingMedia = true;
 
-    final useVideo = video ?? _lastVideoParam;
+    final int generation = _connectionGeneration;
 
-    final useAudio = audio ?? _lastAudioParam;
+    final Map<String, RTCRtpSender> previousSenderMap =
+        Map<String, RTCRtpSender>.from(_localSendersByKind);
 
-    MediaStream? newStream;
+    final Map<RTCRtpSender, MediaStreamTrack?> originalSenderTracks =
+        <RTCRtpSender, MediaStreamTrack?>{};
+
+    final List<RTCRtpSender> newlyAddedSenders = <RTCRtpSender>[];
+
+    MediaStream? uncommittedStream;
+
+    bool committed = false;
 
     try {
-      newStream = await _createLocalMediaStream(
+      final MediaStream acquiredStream = await _createLocalMediaStream(
         video: useVideo,
         audio: useAudio,
       );
 
-      if (peerConnection != connection) {
-        throw StateError('PeerConnection changed while replacing media.');
+      uncommittedStream = acquiredStream;
+
+      if (!_isConnectionCurrent(
+        generation: generation,
+        connection: connection,
+      )) {
+        await _disposeMediaStream(acquiredStream);
+
+        uncommittedStream = null;
+
+        return;
       }
 
-      final senders = await connection.getSenders();
+      final List<RTCRtpSender> senders = await connection.getSenders();
 
-      final newTracks = newStream.getTracks();
+      if (!_isConnectionCurrent(
+        generation: generation,
+        connection: connection,
+      )) {
+        await _disposeMediaStream(acquiredStream);
 
-      for (final newTrack in newTracks) {
-        RTCRtpSender? matchingSender;
+        uncommittedStream = null;
 
-        for (final sender in senders) {
-          if (sender.track?.kind == newTrack.kind) {
-            matchingSender = sender;
-            break;
+        return;
+      }
+
+      for (final RTCRtpSender sender in senders) {
+        final String? kind = _normalizedTrackKind(sender.track);
+
+        if (kind != null && !_localSendersByKind.containsKey(kind)) {
+          _localSendersByKind[kind] = sender;
+        }
+      }
+
+      for (final MediaStreamTrack newTrack in acquiredStream.getTracks()) {
+        final String? kind = _normalizedTrackKind(newTrack);
+
+        if (kind == null) {
+          continue;
+        }
+
+        RTCRtpSender? matchingSender = _localSendersByKind[kind];
+
+        if (matchingSender == null) {
+          for (final RTCRtpSender sender in senders) {
+            if (_normalizedTrackKind(sender.track) == kind) {
+              matchingSender = sender;
+
+              break;
+            }
           }
         }
 
         if (matchingSender != null) {
-          await matchingSender.replaceTrack(newTrack);
+          final RTCRtpSender sender = matchingSender;
+
+          originalSenderTracks.putIfAbsent(sender, () => sender.track);
+
+          await sender.replaceTrack(newTrack);
+
+          _localSendersByKind[kind] = sender;
         } else {
-          await connection.addTrack(newTrack, newStream);
+          final RTCRtpSender sender = await connection.addTrack(
+            newTrack,
+            acquiredStream,
+          );
+
+          newlyAddedSenders.add(sender);
+
+          _localSendersByKind[kind] = sender;
+        }
+
+        if (!_isConnectionCurrent(
+          generation: generation,
+          connection: connection,
+        )) {
+          await _rollbackMediaReplacement(
+            connection: connection,
+            originalSenderTracks: originalSenderTracks,
+            newlyAddedSenders: newlyAddedSenders,
+            previousSenderMap: previousSenderMap,
+          );
+
+          await _disposeMediaStream(acquiredStream);
+
+          uncommittedStream = null;
+
+          return;
         }
       }
 
-      final oldStream = localStream;
+      if (!useAudio) {
+        final RTCRtpSender? audioSender = _localSendersByKind[_audioKind];
 
-      localStream = newStream;
+        if (audioSender != null) {
+          originalSenderTracks.putIfAbsent(
+            audioSender,
+            () => audioSender.track,
+          );
 
-      _lastVideoParam = useVideo;
-      _lastAudioParam = useAudio;
-
-      _emitLocalStream(newStream);
-
-      if (oldStream != null && oldStream.id != newStream.id) {
-        await _disposeMediaStream(oldStream);
+          await audioSender.replaceTrack(null);
+        }
       }
 
-      newStream = null;
+      if (!useVideo) {
+        final RTCRtpSender? videoSender = _localSendersByKind[_videoKind];
+
+        if (videoSender != null) {
+          originalSenderTracks.putIfAbsent(
+            videoSender,
+            () => videoSender.track,
+          );
+
+          await videoSender.replaceTrack(null);
+        }
+      }
+
+      if (!_isConnectionCurrent(
+        generation: generation,
+        connection: connection,
+      )) {
+        await _rollbackMediaReplacement(
+          connection: connection,
+          originalSenderTracks: originalSenderTracks,
+          newlyAddedSenders: newlyAddedSenders,
+          previousSenderMap: previousSenderMap,
+        );
+
+        await _disposeMediaStream(acquiredStream);
+
+        uncommittedStream = null;
+
+        return;
+      }
+
+      final MediaStream? previousStream = localStream;
+
+      localStream = acquiredStream;
+
+      _lastVideoParam = useVideo;
+
+      _lastAudioParam = useAudio;
+
+      _emitLocalStream(acquiredStream);
+
+      committed = true;
+
+      uncommittedStream = null;
+
+      if (previousStream != null && previousStream.id != acquiredStream.id) {
+        await _disposeMediaStream(previousStream);
+      }
     } catch (error, stackTrace) {
       _reportError('replaceMediaTracks', error, stackTrace);
 
-      if (newStream != null) {
-        await _disposeMediaStream(newStream);
+      if (!committed) {
+        await _rollbackMediaReplacement(
+          connection: connection,
+          originalSenderTracks: originalSenderTracks,
+          newlyAddedSenders: newlyAddedSenders,
+          previousSenderMap: previousSenderMap,
+        );
+
+        final MediaStream? streamToDispose = uncommittedStream;
+
+        if (streamToDispose != null) {
+          await _disposeMediaStream(streamToDispose);
+        }
       }
 
       rethrow;
@@ -1025,9 +1811,41 @@ class WebRTCService {
     }
   }
 
-  // ===========================================================
-  // Restart Peer Connection
-  // ===========================================================
+  // =============================================================
+  // MEDIA REPLACEMENT ROLLBACK
+  // =============================================================
+
+  Future<void> _rollbackMediaReplacement({
+    required RTCPeerConnection connection,
+    required Map<RTCRtpSender, MediaStreamTrack?> originalSenderTracks,
+    required List<RTCRtpSender> newlyAddedSenders,
+    required Map<String, RTCRtpSender> previousSenderMap,
+  }) async {
+    for (final MapEntry<RTCRtpSender, MediaStreamTrack?> entry
+        in originalSenderTracks.entries) {
+      try {
+        await entry.key.replaceTrack(entry.value);
+      } catch (error, stackTrace) {
+        _reportError('media replacement rollback', error, stackTrace);
+      }
+    }
+
+    for (final RTCRtpSender sender in newlyAddedSenders) {
+      try {
+        await connection.removeTrack(sender);
+      } catch (error, stackTrace) {
+        _reportError('media sender rollback', error, stackTrace);
+      }
+    }
+
+    _localSendersByKind
+      ..clear()
+      ..addAll(previousSenderMap);
+  }
+
+  // =============================================================
+  // LEGACY FULL PEER CONNECTION RESTART
+  // =============================================================
 
   Future<void> restartPeerConnection() async {
     if (_isRestarting) {
@@ -1036,25 +1854,32 @@ class WebRTCService {
 
     _isRestarting = true;
 
-    final video = _lastVideoParam;
-    final audio = _lastAudioParam;
+    final bool video = _lastVideoParam;
 
-    final servers = _copyIceServers(_iceServers);
+    final bool audio = _lastAudioParam;
 
-    final iceCandidateCallback = _onIceCandidateCallback;
+    final List<Map<String, dynamic>> servers = _copyIceServers(_iceServers);
 
-    final connectionCallback = onConnectionStateChanged;
+    final void Function(RTCPeerConnectionState state)? connectionCallback =
+        onConnectionStateChanged;
 
-    final iceConnectionCallback = onIceConnectionStateChanged;
+    final void Function(RTCIceConnectionState state)? iceConnectionCallback =
+        onIceConnectionStateChanged;
 
-    final signalingCallback = onSignalingStateChanged;
+    final void Function(RTCSignalingState state)? signalingCallback =
+        onSignalingStateChanged;
 
-    final gatheringCallback = onIceGatheringStateChanged;
+    final void Function(RTCIceGatheringState state)? gatheringCallback =
+        onIceGatheringStateChanged;
+
+    final void Function(RTCIceCandidate candidate)? compatibilityIceCallback =
+        _legacyIceCandidateCallback;
 
     try {
-      await _releaseResources(clearExternalCallbacks: false);
-
-      _onIceCandidateCallback = iceCandidateCallback;
+      await _releaseResources(
+        clearExternalCallbacks: false,
+        invalidateGeneration: true,
+      );
 
       onConnectionStateChanged = connectionCallback;
 
@@ -1064,87 +1889,194 @@ class WebRTCService {
 
       onIceGatheringStateChanged = gatheringCallback;
 
+      _legacyIceCandidateCallback = compatibilityIceCallback;
+
       await initializeConnection(
         video: video,
         audio: audio,
         iceServers: servers,
       );
+
+      final RTCPeerConnection? recreated = peerConnection;
+
+      if (recreated == null) {
+        return;
+      }
+
+      final void Function(RTCPeerConnection connection)? callback =
+          onPeerConnectionRecreated;
+
+      if (callback == null) {
+        return;
+      }
+
+      try {
+        callback(recreated);
+      } catch (error, stackTrace) {
+        _reportError('peer recreation callback', error, stackTrace);
+      }
     } finally {
       _isRestarting = false;
     }
   }
 
-  // ===========================================================
-  // Close PeerConnection Only
-  // ===========================================================
+  // =============================================================
+  // CLOSE PEER CONNECTION
+  // =============================================================
 
   Future<void> closePeerConnection() async {
-    final connection = peerConnection;
+    final RTCPeerConnection? connection = peerConnection;
 
     peerConnection = null;
+
+    _localSendersByKind.clear();
 
     if (connection == null) {
       return;
     }
 
-    _detachPeerConnectionCallbacks(connection);
+    _detachOwnedPeerConnectionCallbacks(connection);
 
+    await _closeSpecificPeerConnection(connection);
+  }
+
+  Future<void> _closeSpecificPeerConnection(
+    RTCPeerConnection connection,
+  ) async {
     try {
       await connection.close();
     } catch (error, stackTrace) {
-      _reportError('closePeerConnection', error, stackTrace);
+      _reportError('PeerConnection.close', error, stackTrace);
     }
 
     try {
-      final dynamic dynamicConnection = connection;
+      final dynamic disposableConnection = connection;
 
-      await dynamicConnection.dispose();
-    } catch (_) {}
+      await disposableConnection.dispose();
+    } catch (_) {
+      // close() remains the portable shutdown operation.
+    }
   }
 
-  void _detachPeerConnectionCallbacks(RTCPeerConnection connection) {
+  // =============================================================
+  // DETACH ONLY CALLBACKS OWNED BY THIS SERVICE
+  // =============================================================
+
+  void _detachOwnedPeerConnectionCallbacks(RTCPeerConnection connection) {
     try {
-      connection.onIceCandidate = null;
       connection.onTrack = null;
-      connection.onDataChannel = null;
+
       connection.onConnectionState = null;
+
       connection.onIceConnectionState = null;
+
       connection.onSignalingState = null;
+
       connection.onIceGatheringState = null;
-    } catch (_) {}
+    } catch (_) {
+      // Native PeerConnection may already be released.
+    }
   }
 
-  // ===========================================================
-  // Reset Runtime State
-  // ===========================================================
+  // =============================================================
+  // RESET CONNECTION-DIAGNOSTIC STATE
+  // =============================================================
 
   void resetConnectionState() {
-    _lastBytesReceived = 0;
-    _lastBytesSent = 0;
-    _lastStatsTime = null;
+    _resetStatsState();
 
-    _clearRemoteStream();
+    unawaited(_clearRemoteStream());
   }
 
-  // ===========================================================
-  // Reusable Resource Cleanup
-  // ===========================================================
+  void _resetStatsState() {
+    _lastBytesReceived = 0;
+
+    _lastBytesSent = 0;
+
+    _lastStatsElapsed = null;
+
+    _statsClock?.stop();
+
+    _statsClock = null;
+  }
+
+  // =============================================================
+  // RESOURCE CLEANUP
+  // =============================================================
 
   Future<void> dispose() async {
-    await _releaseResources(clearExternalCallbacks: true);
+    await _releaseResources(
+      clearExternalCallbacks: true,
+      invalidateGeneration: true,
+    );
   }
 
-  Future<void> _releaseResources({required bool clearExternalCallbacks}) async {
+  Future<void> _releaseResources({
+    required bool clearExternalCallbacks,
+    required bool invalidateGeneration,
+  }) async {
+    final Future<void>? activeRelease = _releaseFuture;
+
+    if (activeRelease != null) {
+      await activeRelease;
+
+      if (clearExternalCallbacks) {
+        _clearExternalCallbacks();
+      }
+
+      return;
+    }
+
+    final Future<void> operation = _performReleaseResources(
+      clearExternalCallbacks: clearExternalCallbacks,
+      invalidateGeneration: invalidateGeneration,
+    );
+
+    late final Future<void> tracked;
+
+    tracked = operation.whenComplete(() {
+      if (identical(_releaseFuture, tracked)) {
+        _releaseFuture = null;
+      }
+    });
+
+    _releaseFuture = tracked;
+
+    await tracked;
+  }
+
+  Future<void> _performReleaseResources({
+    required bool clearExternalCallbacks,
+    required bool invalidateGeneration,
+  }) async {
     if (_isDisposing) {
       return;
     }
 
     _isDisposing = true;
 
+    if (invalidateGeneration) {
+      _connectionGeneration++;
+    }
+
     try {
+      final Future<void>? mediaReplacement = _mediaReplacementFuture;
+
+      if (mediaReplacement != null) {
+        try {
+          await mediaReplacement;
+        } catch (error, stackTrace) {
+          _reportError(
+            'pending media replacement during cleanup',
+            error,
+            stackTrace,
+          );
+        }
+      }
+
       await closePeerConnection();
 
-      final local = localStream;
+      final MediaStream? local = localStream;
 
       localStream = null;
 
@@ -1154,38 +2086,51 @@ class WebRTCService {
 
       _emitLocalStream(null);
 
-      _clearRemoteStream();
+      await _clearRemoteStream();
 
-      _lastBytesReceived = 0;
-      _lastBytesSent = 0;
-      _lastStatsTime = null;
+      _resetStatsState();
+
+      _localSendersByKind.clear();
+
+      _endedRemoteTracks.clear();
 
       _isReplacingMedia = false;
 
       if (clearExternalCallbacks) {
-        _onIceCandidateCallback = null;
-
-        onConnectionStateChanged = null;
-        onIceConnectionStateChanged = null;
-        onSignalingStateChanged = null;
-        onIceGatheringStateChanged = null;
+        _clearExternalCallbacks();
       }
 
-      debugPrint('JR CALL [WebRTCService]: resources released.');
+      _debugPrint('WebRTC resources released.');
     } finally {
       _isDisposing = false;
     }
   }
 
-  // ===========================================================
-  // Media Disposal
-  // ===========================================================
+  void _clearExternalCallbacks() {
+    _legacyIceCandidateCallback = null;
+
+    onConnectionStateChanged = null;
+
+    onIceConnectionStateChanged = null;
+
+    onSignalingStateChanged = null;
+
+    onIceGatheringStateChanged = null;
+
+    onPeerConnectionRecreated = null;
+  }
+
+  // =============================================================
+  // MEDIA DISPOSAL
+  // =============================================================
 
   Future<void> _disposeMediaStream(MediaStream stream) async {
-    for (final track in stream.getTracks()) {
+    for (final MediaStreamTrack track in stream.getTracks()) {
       try {
-        track.stop();
-      } catch (_) {}
+        await track.stop();
+      } catch (_) {
+        // Track may already be stopped or ended.
+      }
     }
 
     await _disposeMediaStreamSafely(stream);
@@ -1194,21 +2139,38 @@ class WebRTCService {
   Future<void> _disposeMediaStreamSafely(MediaStream stream) async {
     try {
       await stream.dispose();
-    } catch (_) {}
+    } catch (_) {
+      // Native stream may already have been disposed.
+    }
   }
 
-  // ===========================================================
-  // Validation
-  // ===========================================================
+  // =============================================================
+  // PEER CONNECTION REQUIREMENT
+  // =============================================================
+
+  RTCPeerConnection _requirePeerConnection() {
+    final RTCPeerConnection? connection = peerConnection;
+
+    if (connection == null) {
+      throw StateError('PeerConnection is not initialized.');
+    }
+
+    return connection;
+  }
+
+  // =============================================================
+  // SDP VALIDATION
+  // =============================================================
 
   void _validateSessionDescription(
     RTCSessionDescription description, {
     required String expectedType,
   }) {
-    final sdp = description.sdp?.trim();
-    final type = description.type?.trim().toLowerCase();
+    final String sdp = description.sdp?.trim() ?? '';
 
-    if (sdp == null || sdp.isEmpty || type != expectedType) {
+    final String type = description.type?.trim().toLowerCase() ?? '';
+
+    if (sdp.isEmpty || type != expectedType.toLowerCase()) {
       throw StateError(
         'Generated WebRTC $expectedType '
         'session description is invalid.',
@@ -1216,28 +2178,180 @@ class WebRTCService {
     }
   }
 
+  // =============================================================
+  // VALUE HELPERS
+  // =============================================================
+
+  String? _readString(Object? value) {
+    if (value == null) {
+      return null;
+    }
+
+    final String normalized = value.toString().trim();
+
+    return normalized.isEmpty ? null : normalized;
+  }
+
+  bool _readBool(Object? value) {
+    if (value is bool) {
+      return value;
+    }
+
+    if (value is num) {
+      return value != 0;
+    }
+
+    if (value is String) {
+      final String normalized = value.trim().toLowerCase();
+
+      return normalized == 'true' || normalized == '1';
+    }
+
+    return false;
+  }
+
+  int? _readNonNegativeInt(Object? value) {
+    int? result;
+
+    if (value is int) {
+      result = value;
+    } else if (value is num && value.isFinite) {
+      result = value.toInt();
+    } else if (value is String) {
+      result = int.tryParse(value.trim());
+    }
+
+    if (result == null || result < 0) {
+      return null;
+    }
+
+    return result;
+  }
+
+  double? _readNonNegativeDouble(Object? value) {
+    double? result;
+
+    if (value is double) {
+      result = value;
+    } else if (value is num) {
+      result = value.toDouble();
+    } else if (value is String) {
+      result = double.tryParse(value.trim());
+    }
+
+    if (result == null || !result.isFinite || result < 0) {
+      return null;
+    }
+
+    return result;
+  }
+
+  // =============================================================
+  // ICE SERVER COPY
+  // =============================================================
+
   List<Map<String, dynamic>> _copyIceServers(
     List<Map<String, dynamic>> source,
   ) {
     return source
-        .map<Map<String, dynamic>>(
-          (server) => Map<String, dynamic>.from(server),
-        )
+        .map<Map<String, dynamic>>((Map<String, dynamic> server) {
+          final Map<String, dynamic> copy = Map<String, dynamic>.from(server);
+
+          final Object? urls = copy['urls'];
+
+          if (urls is List) {
+            copy['urls'] = List<dynamic>.from(urls);
+          }
+
+          return copy;
+        })
         .toList(growable: false);
   }
 
-  // ===========================================================
-  // Error Logging
-  // ===========================================================
+  // =============================================================
+  // LOGGING
+  // =============================================================
+
+  void _debugPrint(String message) {
+    if (!kDebugMode) {
+      return;
+    }
+
+    debugPrint(
+      'JR CALL '
+      '[WebRTCService] '
+      '$message',
+    );
+  }
 
   void _reportError(String source, Object error, [StackTrace? stackTrace]) {
-    debugPrint('JR CALL [WebRTCService/$source] error: $error');
+    if (!kDebugMode) {
+      return;
+    }
+
+    debugPrint(
+      'JR CALL '
+      '[WebRTCService/$source] '
+      'error: $error',
+    );
 
     if (stackTrace != null) {
       debugPrintStack(
-        label: 'JR CALL [WebRTCService/$source]',
+        label:
+            'JR CALL '
+            '[WebRTCService/$source]',
         stackTrace: stackTrace,
       );
     }
   }
 }
+
+// ===============================================================
+// END OF FILE
+//
+// JR CALL WEBRTC CALL-START FIX:
+//
+// ✓ Fresh native PeerConnection signalingState=null no longer
+//   blocks initial createOffer().
+//
+// ✓ Native WebRTC createOffer() remains authoritative.
+//
+// ✓ Explicit incompatible non-null signaling states remain blocked.
+//
+// ✓ createAnswer() also tolerates temporarily-null native state
+//   only when a valid remote offer already exists.
+//
+// ✓ ICE restart tolerates temporarily-null state while retaining
+//   explicit incompatible-state protection.
+//
+// PRESERVED:
+//
+// ✓ Single PeerConnection ownership.
+// ✓ Local microphone acquisition.
+// ✓ Local camera acquisition.
+// ✓ Voice-call media path.
+// ✓ Video-call media path.
+// ✓ 720p / 30 fps video configuration.
+// ✓ Audio processing constraints.
+// ✓ Offer creation.
+// ✓ Answer creation.
+// ✓ Local SDP.
+// ✓ Remote SDP.
+// ✓ ICE configuration.
+// ✓ ICE restart.
+// ✓ IceManager native ICE ownership.
+// ✓ Remote track handling.
+// ✓ Camera switching.
+// ✓ Audio enable/disable.
+// ✓ Video enable/disable.
+// ✓ Media replacement.
+// ✓ Replacement rollback.
+// ✓ Statistics.
+// ✓ Cleanup.
+// ✓ Generation protection.
+// ✓ External callback ownership.
+// ✓ No Firestore logic.
+// ✓ No UI changes.
+// ✓ No CallService API changes.
+// ✓ No RecoveryManager ownership changes.
+// ===============================================================

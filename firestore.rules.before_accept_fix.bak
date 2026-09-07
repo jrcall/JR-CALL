@@ -1,0 +1,1294 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================
+    // JR CALL
+    // File: firestore.rules
+    // Location: /firestore.rules
+    //
+    // PRODUCTION CONTRACT
+    //
+    // IMPORTANT:
+    // - Firebase Auth UID = canonical private identity.
+    // - JR CALL ID = public/searchable identity.
+    // - Call reads must remain query-safe.
+    // - Caller owns offer + caller ICE.
+    // - Receiver owns answer + receiver ICE.
+    // - No broad participant-write bypass.
+    // - Backend-only security collections remain closed.
+    // =========================================================
+
+
+    // =========================================================
+    // COMMON HELPERS
+    // =========================================================
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function owner(uid) {
+      return signedIn() &&
+        request.auth.uid == uid;
+    }
+
+    function nonEmptyString(value) {
+      return value is string &&
+        value.size() > 0;
+    }
+
+    function optionalBoolean(data, field) {
+      return !data.keys().hasAny([field]) ||
+        data[field] is bool;
+    }
+
+
+    // =========================================================
+    // GLOBAL DISCOVERY INDEX HELPERS
+    // =========================================================
+
+    function validSearchIndexVersion(data) {
+      return !data.keys().hasAny([
+        'searchIndexVersion'
+      ]) ||
+      (
+        data.searchIndexVersion is int &&
+        data.searchIndexVersion == 1
+      );
+    }
+
+    function validSearchFragments(data) {
+      return !data.keys().hasAny([
+        'searchFragments'
+      ]) ||
+      (
+        data.searchFragments is list &&
+        data.searchFragments.size() <= 13000
+      );
+    }
+
+    function validSearchIndexPair(data) {
+      return !data.keys().hasAny([
+        'searchFragments'
+      ]) ||
+      (
+        data.keys().hasAny([
+          'searchIndexVersion'
+        ]) &&
+        data.searchIndexVersion is int &&
+        data.searchIndexVersion == 1
+      );
+    }
+
+    function validHiddenSearchState(data) {
+      return !data.keys().hasAny([
+        'isDiscoverable'
+      ]) ||
+      data.isDiscoverable != false ||
+      !data.keys().hasAny([
+        'searchFragments'
+      ]) ||
+      (
+        data.searchFragments is list &&
+        data.searchFragments.size() == 0
+      );
+    }
+
+    function validPhoneSearchKeys(data) {
+      return !data.keys().hasAny([
+        'phoneSearchKeys'
+      ]) ||
+      (
+        data.phoneSearchKeys is list &&
+        data.phoneSearchKeys.size() <= 30
+      );
+    }
+
+    function validDiscoveryIndex(data) {
+      return validSearchIndexVersion(data) &&
+        validSearchFragments(data) &&
+        validSearchIndexPair(data) &&
+        validHiddenSearchState(data) &&
+        validPhoneSearchKeys(data);
+    }
+
+
+    // =========================================================
+    // USERS LIST QUERY SAFETY
+    // =========================================================
+
+    function validUsersListQuery() {
+      return signedIn() &&
+        request.query.limit != null &&
+        request.query.limit <= 51;
+    }
+
+
+    // =========================================================
+    // RESERVATION HELPERS
+    // =========================================================
+
+    function reservationCreateAllowed() {
+      return signedIn() &&
+        request.resource.data.uid is string &&
+        request.resource.data.uid == request.auth.uid;
+    }
+
+    function reservationUpdateAllowed() {
+      return signedIn() &&
+        resource.data.uid is string &&
+        resource.data.uid == request.auth.uid &&
+        request.resource.data.uid is string &&
+        request.resource.data.uid == request.auth.uid;
+    }
+
+    function reservationDeleteAllowed() {
+      return signedIn() &&
+        resource.data.uid is string &&
+        resource.data.uid == request.auth.uid;
+    }
+
+
+    // =========================================================
+    // USER PROFILE CREATE
+    // =========================================================
+
+    function validUserCreate(userId) {
+      return owner(userId) &&
+        request.resource.data.uid is string &&
+        request.resource.data.uid == request.auth.uid &&
+
+        optionalBoolean(
+          request.resource.data,
+          'isDiscoverable'
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'isDiscoverableByEmail'
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'isDiscoverableByPhone'
+        ) &&
+
+        validDiscoveryIndex(
+          request.resource.data
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'emailVerified'
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'phoneVerified'
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'verified'
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'online'
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'profileCompleted'
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'isBlocked'
+          ]) ||
+          request.resource.data.isBlocked == false
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'isDeleted'
+          ]) ||
+          request.resource.data.isDeleted == false
+        );
+    }
+
+
+    // =========================================================
+    // USER PROFILE UPDATE
+    // =========================================================
+
+    function validUserUpdate(userId) {
+      return owner(userId) &&
+        resource.data.uid is string &&
+        request.resource.data.uid is string &&
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.uid == request.auth.uid &&
+
+        request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'name',
+            'fullName',
+
+            'normalizedName',
+            'fullNameLowercase',
+            'fullNameLower',
+
+            'username',
+
+            'normalizedUsername',
+            'usernameLowercase',
+            'usernameLower',
+
+            'userAddress',
+            'normalizedUserAddress',
+            'userAddressLower',
+
+            'jrCallUserId',
+            'jrCallUserIdLowercase',
+            'jrCallUserIdLower',
+
+            'email',
+            'emailNormalized',
+            'emailVerified',
+
+            'phone',
+            'phoneNumber',
+            'phoneNormalized',
+            'phoneDigits',
+            'phoneSearchKeys',
+            'phoneVerified',
+
+            'searchIndexVersion',
+            'searchFragments',
+
+            'photoUrl',
+            'profilePhotoUrl',
+
+            'coverPhoto',
+            'coverPhotoUrl',
+            'backgroundPhotoUrl',
+
+            'bio',
+            'country',
+            'countryCode',
+            'gender',
+            'dateOfBirth',
+
+            'isDiscoverable',
+            'isDiscoverableByEmail',
+            'isDiscoverableByPhone',
+
+            'verified',
+            'provider',
+            'signInProviders',
+
+            'online',
+            'lastSeen',
+            'lastLogin',
+
+            'deviceToken',
+            'fcmToken',
+
+            'profileCompleted',
+
+            'updatedAt'
+          ]) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'isDiscoverable'
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'isDiscoverableByEmail'
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'isDiscoverableByPhone'
+        ) &&
+
+        validDiscoveryIndex(
+          request.resource.data
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'emailVerified'
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'phoneVerified'
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'verified'
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'online'
+        ) &&
+
+        optionalBoolean(
+          request.resource.data,
+          'profileCompleted'
+        ) &&
+
+        (
+          !resource.data.keys().hasAny([
+            'isBlocked'
+          ]) ||
+          (
+            request.resource.data.keys().hasAny([
+              'isBlocked'
+            ]) &&
+            request.resource.data.isBlocked ==
+              resource.data.isBlocked
+          )
+        ) &&
+
+        (
+          !resource.data.keys().hasAny([
+            'isDeleted'
+          ]) ||
+          (
+            request.resource.data.keys().hasAny([
+              'isDeleted'
+            ]) &&
+            request.resource.data.isDeleted ==
+              resource.data.isDeleted
+          )
+        );
+    }
+
+
+    // =========================================================
+    // USERS
+    // =========================================================
+
+    match /users/{userId} {
+
+      allow get:
+        if signedIn();
+
+      allow list:
+        if validUsersListQuery();
+
+      allow create:
+        if validUserCreate(userId);
+
+      allow update:
+        if validUserUpdate(userId);
+
+      allow delete:
+        if owner(userId);
+    }
+
+
+    // =========================================================
+    // USERNAME RESERVATION
+    // =========================================================
+
+    match /usernames/{username} {
+
+      allow get:
+        if signedIn();
+
+      allow list:
+        if false;
+
+      allow create:
+        if reservationCreateAllowed();
+
+      allow update:
+        if reservationUpdateAllowed();
+
+      allow delete:
+        if reservationDeleteAllowed();
+    }
+
+
+    // =========================================================
+    // JR CALL ID RESERVATIONS
+    // =========================================================
+
+    match /user_addresses/{address} {
+
+      allow get:
+        if signedIn();
+
+      allow list:
+        if false;
+
+      allow create:
+        if reservationCreateAllowed();
+
+      allow update:
+        if reservationUpdateAllowed();
+
+      allow delete:
+        if reservationDeleteAllowed();
+    }
+
+    match /jr_call_ids/{jrCallId} {
+
+      allow get:
+        if signedIn();
+
+      allow list:
+        if false;
+
+      allow create:
+        if reservationCreateAllowed();
+
+      allow update:
+        if reservationUpdateAllowed();
+
+      allow delete:
+        if reservationDeleteAllowed();
+    }
+
+
+    // =========================================================
+    // CALL STATUS
+    // =========================================================
+
+    function validCallStatus(status) {
+      return status in [
+        'calling',
+        'ringing',
+        'connecting',
+        'connected',
+        'reconnecting',
+        'ended',
+        'rejected',
+        'declined',
+        'cancelled',
+        'failed',
+        'timeout'
+      ];
+    }
+
+    function terminalCallStatus(status) {
+      return status in [
+        'ended',
+        'rejected',
+        'declined',
+        'cancelled',
+        'failed',
+        'timeout'
+      ];
+    }
+
+
+    // =========================================================
+    // CALL PARTICIPANT HELPERS
+    //
+    // IMPORTANT:
+    //
+    // callParticipant() is intentionally QUERY-SAFE.
+    //
+    // Firestore rules are not filters.
+    // A receiverId == auth.uid query must be provable from the
+    // query itself. Extra callerId/receiverId type assertions here
+    // would make the receiver query fail with PERMISSION_DENIED.
+    //
+    // Type/ownership validation for WRITES remains in
+    // callCaller(), callReceiver(), validCallCreate(), etc.
+    // =========================================================
+
+    function callParticipant(data) {
+      return signedIn() &&
+        (
+          data.callerId == request.auth.uid ||
+          data.receiverId == request.auth.uid
+        );
+    }
+
+    function callCaller(data) {
+      return signedIn() &&
+        data.callerId is string &&
+        data.callerId == request.auth.uid;
+    }
+
+    function callReceiver(data) {
+      return signedIn() &&
+        data.receiverId is string &&
+        data.receiverId == request.auth.uid;
+    }
+
+    function callExists(callId) {
+      return exists(
+        /databases/$(database)/documents/calls/$(callId)
+      );
+    }
+
+    function callData(callId) {
+      return get(
+        /databases/$(database)/documents/calls/$(callId)
+      ).data;
+    }
+
+    function participantOfCall(callId) {
+      return signedIn() &&
+        callExists(callId) &&
+        (
+          callData(callId).callerId == request.auth.uid ||
+          callData(callId).receiverId == request.auth.uid
+        );
+    }
+
+
+    // =========================================================
+    // CALL UPDATE HELPERS
+    // =========================================================
+
+    function callFieldsChanged(fields) {
+      return request.resource.data
+        .diff(resource.data)
+        .affectedKeys()
+        .hasAny(fields);
+    }
+
+    function validOfferPayload(data) {
+      return data.offer is map &&
+        data.offer.keys().hasOnly([
+          'type',
+          'sdp'
+        ]) &&
+        data.offer.type == 'offer' &&
+        nonEmptyString(data.offer.sdp) &&
+        data.offer.sdp.size() <= 600000;
+    }
+
+    function validAnswerPayload(data) {
+      return data.answer is map &&
+        data.answer.keys().hasOnly([
+          'type',
+          'sdp'
+        ]) &&
+        data.answer.type == 'answer' &&
+        nonEmptyString(data.answer.sdp) &&
+        data.answer.sdp.size() <= 600000;
+    }
+
+
+    // =========================================================
+    // CALLER OFFER OWNERSHIP
+    // =========================================================
+
+    function validCallerOfferMutation() {
+      return !callFieldsChanged([
+        'offer',
+        'offererUid',
+        'negotiationRevision',
+        'offerRevision'
+      ]) ||
+      (
+        callCaller(resource.data) &&
+
+        callFieldsChanged([
+          'offer'
+        ]) &&
+
+        validOfferPayload(
+          request.resource.data
+        ) &&
+
+        request.resource.data.offererUid is string &&
+        request.resource.data.offererUid ==
+          request.auth.uid &&
+
+        request.resource.data.negotiationRevision is int &&
+        request.resource.data.offerRevision is int &&
+        resource.data.negotiationRevision is int &&
+        resource.data.offerRevision is int &&
+
+        request.resource.data.negotiationRevision >= 1 &&
+
+        request.resource.data.offerRevision ==
+          request.resource.data.negotiationRevision &&
+
+        request.resource.data.offerRevision >
+          resource.data.offerRevision &&
+
+        request.resource.data.offerRevision >
+          resource.data.negotiationRevision
+      );
+    }
+
+
+    // =========================================================
+    // RECEIVER ANSWER OWNERSHIP
+    //
+    // Caller may clear a previous answer only while publishing
+    // a legitimate new caller-owned offer.
+    // =========================================================
+
+    function validAnswerMutation() {
+      return !callFieldsChanged([
+        'answer',
+        'answererUid',
+        'answerRevision'
+      ]) ||
+
+      (
+        callReceiver(resource.data) &&
+
+        callFieldsChanged([
+          'answer'
+        ]) &&
+
+        validAnswerPayload(
+          request.resource.data
+        ) &&
+
+        request.resource.data.answererUid is string &&
+        request.resource.data.answererUid ==
+          request.auth.uid &&
+
+        request.resource.data.offerRevision is int &&
+        resource.data.offerRevision is int &&
+
+        request.resource.data.offerRevision ==
+          resource.data.offerRevision &&
+
+        request.resource.data.answerRevision is int &&
+        resource.data.answerRevision is int &&
+
+        request.resource.data.answerRevision ==
+          request.resource.data.offerRevision &&
+
+        request.resource.data.answerRevision >
+          resource.data.answerRevision
+      ) ||
+
+      (
+        callCaller(resource.data) &&
+
+        callFieldsChanged([
+          'offer'
+        ]) &&
+
+        validCallerOfferMutation() &&
+
+        request.resource.data.answer == null &&
+        request.resource.data.answererUid == null &&
+
+        request.resource.data.answerRevision is int &&
+        resource.data.answerRevision is int &&
+
+        request.resource.data.answerRevision ==
+          resource.data.answerRevision
+      );
+    }
+
+
+    // =========================================================
+    // ICE RESTART METADATA
+    // =========================================================
+
+    function validIceRestartMutation() {
+      return !callFieldsChanged([
+        'iceRestartCount',
+        'iceRestartRequestedBy',
+        'iceRestartRequestedAt'
+      ]) ||
+      (
+        callCaller(resource.data) &&
+
+        request.resource.data.iceRestartCount is int &&
+        resource.data.iceRestartCount is int &&
+
+        request.resource.data.iceRestartCount >=
+          resource.data.iceRestartCount &&
+
+        request.resource.data.iceRestartCount >= 0 &&
+
+        request.resource.data.iceRestartRequestedBy is string &&
+
+        request.resource.data.iceRestartRequestedBy ==
+          request.auth.uid &&
+
+        request.resource.data.iceRestartRequestedAt is timestamp
+      );
+    }
+
+
+    // =========================================================
+    // TERMINAL CALL METADATA
+    // =========================================================
+
+    function validTerminalMetadataMutation() {
+      return !callFieldsChanged([
+        'endedAt',
+        'endedBy'
+      ]) ||
+      (
+        request.resource.data.status is string &&
+        terminalCallStatus(
+          request.resource.data.status
+        ) &&
+
+        (
+          !callFieldsChanged([
+            'endedAt'
+          ]) ||
+          request.resource.data.endedAt is timestamp
+        ) &&
+
+        (
+          !callFieldsChanged([
+            'endedBy'
+          ]) ||
+          (
+            request.resource.data.endedBy is string &&
+            request.resource.data.endedBy ==
+              request.auth.uid
+          )
+        )
+      );
+    }
+
+
+    // =========================================================
+    // CALL CREATE
+    // =========================================================
+
+    function validCallCreate(callId) {
+      return signedIn() &&
+
+        request.resource.data.keys().hasAll([
+          'callerId',
+          'receiverId',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'isVideoCall'
+        ]) &&
+
+        nonEmptyString(
+          request.resource.data.callerId
+        ) &&
+
+        nonEmptyString(
+          request.resource.data.receiverId
+        ) &&
+
+        request.resource.data.callerId ==
+          request.auth.uid &&
+
+        request.resource.data.receiverId !=
+          request.auth.uid &&
+
+        request.resource.data.isVideoCall is bool &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'video'
+          ]) ||
+          (
+            request.resource.data.video is bool &&
+            request.resource.data.video ==
+              request.resource.data.isVideoCall
+          )
+        ) &&
+
+        request.resource.data.status ==
+          'calling' &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'callId'
+          ]) ||
+          (
+            request.resource.data.callId is string &&
+            request.resource.data.callId == callId
+          )
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'offer'
+          ]) ||
+          request.resource.data.offer == null ||
+          request.resource.data.offer is map
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'answer'
+          ]) ||
+          request.resource.data.answer == null ||
+          request.resource.data.answer is map
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'offererUid'
+          ]) ||
+          request.resource.data.offererUid == null ||
+          request.resource.data.offererUid is string
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'answererUid'
+          ]) ||
+          request.resource.data.answererUid == null ||
+          request.resource.data.answererUid is string
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'negotiationRevision'
+          ]) ||
+          (
+            request.resource.data.negotiationRevision is int &&
+            request.resource.data.negotiationRevision >= 0
+          )
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'offerRevision'
+          ]) ||
+          (
+            request.resource.data.offerRevision is int &&
+            request.resource.data.offerRevision >= 0
+          )
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'answerRevision'
+          ]) ||
+          (
+            request.resource.data.answerRevision is int &&
+            request.resource.data.answerRevision >= 0
+          )
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'callerCandidates'
+          ]) ||
+          request.resource.data.callerCandidates is list
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'receiverCandidates'
+          ]) ||
+          request.resource.data.receiverCandidates is list
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'networkRecovered'
+          ]) ||
+          request.resource.data.networkRecovered is bool
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'iceRestartCount'
+          ]) ||
+          (
+            request.resource.data.iceRestartCount is int &&
+            request.resource.data.iceRestartCount >= 0
+          )
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'iceRestartRequestedBy'
+          ]) ||
+          request.resource.data.iceRestartRequestedBy == null ||
+          request.resource.data.iceRestartRequestedBy is string
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'iceRestartRequestedAt'
+          ]) ||
+          request.resource.data.iceRestartRequestedAt == null ||
+          request.resource.data.iceRestartRequestedAt is timestamp
+        );
+    }
+
+
+    // =========================================================
+    // CALL PARTICIPANT UPDATE
+    // =========================================================
+
+    function validCallParticipantUpdate() {
+      return callParticipant(
+        resource.data
+      ) &&
+
+        // Participant identities immutable.
+        request.resource.data.callerId ==
+          resource.data.callerId &&
+
+        request.resource.data.receiverId ==
+          resource.data.receiverId &&
+
+        // Call type immutable.
+        request.resource.data.isVideoCall ==
+          resource.data.isVideoCall &&
+
+        (
+          !resource.data.keys().hasAny([
+            'video'
+          ]) ||
+          (
+            request.resource.data.keys().hasAny([
+              'video'
+            ]) &&
+            request.resource.data.video ==
+              resource.data.video
+          )
+        ) &&
+
+        // Creation metadata immutable.
+        request.resource.data.createdAt ==
+          resource.data.createdAt &&
+
+        (
+          !resource.data.keys().hasAny([
+            'serverCreatedAt'
+          ]) ||
+          (
+            request.resource.data.keys().hasAny([
+              'serverCreatedAt'
+            ]) &&
+            request.resource.data.serverCreatedAt ==
+              resource.data.serverCreatedAt
+          )
+        ) &&
+
+        (
+          !resource.data.keys().hasAny([
+            'schemaVersion'
+          ]) ||
+          (
+            request.resource.data.keys().hasAny([
+              'schemaVersion'
+            ]) &&
+            request.resource.data.schemaVersion ==
+              resource.data.schemaVersion
+          )
+        ) &&
+
+        (
+          !resource.data.keys().hasAny([
+            'revision'
+          ]) ||
+          (
+            request.resource.data.keys().hasAny([
+              'revision'
+            ]) &&
+            request.resource.data.revision ==
+              resource.data.revision
+          )
+        ) &&
+
+        (
+          !resource.data.keys().hasAny([
+            'callId'
+          ]) ||
+          (
+            request.resource.data.keys().hasAny([
+              'callId'
+            ]) &&
+            request.resource.data.callId ==
+              resource.data.callId
+          )
+        ) &&
+
+        request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'status',
+            'updatedAt',
+            'endedAt',
+            'endedBy',
+
+            'offer',
+            'answer',
+
+            'offererUid',
+            'answererUid',
+
+            'negotiationRevision',
+            'offerRevision',
+            'answerRevision',
+
+            'callerCandidates',
+            'receiverCandidates',
+
+            'connectionState',
+            'iceConnectionState',
+            'signalingState',
+            'iceGatheringState',
+
+            'networkRecovered',
+
+            'iceRestartCount',
+            'iceRestartRequestedBy',
+            'iceRestartRequestedAt',
+
+            'callerName',
+            'receiverName',
+
+            'callerPhoto',
+            'receiverPhoto'
+          ]) &&
+
+        (
+          !callFieldsChanged([
+            'status'
+          ]) ||
+          (
+            request.resource.data.status is string &&
+            validCallStatus(
+              request.resource.data.status
+            )
+          )
+        ) &&
+
+        validCallerOfferMutation() &&
+        validAnswerMutation() &&
+
+        (
+          !callFieldsChanged([
+            'callerCandidates'
+          ]) ||
+          callCaller(
+            resource.data
+          )
+        ) &&
+
+        (
+          !callFieldsChanged([
+            'receiverCandidates'
+          ]) ||
+          callReceiver(
+            resource.data
+          )
+        ) &&
+
+        (
+          !request.resource.data.keys().hasAny([
+            'networkRecovered'
+          ]) ||
+          request.resource.data.networkRecovered is bool
+        ) &&
+
+        validIceRestartMutation() &&
+        validTerminalMetadataMutation();
+    }
+
+
+    // =========================================================
+    // CALL SIGNALING
+    // =========================================================
+
+    match /calls/{callId} {
+
+      allow create:
+        if validCallCreate(
+          callId
+        );
+
+      // QUERY-SAFE participant read.
+      allow get, list:
+        if callParticipant(
+          resource.data
+        );
+
+      allow update:
+        if validCallParticipantUpdate();
+
+      allow delete:
+        if callParticipant(
+          resource.data
+        );
+    }
+
+
+    // =========================================================
+    // CALL HISTORY HELPERS
+    //
+    // Query-safe for callerId / receiverId history queries.
+    // =========================================================
+
+    function historyParticipant(data) {
+      return signedIn() &&
+        (
+          data.callerId == request.auth.uid ||
+          data.receiverId == request.auth.uid
+        );
+    }
+
+    function validCallHistoryCreate(historyId) {
+      return signedIn() &&
+
+        request.resource.data.keys().hasAll([
+          'callId',
+          'callerId',
+          'receiverId',
+          'duration',
+          'status',
+          'callType'
+        ]) &&
+
+        request.resource.data.callId is string &&
+        request.resource.data.callId == historyId &&
+
+        callExists(
+          request.resource.data.callId
+        ) &&
+
+        participantOfCall(
+          request.resource.data.callId
+        ) &&
+
+        request.resource.data.callerId ==
+          callData(
+            request.resource.data.callId
+          ).callerId &&
+
+        request.resource.data.receiverId ==
+          callData(
+            request.resource.data.callId
+          ).receiverId &&
+
+        request.resource.data.duration is int &&
+        request.resource.data.duration >= 0 &&
+
+        request.resource.data.status is string &&
+        request.resource.data.status.size() > 0 &&
+
+        request.resource.data.callType in [
+          'voice',
+          'video'
+        ];
+    }
+
+
+    // =========================================================
+    // CALL HISTORY
+    // =========================================================
+
+    match /call_history/{historyId} {
+
+      allow create:
+        if validCallHistoryCreate(
+          historyId
+        );
+
+      allow get, list:
+        if historyParticipant(
+          resource.data
+        );
+
+      allow update:
+        if false;
+
+      allow delete:
+        if historyParticipant(
+          resource.data
+        );
+    }
+
+
+    // =========================================================
+    // EMAIL OTP / AUTH BACKEND-ONLY DATA
+    // =========================================================
+
+    match /email_otp_challenges/{documentId} {
+      allow read, write:
+        if false;
+    }
+
+    match /email_otp_rate_limits/{documentId} {
+      allow read, write:
+        if false;
+    }
+
+    match /password_recovery_rate_limits/{documentId} {
+      allow read, write:
+        if false;
+    }
+
+    match /phone_lookup_rate_limits/{documentId} {
+      allow read, write:
+        if false;
+    }
+
+
+    // =========================================================
+    // PRIVATE SERVER SECURITY DATA
+    // =========================================================
+
+    match /security_events/{documentId} {
+      allow read, write:
+        if false;
+    }
+
+    match /audit_logs/{documentId} {
+      allow read, write:
+        if false;
+    }
+
+
+    // =========================================================
+    // DEFAULT DENY
+    // =========================================================
+
+    match /{document=**} {
+      allow read, write:
+        if false;
+    }
+  }
+}
+
+// ===============================================================
+// END OF FILE
+//
+// FIXED:
+//
+// ✓ calls where receiverId == Firebase UID query is query-safe.
+// ✓ calls where callerId == Firebase UID query is query-safe.
+// ✓ call-history participant queries are query-safe.
+// ✓ caller offer ownership remains protected.
+// ✓ receiver answer ownership remains protected.
+// ✓ caller ICE remains caller-owned.
+// ✓ receiver ICE remains receiver-owned.
+// ✓ restart metadata remains caller-controlled.
+// ✓ terminal endedAt / endedBy validation preserved.
+// ✓ no broad participant write bypass.
+// ✓ Search/Profile/Auth protections preserved.
+// ✓ Default deny preserved.
+//
+// IMPORTANT:
+//
+// This fixes the exact HomeScreen incoming-call-stream
+// PERMISSION_DENIED regression without weakening call writes.
+// ===============================================================

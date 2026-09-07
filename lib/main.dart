@@ -4,35 +4,273 @@
 // Location: lib/main.dart
 //
 // FINAL PRODUCTION APP ENTRY
+// + FIREBASE APP CHECK
+// + SHARED FCM LIFECYCLE
+// + INCOMING ACTIVE CALL SESSION ROUTING
 //
-// STARTUP CONTRACT:
-// - App NEVER forces Welcome/Login on startup.
-// - Signed-out / Guest -> HomeScreen -> Public Media.
-// - Authenticated user -> HomeScreen -> Call.
-// - WelcomeScreen remains available only from protected auth flows.
-// - Public Media / Reels can be browsed as guest.
-// - Protected actions are gated inside feature screens.
-// - Firebase initialization preserved.
-// - ProviderScope preserved.
-// - STUN/TURN pre-warm only for authenticated users.
-// - Call Engine / WebRTC ownership untouched.
-// - No fake/demo startup state.
+// MASTER CONTRACT:
+//
+// - Firebase initializes once before Firebase services.
+// - Firebase App Check activates immediately after Firebase init.
+// - Current firebase_app_check 0.3.x API compatibility preserved.
+// - Android debug/emulator -> App Check Debug provider.
+// - Android production/release -> Play Integrity.
+// - Apple debug -> App Check Debug provider.
+// - Apple production -> App Attest + Device Check fallback.
+// - Web remains safe until the real registered reCAPTCHA key exists.
+// - Unsupported desktop App Check providers are never invented.
+// - Existing Call / Message / FCM / theme architecture preserved.
+// - Call Engine / WebRTC / SDP / ICE / signaling ownership preserved.
+// - OTP remains AuthService/Firebase Authentication owned.
+//
+// INCOMING CALL:
+// - Existing incoming-call presentation remains unchanged.
+// - CallService remains acceptance/lifecycle authority.
+// - Receiver CONNECTED state opens CallSessionScreen.
+// - Outgoing caller can never enter this receiver-only route.
+// - Duplicate incoming active-call routes are blocked.
+// - Firebase UID remains canonical participant identity.
+// - No fake CONNECTED state.
 // ===============================================================
 
 import 'dart:async';
 
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+
+import 'package:jr_call/services/profile_service.dart';
+
+//noinspection SpellCheckingInspection
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/theme/jr_colors.dart';
 import 'core/theme/jr_typography.dart';
 import 'firebase_options.dart';
+import 'screens/call_session_screen.dart';
 import 'screens/home_screen.dart';
 import 'services/auth_service.dart';
+import 'services/call/background_call_service.dart';
+import 'services/call/call_service.dart';
 import 'services/call/stun_turn_service.dart';
+import 'services/message/message_app_coordinator.dart';
+import 'services/message/message_push_service.dart';
+
+// ===============================================================
+// NAVIGATION
+// ===============================================================
+
+final GlobalKey<NavigatorState> _jrCallNavigatorKey =
+    GlobalKey<NavigatorState>();
+
+// ===============================================================
+// JR CALL MESSAGE INTEGRATION ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â START
+// ===============================================================
+
+MessageAppCoordinator? _messageCoordinator;
+
+bool _messageCoordinatorReady = false;
+
+Future<void> installJRCallMessageCoordinator(
+  MessageAppCoordinator coordinator,
+) async {
+  if (coordinator.isDisposed) {
+    throw const MessageAppCoordinatorException(
+      'Cannot install a disposed Message coordinator.',
+    );
+  }
+
+  final MessageAppCoordinator? existing = _messageCoordinator;
+
+  if (identical(existing, coordinator) &&
+      coordinator.isInitialized &&
+      !coordinator.isDisposed) {
+    _messageCoordinatorReady = true;
+    return;
+  }
+
+  if (existing != null && !identical(existing, coordinator)) {
+    _messageCoordinator = null;
+    _messageCoordinatorReady = false;
+
+    try {
+      await existing.dispose();
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [Message/install]: '
+        'previous coordinator disposal failed: $error',
+      );
+
+      debugPrintStack(
+        label: 'JR CALL [Message/install]',
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  _messageCoordinator = coordinator;
+  _messageCoordinatorReady = false;
+
+  try {
+    await coordinator.initialize();
+
+    if (!identical(_messageCoordinator, coordinator) ||
+        coordinator.isDisposed ||
+        !coordinator.isInitialized) {
+      throw const MessageAppCoordinatorException(
+        'Message coordinator initialization did not remain active.',
+      );
+    }
+
+    _messageCoordinatorReady = true;
+
+    debugPrint(
+      'JR CALL [Message]: '
+      'application coordinator initialized.',
+    );
+  } catch (error, stackTrace) {
+    if (identical(_messageCoordinator, coordinator)) {
+      _messageCoordinator = null;
+      _messageCoordinatorReady = false;
+    }
+
+    try {
+      await coordinator.dispose();
+    } catch (_) {
+      // Original initialization failure remains authoritative.
+    }
+
+    debugPrint('JR CALL [Message/install] failed: $error');
+
+    debugPrintStack(label: 'JR CALL [Message/install]', stackTrace: stackTrace);
+
+    rethrow;
+  }
+}
+
+Future<void> uninstallJRCallMessageCoordinator() async {
+  final MessageAppCoordinator? coordinator = _messageCoordinator;
+
+  _messageCoordinator = null;
+  _messageCoordinatorReady = false;
+
+  if (coordinator == null) {
+    return;
+  }
+
+  try {
+    await coordinator.dispose();
+  } catch (error, stackTrace) {
+    debugPrint('JR CALL [Message/uninstall] failed: $error');
+
+    debugPrintStack(
+      label: 'JR CALL [Message/uninstall]',
+      stackTrace: stackTrace,
+    );
+  }
+}
+
+// ===============================================================
+// JR CALL MESSAGE INTEGRATION ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â END
+// ===============================================================
+
+// ===============================================================
+// BACKGROUND FCM HANDLER
+// ===============================================================
+
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+
+    debugPrint(
+      'JR CALL [FCM/background]: '
+      'messageId=${message.messageId ?? 'unknown'} '
+      'type=${message.data['type'] ?? message.data['event'] ?? 'unknown'} '
+      'callId=${message.data['callId'] ?? ''} '
+      'conversationId=${message.data['conversationId'] ?? ''}',
+    );
+  } catch (error, stackTrace) {
+    debugPrint('JR CALL [FCM/background] error: $error');
+
+    debugPrintStack(label: 'JR CALL [FCM/background]', stackTrace: stackTrace);
+  }
+}
+
+// ===============================================================
+// FIREBASE APP CHECK
+// ===============================================================
+
+Future<void> _activateFirebaseAppCheck() async {
+  // -------------------------------------------------------------
+  // WEB
+  // -------------------------------------------------------------
+
+  if (kIsWeb) {
+    debugPrint(
+      'JR CALL [AppCheck]: '
+      'Web activation deferred until the real registered '
+      'Web reCAPTCHA site key is configured.',
+    );
+
+    return;
+  }
+
+  // -------------------------------------------------------------
+  // ANDROID
+  // -------------------------------------------------------------
+
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    await FirebaseAppCheck.instance.activate(
+      androidProvider: kDebugMode
+          ? AndroidProvider.debug
+          : AndroidProvider.playIntegrity,
+    );
+
+    debugPrint(
+      'JR CALL [AppCheck]: Android provider='
+      '${kDebugMode ? 'debug' : 'play-integrity'}',
+    );
+
+    return;
+  }
+
+  // -------------------------------------------------------------
+  // APPLE
+  // -------------------------------------------------------------
+
+  if (defaultTargetPlatform == TargetPlatform.iOS ||
+      defaultTargetPlatform == TargetPlatform.macOS) {
+    await FirebaseAppCheck.instance.activate(
+      appleProvider: kDebugMode
+          ? AppleProvider.debug
+          : AppleProvider.appAttestWithDeviceCheckFallback,
+    );
+
+    debugPrint(
+      'JR CALL [AppCheck]: Apple provider='
+      '${kDebugMode ? 'debug' : 'app-attest-with-device'
+                'check-fallback'}',
+    );
+
+    return;
+  }
+
+  // -------------------------------------------------------------
+  // OTHER DESKTOP
+  // -------------------------------------------------------------
+
+  debugPrint(
+    'JR CALL [AppCheck]: '
+    'No compatible native App Check provider is configured for '
+    '$defaultTargetPlatform with the current plugin generation.',
+  );
+}
 
 // ===============================================================
 // BOOTSTRAP
@@ -40,12 +278,23 @@ import 'services/call/stun_turn_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
   _configureFlutterErrors();
 
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
+
+    try {
+      await _activateFirebaseAppCheck();
+    } catch (error, stackTrace) {
+      debugPrint('JR CALL [AppCheck]: activation failed: $error');
+
+      debugPrintStack(label: 'JR CALL [AppCheck]', stackTrace: stackTrace);
+    }
+
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
     runApp(const ProviderScope(child: JRCallApp()));
   } catch (error, stackTrace) {
@@ -71,7 +320,10 @@ void _configureFlutterErrors() {
       FlutterError.presentError(details);
     }
 
-    debugPrint('JR CALL Flutter error: ${details.exceptionAsString()}');
+    debugPrint(
+      'JR CALL Flutter error: '
+      '${details.exceptionAsString()}',
+    );
 
     final StackTrace? stack = details.stack;
 
@@ -128,6 +380,7 @@ class JRCallApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: _jrCallNavigatorKey,
       title: 'JR CALL',
       debugShowCheckedModeBanner: false,
       themeMode: ThemeMode.light,
@@ -152,19 +405,6 @@ class JRCallApp extends StatelessWidget {
 
 // ===============================================================
 // SESSION GATE
-//
-// AUTHENTICATED:
-//   -> HomeScreen(initialIndex: 0)
-//   -> Call surface
-//   -> STUN/TURN pre-warm once
-//
-// SIGNED OUT / GUEST:
-//   -> HomeScreen(initialIndex: 2)
-//   -> Public Media immediately
-//
-// IMPORTANT:
-//   -> WelcomeScreen is NOT startup.
-//   -> Login/Create appears only when a protected action requires it.
 // ===============================================================
 
 class SessionGate extends StatefulWidget {
@@ -175,9 +415,715 @@ class SessionGate extends StatefulWidget {
 }
 
 class _SessionGateState extends State<SessionGate> {
+  // =============================================================
+  // SERVICES
+  // =============================================================
+
   final AuthService _auth = AuthService.instance;
 
+  final FirebaseMessaging _messaging = FirebaseMessaging.instance;
+
+  final BackgroundCallService _backgroundCallService =
+      BackgroundCallService.instance;
+
+  final CallService _callService = CallService();
+
+  // =============================================================
+  // RUNTIME STATE
+  // =============================================================
+
+  StreamSubscription<RemoteMessage>? _foregroundMessageSubscription;
+
+  StreamSubscription<RemoteMessage>? _openedMessageSubscription;
+
+  StreamSubscription<String>? _tokenRefreshSubscription;
+
+  StreamSubscription<String>? _callStatusSubscription;
+
   String? _prewarmedUid;
+
+  String? _lastHandledCallMessageKey;
+
+  String? _activeIncomingSessionCallId;
+
+  bool _pushInitialized = false;
+
+  bool _pushInitializationRunning = false;
+
+  bool _openingIncomingSession = false;
+
+  // =============================================================
+  // LIFECYCLE
+  // =============================================================
+
+  @override
+  void initState() {
+    super.initState();
+
+    _callStatusSubscription = _callService.callStatusStream.listen(
+      (String status) {
+        unawaited(_handleCallServiceStatus(status));
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        debugPrint(
+          'JR CALL [Call/session-route] '
+          'status stream error: $error',
+        );
+
+        debugPrintStack(
+          label: 'JR CALL [Call/session-route]',
+          stackTrace: stackTrace,
+        );
+      },
+    );
+
+    unawaited(_initializeSharedPushDelivery());
+  }
+
+  @override
+  void dispose() {
+    final StreamSubscription<RemoteMessage>? foregroundSubscription =
+        _foregroundMessageSubscription;
+
+    final StreamSubscription<RemoteMessage>? openedSubscription =
+        _openedMessageSubscription;
+
+    final StreamSubscription<String>? tokenSubscription =
+        _tokenRefreshSubscription;
+
+    final StreamSubscription<String>? callStatusSubscription =
+        _callStatusSubscription;
+
+    _foregroundMessageSubscription = null;
+    _openedMessageSubscription = null;
+    _tokenRefreshSubscription = null;
+    _callStatusSubscription = null;
+
+    if (foregroundSubscription != null) {
+      unawaited(foregroundSubscription.cancel());
+    }
+
+    if (openedSubscription != null) {
+      unawaited(openedSubscription.cancel());
+    }
+
+    if (tokenSubscription != null) {
+      unawaited(tokenSubscription.cancel());
+    }
+
+    if (callStatusSubscription != null) {
+      unawaited(callStatusSubscription.cancel());
+    }
+
+    super.dispose();
+  }
+
+  // =============================================================
+  // INCOMING ACTIVE CALL SESSION ROUTING
+  // =============================================================
+
+  Future<void> _handleCallServiceStatus(String rawStatus) async {
+    if (!mounted) {
+      return;
+    }
+
+    final String status = rawStatus.trim().toUpperCase();
+
+    if (status.isEmpty) {
+      return;
+    }
+
+    if (_isTerminalCallStatus(status)) {
+      final String? currentCallId = _normalizeString(
+        _callService.currentCallId,
+      );
+
+      if (currentCallId == null ||
+          currentCallId == _activeIncomingSessionCallId) {
+        _activeIncomingSessionCallId = null;
+      }
+
+      return;
+    }
+
+    if (status != CallServiceStatus.connected &&
+        status != CallServiceStatus.reconnected) {
+      return;
+    }
+
+    if (_callService.currentRole != CallRole.receiver) {
+      return;
+    }
+
+    final String? callId = _normalizeString(_callService.currentCallId);
+
+    final String? remoteUid = _normalizeString(_callService.currentPeerId);
+
+    final String? serviceLocalUid = _normalizeString(
+      _callService.currentUserId,
+    );
+
+    final String? authenticatedUid = _normalizeString(_auth.currentUser?.uid);
+
+    if (callId == null ||
+        remoteUid == null ||
+        serviceLocalUid == null ||
+        authenticatedUid == null) {
+      return;
+    }
+
+    if (serviceLocalUid != authenticatedUid) {
+      debugPrint(
+        'JR CALL [Call/session-route]: '
+        'receiver session ignored because local Firebase UID '
+        'does not match the authenticated account.',
+      );
+
+      return;
+    }
+
+    if (_openingIncomingSession || _activeIncomingSessionCallId == callId) {
+      return;
+    }
+
+    await Future<void>.delayed(Duration.zero);
+
+    if (!mounted) {
+      return;
+    }
+
+    if (_callService.currentRole != CallRole.receiver ||
+        _normalizeString(_callService.currentCallId) != callId ||
+        _normalizeString(_callService.currentPeerId) != remoteUid ||
+        _normalizeString(_callService.currentUserId) != authenticatedUid ||
+        !_callService.webRTCService.isPeerConnected) {
+      return;
+    }
+
+    if (_openingIncomingSession || _activeIncomingSessionCallId == callId) {
+      return;
+    }
+
+    final NavigatorState? navigator = _jrCallNavigatorKey.currentState;
+
+    if (navigator == null) {
+      return;
+    }
+
+    _openingIncomingSession = true;
+
+    _activeIncomingSessionCallId = callId;
+
+    final bool isVideoCall = _callService.isVideoCall;
+
+    final int duration = _callService.callDurationSeconds < 0
+        ? 0
+        : _callService.callDurationSeconds;
+
+    try {
+      await navigator.push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) {
+            return CallSessionScreen(
+              callerName: 'JR CALL User',
+              remoteUid: remoteUid,
+              isVideoCall: isVideoCall,
+              showOutgoingStage: false,
+              initialStatus: status,
+              initialDurationSeconds: duration,
+            );
+          },
+          settings: RouteSettings(
+            name: '/call/session/incoming/$callId',
+            arguments: <String, Object?>{
+              'callId': callId,
+              'remoteUid': remoteUid,
+              'isVideoCall': isVideoCall,
+              'role': 'receiver',
+            },
+          ),
+        ),
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [Call/session-route] '
+        'navigation failed: $error',
+      );
+
+      debugPrintStack(
+        label: 'JR CALL [Call/session-route]',
+        stackTrace: stackTrace,
+      );
+    } finally {
+      _openingIncomingSession = false;
+
+      final String? remainingCallId = _normalizeString(
+        _callService.currentCallId,
+      );
+
+      if (remainingCallId != callId) {
+        _activeIncomingSessionCallId = null;
+      }
+    }
+  }
+
+  bool _isTerminalCallStatus(String status) {
+    switch (status.trim().toUpperCase()) {
+      case CallServiceStatus.userBusy:
+      case CallServiceStatus.rejected:
+      case CallServiceStatus.declined:
+      case CallServiceStatus.cancelled:
+      case CallServiceStatus.timeout:
+      case CallServiceStatus.failed:
+      case CallServiceStatus.ended:
+        return true;
+
+      default:
+        return false;
+    }
+  }
+
+  String? _normalizeString(String? value) {
+    final String normalized = value?.trim() ?? '';
+
+    return normalized.isEmpty ? null : normalized;
+  }
+
+  // =============================================================
+  // SHARED FCM INITIALIZATION
+  // =============================================================
+
+  Future<void> _initializeSharedPushDelivery() async {
+    if (_pushInitialized || _pushInitializationRunning) {
+      return;
+    }
+
+    _pushInitializationRunning = true;
+
+    try {
+      await _backgroundCallService.initialize();
+
+      if (!mounted) {
+        return;
+      }
+
+      try {
+        final NotificationSettings settings = await _messaging
+            .requestPermission(
+              alert: true,
+              badge: true,
+              sound: true,
+              provisional: false,
+            );
+
+        debugPrint(
+          'JR CALL [FCM]: '
+          'notification permission -> '
+          '${settings.authorizationStatus}',
+        );
+      } catch (error, stackTrace) {
+        debugPrint(
+          'JR CALL [FCM]: '
+          'notification permission request failed: '
+          '$error',
+        );
+
+        debugPrintStack(
+          label: 'JR CALL [FCM/permission]',
+          stackTrace: stackTrace,
+        );
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      final User? currentUser = FirebaseAuth.instance.currentUser;
+
+      if (currentUser != null) {
+        try {
+          await ProfileService.instance.startDeviceTokenSync();
+
+          debugPrint('JR CALL [FCM]: device token sync started.');
+        } catch (error, stackTrace) {
+          debugPrint('JR CALL [FCM/token-sync] initial sync failed: $error');
+
+          debugPrintStack(
+            label: 'JR CALL [FCM/token-sync]',
+            stackTrace: stackTrace,
+          );
+        }
+      }
+
+      final StreamSubscription<RemoteMessage>? previousForegroundSubscription =
+          _foregroundMessageSubscription;
+
+      _foregroundMessageSubscription = null;
+
+      if (previousForegroundSubscription != null) {
+        await previousForegroundSubscription.cancel();
+      }
+
+      _foregroundMessageSubscription = FirebaseMessaging.onMessage.listen(
+        (RemoteMessage message) {
+          unawaited(
+            _handleRemoteMessage(message, source: _SharedPushSource.foreground),
+          );
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          debugPrint(
+            'JR CALL [FCM/foreground] '
+            'stream error: $error',
+          );
+
+          debugPrintStack(
+            label: 'JR CALL [FCM/foreground]',
+            stackTrace: stackTrace,
+          );
+        },
+      );
+
+      final StreamSubscription<RemoteMessage>? previousOpenedSubscription =
+          _openedMessageSubscription;
+
+      _openedMessageSubscription = null;
+
+      if (previousOpenedSubscription != null) {
+        await previousOpenedSubscription.cancel();
+      }
+
+      _openedMessageSubscription = FirebaseMessaging.onMessageOpenedApp.listen(
+        (RemoteMessage message) {
+          unawaited(
+            _handleRemoteMessage(
+              message,
+              source: _SharedPushSource.notificationTap,
+            ),
+          );
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          debugPrint(
+            'JR CALL [FCM/opened-app] '
+            'stream error: $error',
+          );
+
+          debugPrintStack(
+            label: 'JR CALL [FCM/opened-app]',
+            stackTrace: stackTrace,
+          );
+        },
+      );
+
+      final StreamSubscription<String>? previousTokenSubscription =
+          _tokenRefreshSubscription;
+
+      _tokenRefreshSubscription = null;
+
+      if (previousTokenSubscription != null) {
+        await previousTokenSubscription.cancel();
+      }
+
+      _tokenRefreshSubscription = _messaging.onTokenRefresh.listen(
+        (String token) {
+          final String normalizedToken = token.trim();
+
+          if (normalizedToken.isEmpty) {
+            return;
+          }
+
+          debugPrint(
+            'JR CALL [FCM]: '
+            'registration token refreshed.',
+          );
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          debugPrint(
+            'JR CALL [FCM/token-refresh] '
+            'stream error: $error',
+          );
+
+          debugPrintStack(
+            label: 'JR CALL [FCM/token-refresh]',
+            stackTrace: stackTrace,
+          );
+        },
+      );
+
+      final RemoteMessage? initialMessage = await _messaging
+          .getInitialMessage();
+
+      if (initialMessage != null && mounted) {
+        await _handleRemoteMessage(
+          initialMessage,
+          source: _SharedPushSource.initialMessage,
+        );
+      }
+
+      _pushInitialized = true;
+
+      debugPrint(
+        'JR CALL [FCM]: '
+        'shared Call/Message lifecycle initialized.',
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [FCM]: '
+        'push initialization failed: $error',
+      );
+
+      debugPrintStack(
+        label: 'JR CALL [FCM/initialize]',
+        stackTrace: stackTrace,
+      );
+    } finally {
+      _pushInitializationRunning = false;
+    }
+  }
+
+  // =============================================================
+  // SHARED FCM ROUTER
+  // =============================================================
+
+  Future<void> _handleRemoteMessage(
+    RemoteMessage message, {
+    required _SharedPushSource source,
+  }) async {
+    if (!mounted) {
+      return;
+    }
+
+    final Map<String, Object?> data = Map<String, Object?>.from(message.data);
+
+    if (_isCallPush(data)) {
+      await _handleCallRemotePayload(message, data: data, source: source);
+
+      return;
+    }
+
+    final bool handledAsMessage = await _handleMessageRemotePayload(
+      data,
+      source: source,
+    );
+
+    if (handledAsMessage) {
+      return;
+    }
+
+    debugPrint(
+      'JR CALL [FCM/${source.logName}]: '
+      'payload ignored by Call/Message router.',
+    );
+  }
+
+  // =============================================================
+  // MESSAGE FCM HANDOFF
+  // =============================================================
+
+  Future<bool> _handleMessageRemotePayload(
+    Map<String, Object?> data, {
+    required _SharedPushSource source,
+  }) async {
+    final MessageAppCoordinator? coordinator = _messageCoordinator;
+
+    if (!_messageCoordinatorReady ||
+        coordinator == null ||
+        coordinator.isDisposed ||
+        !coordinator.isInitialized) {
+      return false;
+    }
+
+    try {
+      final MessagePushClassification classification = coordinator
+          .classifyMessagePush(data);
+
+      switch (classification) {
+        case MessagePushClassification.notMessage:
+          return false;
+
+        case MessagePushClassification.invalidMessage:
+          debugPrint(
+            'JR CALL [Message/${source.logName}]: '
+            'invalid explicit Message payload ignored.',
+          );
+
+          return true;
+
+        case MessagePushClassification.message:
+          break;
+      }
+
+      final MessagePushSource messageSource = _messagePushSource(source);
+
+      if (source == _SharedPushSource.notificationTap ||
+          source == _SharedPushSource.initialMessage) {
+        final MessagePushHandlingResult result = await coordinator
+            .openMessagePush(data, source: messageSource);
+
+        debugPrint(
+          'JR CALL [Message/${source.logName}]: '
+          'notification-open result='
+          '${result.status.name}',
+        );
+
+        return true;
+      }
+
+      final MessagePushHandlingResult result = await coordinator
+          .handleMessagePush(
+            data,
+            source: messageSource,
+            openConversation: false,
+          );
+
+      debugPrint(
+        'JR CALL [Message/${source.logName}]: '
+        'foreground result='
+        '${result.status.name}',
+      );
+
+      return true;
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [Message/${source.logName}] '
+        'payload processing failed: $error',
+      );
+
+      debugPrintStack(
+        label: 'JR CALL [Message/${source.logName}]',
+        stackTrace: stackTrace,
+      );
+
+      return true;
+    }
+  }
+
+  // =============================================================
+  // CALL FCM HANDOFF
+  // =============================================================
+
+  Future<void> _handleCallRemotePayload(
+    RemoteMessage message, {
+    required Map<String, Object?> data,
+    required _SharedPushSource source,
+  }) async {
+    final String? callId = _readNonEmptyString(data['callId']);
+
+    if (callId == null) {
+      debugPrint(
+        'JR CALL [FCM/${source.logName}]: '
+        'call payload ignored because callId is missing.',
+      );
+
+      return;
+    }
+
+    final String messageKey =
+        '${message.messageId ?? 'no-message-id'}|'
+        '$callId|'
+        '${data['type'] ?? data['event'] ?? ''}';
+
+    if (_lastHandledCallMessageKey == messageKey) {
+      return;
+    }
+
+    _lastHandledCallMessageKey = messageKey;
+
+    try {
+      final String? currentUid = _auth.currentUser?.uid.trim();
+
+      final String? receiverUid =
+          _readNonEmptyString(data['receiverId']) ??
+          _readNonEmptyString(data['recipientId']);
+
+      if (currentUid != null &&
+          currentUid.isNotEmpty &&
+          receiverUid != null &&
+          receiverUid != currentUid) {
+        debugPrint(
+          'JR CALL [FCM/${source.logName}]: '
+          'call payload ignored for another Firebase UID.',
+        );
+
+        return;
+      }
+
+      final Map<String, dynamic> callData = <String, dynamic>{};
+
+      data.forEach((String key, Object? value) {
+        callData[key] = value;
+      });
+
+      final bool handled = await _backgroundCallService.handleIncomingCallData(
+        callData,
+      );
+
+      debugPrint(
+        'JR CALL [FCM/${source.logName}]: '
+        'incoming-call handoff '
+        'callId=$callId handled=$handled',
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [FCM/${source.logName}] '
+        'incoming-call handoff error: $error',
+      );
+
+      debugPrintStack(
+        label: 'JR CALL [FCM/${source.logName}]',
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  // =============================================================
+  // CALL PUSH CLASSIFICATION
+  // =============================================================
+
+  bool _isCallPush(Map<String, Object?> data) {
+    final String type =
+        (_readNonEmptyString(data['type']) ??
+                _readNonEmptyString(data['event']) ??
+                _readNonEmptyString(data['notificationType']) ??
+                '')
+            .toLowerCase();
+
+    if (type == 'incoming_call' ||
+        type == 'incoming-call' ||
+        type ==
+            'incoming'
+                'call' ||
+        type == 'call' ||
+        type == 'video_call' ||
+        type == 'voice_call') {
+      return true;
+    }
+
+    final String? callId = _readNonEmptyString(data['callId']);
+
+    final String? callerId =
+        _readNonEmptyString(data['callerId']) ??
+        _readNonEmptyString(data['senderId']);
+
+    final String? receiverId =
+        _readNonEmptyString(data['receiverId']) ??
+        _readNonEmptyString(data['recipientId']);
+
+    return callId != null && callerId != null && receiverId != null;
+  }
+
+  String? _readNonEmptyString(Object? value) {
+    if (value == null) {
+      return null;
+    }
+
+    final String normalized = value.toString().trim();
+
+    return normalized.isEmpty ? null : normalized;
+  }
+
+  // =============================================================
+  // CALL INFRASTRUCTURE PRE-WARM
+  // =============================================================
 
   void _schedulePrewarm(User? user) {
     final String uid = user?.uid.trim() ?? '';
@@ -206,6 +1152,10 @@ class _SessionGateState extends State<SessionGate> {
     });
   }
 
+  // =============================================================
+  // BUILD
+  // =============================================================
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
@@ -231,6 +1181,40 @@ class _SessionGateState extends State<SessionGate> {
 }
 
 // ===============================================================
+// SHARED PUSH SOURCE
+// ===============================================================
+
+enum _SharedPushSource { foreground, notificationTap, initialMessage }
+
+extension on _SharedPushSource {
+  String get logName {
+    switch (this) {
+      case _SharedPushSource.foreground:
+        return 'foreground';
+
+      case _SharedPushSource.notificationTap:
+        return 'opened-app';
+
+      case _SharedPushSource.initialMessage:
+        return 'initial-message';
+    }
+  }
+}
+
+MessagePushSource _messagePushSource(_SharedPushSource source) {
+  switch (source) {
+    case _SharedPushSource.foreground:
+      return MessagePushSource.foreground;
+
+    case _SharedPushSource.notificationTap:
+      return MessagePushSource.notificationTap;
+
+    case _SharedPushSource.initialMessage:
+      return MessagePushSource.initialMessage;
+  }
+}
+
+// ===============================================================
 // APPLICATION THEME
 // ===============================================================
 
@@ -252,9 +1236,6 @@ ThemeData _buildApplicationTheme() {
     disabledColor: JrColors.disabled,
     dividerColor: JrColors.divider,
 
-    // ===========================================================
-    // TYPOGRAPHY
-    // ===========================================================
     textTheme:
         TextTheme(
           displayLarge: JrTypography.brandLarge,
@@ -272,9 +1253,6 @@ ThemeData _buildApplicationTheme() {
           displayColor: JrColors.textPrimary,
         ),
 
-    // ===========================================================
-    // APP BAR
-    // ===========================================================
     appBarTheme: const AppBarTheme(
       backgroundColor: JrColors.background,
       foregroundColor: JrColors.textPrimary,
@@ -284,9 +1262,6 @@ ThemeData _buildApplicationTheme() {
       centerTitle: false,
     ),
 
-    // ===========================================================
-    // FILLED BUTTON
-    // ===========================================================
     filledButtonTheme: FilledButtonThemeData(
       style: ButtonStyle(
         minimumSize: const WidgetStatePropertyAll<Size>(Size.fromHeight(54)),
@@ -312,9 +1287,6 @@ ThemeData _buildApplicationTheme() {
       ),
     ),
 
-    // ===========================================================
-    // OUTLINED BUTTON
-    // ===========================================================
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: ButtonStyle(
         minimumSize: const WidgetStatePropertyAll<Size>(Size.fromHeight(54)),
@@ -340,9 +1312,6 @@ ThemeData _buildApplicationTheme() {
       ),
     ),
 
-    // ===========================================================
-    // INPUT
-    // ===========================================================
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: JrColors.surface,
@@ -359,9 +1328,6 @@ ThemeData _buildApplicationTheme() {
       disabledBorder: _inputBorder(JrColors.disabled),
     ),
 
-    // ===========================================================
-    // CARD
-    // ===========================================================
     cardTheme: CardThemeData(
       color: JrColors.surface,
       surfaceTintColor: Colors.transparent,
@@ -373,9 +1339,6 @@ ThemeData _buildApplicationTheme() {
       ),
     ),
 
-    // ===========================================================
-    // DIALOG
-    // ===========================================================
     dialogTheme: DialogThemeData(
       backgroundColor: JrColors.surface,
       surfaceTintColor: Colors.transparent,
@@ -384,9 +1347,6 @@ ThemeData _buildApplicationTheme() {
       contentTextStyle: JrTypography.bodySecondary,
     ),
 
-    // ===========================================================
-    // SNACKBAR
-    // ===========================================================
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
       backgroundColor: JrColors.textPrimary,
@@ -394,9 +1354,6 @@ ThemeData _buildApplicationTheme() {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
     ),
 
-    // ===========================================================
-    // PROGRESS
-    // ===========================================================
     progressIndicatorTheme: const ProgressIndicatorThemeData(
       color: JrColors.primaryBlue,
     ),
@@ -521,19 +1478,47 @@ class JRCallBootstrapErrorApp extends StatelessWidget {
 // ===============================================================
 // END OF FILE
 //
-// FINAL STARTUP:
+// IDE INSPECTION:
 //
-// Signed-out / Guest
-//   -> HomeScreen(initialIndex: 2)
-//   -> PUBLIC MEDIA
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Provider package import preserved exactly.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Required ProviderScope root preserved.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Apple provider runtime label preserved exactly.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Legacy incoming-call compatibility token preserved exactly.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ No runtime behavior changed.
 //
-// Authenticated
-//   -> HomeScreen(initialIndex: 0)
-//   -> CALL
+// CALL SESSION ROUTING:
 //
-// WelcomeScreen
-//   -> NOT used as startup gate
-//   -> remains available for Login/Create protected flows
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ CallService singleton reused.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Receiver role required.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Firebase authenticated UID revalidated.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Exact current callId revalidated.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Exact remote Firebase UID revalidated.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Real PeerConnection CONNECTED required.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Outgoing caller cannot trigger incoming route.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Duplicate incoming session route blocked.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Accept/navigation race protected.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ CallSessionScreen receives real video/voice type.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ CallSessionScreen receives real duration.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Remote profile identity resolves inside CallSessionScreen.
 //
-// Call Engine / WebRTC untouched.
+// EXISTING ARCHITECTURE:
+//
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Firebase initialization preserved.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Firebase App Check preserved.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ AuthService preserved.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Phone OTP ownership preserved.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Message coordinator preserved.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ BackgroundCallService preserved.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ STUN/TURN pre-warm preserved.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ FCM routing preserved.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Theme/UI preserved.
+//
+// PROTECTED:
+//
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ No CallService lifecycle duplicated.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ No WebRTC ownership duplicated.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ No SDP ownership duplicated.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ No ICE ownership duplicated.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ No signaling ownership duplicated.
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ No HomeScreen visual changes.
 // ===============================================================

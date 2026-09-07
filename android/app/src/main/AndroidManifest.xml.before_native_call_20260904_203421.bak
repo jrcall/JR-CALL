@@ -1,0 +1,273 @@
+<!-- ===========================================================
+     JR CALL
+     File: AndroidManifest.xml
+     Location: android/app/src/main/AndroidManifest.xml
+
+     PRODUCTION ANDROID MANIFEST
+
+     OWNERSHIP:
+
+     - Firebase, Firestore, Message, and WebRTC use network access.
+     - Call Engine and WebRTC use microphone, camera, and audio routing.
+     - Incoming Call uses full-screen intent permission.
+     - Android 13+ uses notification permission.
+     - Contact Discovery uses contacts permission.
+     - Bluetooth Manager uses legacy and Android 12+ permissions.
+     - Image Cropper uses the required native crop activity.
+     - Flutter uses Android Embedding V2.
+
+     IMPORTANT:
+
+     - CallService lifecycle is not implemented here.
+     - WebRTC ownership is not implemented here.
+     - SDP ownership is not implemented here.
+     - ICE ownership is not implemented here.
+     - Signaling ownership is not implemented here.
+     - No unsupported foreground service is added here.
+     =========================================================== -->
+
+<manifest
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- =======================================================
+         NETWORK / FIREBASE / FIRESTORE / MESSAGE / WEBRTC
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.INTERNET" />
+
+    <uses-permission
+        android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <uses-permission
+        android:name="android.permission.CHANGE_NETWORK_STATE" />
+
+    <!-- =======================================================
+         WEBRTC VOICE / VIDEO
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.RECORD_AUDIO" />
+
+    <uses-permission
+        android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <uses-permission
+        android:name="android.permission.CAMERA" />
+
+    <!-- =======================================================
+         INCOMING CALL FULL-SCREEN
+
+         Android 14+ limits default full-screen-intent access.
+         Calling and alarm applications are supported use cases.
+         JR CALL is a calling application.
+         Runtime access is verified in the native call step.
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.USE_FULL_SCREEN_INTENT"
+        tools:ignore="FullScreenIntentPolicy" />
+
+    <!-- =======================================================
+         ANDROID 13+ NOTIFICATIONS
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- =======================================================
+         CONTACT DISCOVERY
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.READ_CONTACTS" />
+
+    <!-- =======================================================
+         BLUETOOTH — ANDROID 11 AND LOWER
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+
+    <!-- =======================================================
+         BLUETOOTH — ANDROID 12+
+
+         CONNECT supports communication with paired devices.
+         SCAN supports discovery of nearby Bluetooth devices.
+         Scan results are not used to derive physical location.
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_CONNECT"
+        tools:targetApi="31" />
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="31"
+        tools:ignore="SystemPermissionTypo" />
+
+    <!-- =======================================================
+         OPTIONAL HARDWARE
+
+         Hardware is optional for device-store compatibility.
+         Runtime feature availability remains app-controlled.
+         ======================================================= -->
+
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.camera.autofocus"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.bluetooth"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
+
+    <!-- =======================================================
+         APPLICATION
+         ======================================================= -->
+
+    <application
+        android:label="JR CALL"
+        android:icon="@mipmap/launcher_icon"
+        android:allowBackup="true"
+        android:supportsRtl="true">
+
+        <!-- ===================================================
+             MAIN FLUTTER / JR CALL NATIVE BRIDGE
+             =================================================== -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme" />
+
+            <intent-filter>
+                <action
+                    android:name="android.intent.action.MAIN" />
+
+                <category
+                    android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <!-- ===================================================
+             IMAGE CROPPER 12.2.1
+
+             The required native crop activity is preserved.
+             The native activity class name is unchanged.
+             Portrait configuration is preserved.
+             The AppCompat crop theme is preserved.
+             IDE-only inspection suppression changes no runtime logic.
+             =================================================== -->
+
+        <!--suppress AndroidDomInspection -->
+        <!--suppress SpellCheckingInspection -->
+        <activity
+            android:name="com.yalantis.ucrop.UCropActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AppCompat.Light.NoActionBar"
+            tools:ignore="DiscouragedApi,LockedOrientationActivity,MissingClass" />
+
+        <!-- ===================================================
+             FLUTTER ANDROID EMBEDDING V2
+             =================================================== -->
+
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+
+    </application>
+
+    <!-- =======================================================
+         FLUTTER PROCESS-TEXT PACKAGE VISIBILITY
+         ======================================================= -->
+
+    <queries>
+        <intent>
+            <action
+                android:name="android.intent.action.PROCESS_TEXT" />
+
+            <data
+                android:mimeType="text/plain" />
+        </intent>
+    </queries>
+
+</manifest>
+
+    <!-- ===========================================================
+         END OF FILE
+
+         PRESERVED:
+
+         ✓ Firebase, Firestore, and Internet connectivity.
+         ✓ Message Engine connectivity.
+         ✓ Voice Call microphone support.
+         ✓ Video Call camera support.
+         ✓ WebRTC network-state access.
+         ✓ WebRTC network-state control.
+         ✓ WebRTC audio routing.
+         ✓ Incoming-call full-screen permission.
+         ✓ Android 13+ notification permission.
+         ✓ Contact discovery permission.
+         ✓ Legacy Bluetooth support through API 30.
+         ✓ Bluetooth Connect support for API 31+.
+         ✓ Bluetooth Scan support for API 31+.
+         ✓ Optional hardware compatibility.
+         ✓ MainActivity native bridge.
+         ✓ Profile image crop support.
+         ✓ Cover image crop support.
+         ✓ Media image crop support.
+         ✓ Flutter Embedding V2.
+
+         CALL ENGINE:
+
+         ✓ INTERNET is preserved.
+         ✓ ACCESS_NETWORK_STATE is preserved.
+         ✓ CHANGE_NETWORK_STATE is preserved.
+         ✓ RECORD_AUDIO is preserved.
+         ✓ MODIFY_AUDIO_SETTINGS is preserved.
+         ✓ CAMERA is preserved.
+         ✓ USE_FULL_SCREEN_INTENT is preserved.
+         ✓ POST_NOTIFICATIONS is preserved.
+         ✓ BLUETOOTH routing permissions are preserved.
+
+         PROTECTED:
+
+         ✓ No CallService lifecycle is duplicated.
+         ✓ No WebRTC ownership is duplicated.
+         ✓ No SDP ownership is duplicated.
+         ✓ No ICE ownership is duplicated.
+         ✓ No signaling ownership is duplicated.
+         ✓ No Auth or OTP logic is changed.
+         ✓ No Message Engine logic is changed.
+         ✓ No Flutter UI or design is changed.
+         =========================================================== -->

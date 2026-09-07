@@ -1,0 +1,6153 @@
+===== JR CALL ANDROID INCOMING CALL AUDIT =====
+
+===== FILE: android/app/src/main/AndroidManifest.xml =====
+
+<!-- ===========================================================
+     JR CALL
+     File: AndroidManifest.xml
+     Location: android/app/src/main/AndroidManifest.xml
+
+     PRODUCTION ANDROID MANIFEST
+
+     OWNERSHIP:
+
+     - Firebase, Firestore, Message, and WebRTC use network access.
+     - Call Engine and WebRTC use microphone, camera, and audio routing.
+     - Incoming Call uses full-screen intent permission.
+     - Android 13+ uses notification permission.
+     - Contact Discovery uses contacts permission.
+     - Bluetooth Manager uses legacy and Android 12+ permissions.
+     - Image Cropper uses the required native crop activity.
+     - Flutter uses Android Embedding V2.
+
+     IMPORTANT:
+
+     - CallService lifecycle is not implemented here.
+     - WebRTC ownership is not implemented here.
+     - SDP ownership is not implemented here.
+     - ICE ownership is not implemented here.
+     - Signaling ownership is not implemented here.
+     - No unsupported foreground service is added here.
+     =========================================================== -->
+
+<manifest
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- =======================================================
+         NETWORK / FIREBASE / FIRESTORE / MESSAGE / WEBRTC
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.INTERNET" />
+
+    <uses-permission
+        android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <uses-permission
+        android:name="android.permission.CHANGE_NETWORK_STATE" />
+
+    <!-- =======================================================
+         WEBRTC VOICE / VIDEO
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.RECORD_AUDIO" />
+
+    <uses-permission
+        android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <uses-permission
+        android:name="android.permission.CAMERA" />
+
+    <!-- =======================================================
+         INCOMING CALL FULL-SCREEN
+
+         Android 14+ limits default full-screen-intent access.
+         Calling and alarm applications are supported use cases.
+         JR CALL is a calling application.
+         Runtime access is verified in the native call step.
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.USE_FULL_SCREEN_INTENT"
+        tools:ignore="FullScreenIntentPolicy" />
+
+    <!-- =======================================================
+         ANDROID 13+ NOTIFICATIONS
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- =======================================================
+         CONTACT DISCOVERY
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.READ_CONTACTS" />
+
+    <!-- =======================================================
+         BLUETOOTH — ANDROID 11 AND LOWER
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+
+    <!-- =======================================================
+         BLUETOOTH — ANDROID 12+
+
+         CONNECT supports communication with paired devices.
+         SCAN supports discovery of nearby Bluetooth devices.
+         Scan results are not used to derive physical location.
+         ======================================================= -->
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_CONNECT"
+        tools:targetApi="31" />
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="31"
+        tools:ignore="SystemPermissionTypo" />
+
+    <!-- =======================================================
+         OPTIONAL HARDWARE
+
+         Hardware is optional for device-store compatibility.
+         Runtime feature availability remains app-controlled.
+         ======================================================= -->
+
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.camera.autofocus"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.bluetooth"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
+
+    <!-- =======================================================
+         APPLICATION
+         ======================================================= -->
+
+    <application
+        android:label="JR CALL"
+        android:icon="@mipmap/launcher_icon"
+        android:allowBackup="true"
+        android:supportsRtl="true">
+
+        <!-- ===================================================
+             MAIN FLUTTER / JR CALL NATIVE BRIDGE
+             =================================================== -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme" />
+
+            <intent-filter>
+                <action
+                    android:name="android.intent.action.MAIN" />
+
+                <category
+                    android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <!-- ===================================================
+             IMAGE CROPPER 12.2.1
+
+             The required native crop activity is preserved.
+             The native activity class name is unchanged.
+             Portrait configuration is preserved.
+             The AppCompat crop theme is preserved.
+             IDE-only inspection suppression changes no runtime logic.
+             =================================================== -->
+
+        <!--suppress AndroidDomInspection -->
+        <!--suppress SpellCheckingInspection -->
+        <activity
+            android:name="com.yalantis.ucrop.UCropActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AppCompat.Light.NoActionBar"
+            tools:ignore="DiscouragedApi,LockedOrientationActivity,MissingClass" />
+
+        <!-- ===================================================
+             FLUTTER ANDROID EMBEDDING V2
+             =================================================== -->
+
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+
+    </application>
+
+    <!-- =======================================================
+         FLUTTER PROCESS-TEXT PACKAGE VISIBILITY
+         ======================================================= -->
+
+    <queries>
+        <intent>
+            <action
+                android:name="android.intent.action.PROCESS_TEXT" />
+
+            <data
+                android:mimeType="text/plain" />
+        </intent>
+    </queries>
+
+</manifest>
+
+    <!-- ===========================================================
+         END OF FILE
+
+         PRESERVED:
+
+         ✓ Firebase, Firestore, and Internet connectivity.
+         ✓ Message Engine connectivity.
+         ✓ Voice Call microphone support.
+         ✓ Video Call camera support.
+         ✓ WebRTC network-state access.
+         ✓ WebRTC network-state control.
+         ✓ WebRTC audio routing.
+         ✓ Incoming-call full-screen permission.
+         ✓ Android 13+ notification permission.
+         ✓ Contact discovery permission.
+         ✓ Legacy Bluetooth support through API 30.
+         ✓ Bluetooth Connect support for API 31+.
+         ✓ Bluetooth Scan support for API 31+.
+         ✓ Optional hardware compatibility.
+         ✓ MainActivity native bridge.
+         ✓ Profile image crop support.
+         ✓ Cover image crop support.
+         ✓ Media image crop support.
+         ✓ Flutter Embedding V2.
+
+         CALL ENGINE:
+
+         ✓ INTERNET is preserved.
+         ✓ ACCESS_NETWORK_STATE is preserved.
+         ✓ CHANGE_NETWORK_STATE is preserved.
+         ✓ RECORD_AUDIO is preserved.
+         ✓ MODIFY_AUDIO_SETTINGS is preserved.
+         ✓ CAMERA is preserved.
+         ✓ USE_FULL_SCREEN_INTENT is preserved.
+         ✓ POST_NOTIFICATIONS is preserved.
+         ✓ BLUETOOTH routing permissions are preserved.
+
+         PROTECTED:
+
+         ✓ No CallService lifecycle is duplicated.
+         ✓ No WebRTC ownership is duplicated.
+         ✓ No SDP ownership is duplicated.
+         ✓ No ICE ownership is duplicated.
+         ✓ No signaling ownership is duplicated.
+         ✓ No Auth or OTP logic is changed.
+         ✓ No Message Engine logic is changed.
+         ✓ No Flutter UI or design is changed.
+         =========================================================== -->
+
+===== FILE: android/app/src/main/kotlin/com/example/jr_call/MainActivity.kt =====
+
+// ===============================================================
+// JR CALL
+// File: MainActivity.kt
+// Location:
+// android/app/src/main/kotlin/com/example/jr_call/MainActivity.kt
+//
+// PRODUCTION ANDROID CALL PRESENTATION BRIDGE
+//
+// OWNERSHIP:
+// - CallService -> WebRTC/call lifecycle.
+// - SignalingService -> Firestore signaling.
+// - BackgroundCallService -> Dart/native orchestration.
+// - MainActivity -> Android notification/full-screen handoff.
+//
+// IMPORTANT:
+// - No WebRTC ownership.
+// - No Firestore ownership.
+// - No Firebase Auth ownership.
+// - No ICE/SDP ownership.
+// - No fake CONNECTED state.
+// - Existing MethodChannel contract preserved.
+// ===============================================================
+
+package com.example.jr_call
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Intent
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.RingtoneManager
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodCall
+import io.flutter.plugin.common.MethodChannel
+import org.json.JSONArray
+import org.json.JSONObject
+
+class MainActivity : FlutterActivity() {
+
+    companion object {
+
+        // =======================================================
+        // METHOD CHANNEL
+        // =======================================================
+
+        private const val CHANNEL_NAME =
+            "jr_call/background_call"
+
+        // =======================================================
+        // NOTIFICATION CHANNELS
+        // =======================================================
+
+        private const val INCOMING_CHANNEL_ID =
+            "jr_call_incoming_calls"
+
+        private const val INCOMING_CHANNEL_NAME =
+            "JR CALL Incoming Calls"
+
+        private const val ACTIVE_CHANNEL_ID =
+            "jr_call_active_calls"
+
+        private const val ACTIVE_CHANNEL_NAME =
+            "JR CALL Active Calls"
+
+        private const val INCOMING_NOTIFICATION_ID =
+            41001
+
+        private const val ACTIVE_NOTIFICATION_ID =
+            41002
+
+        // =======================================================
+        // STORAGE
+        // =======================================================
+
+        private const val PREFS_NAME =
+            "jr_call_background_call"
+
+        private const val PREF_PENDING_CALL =
+            "pending_call"
+
+        // =======================================================
+        // INTENT DATA
+        // =======================================================
+
+        private const val EXTRA_CALL_ID =
+            "jr_call_call_id"
+
+        private const val EXTRA_CALL_ACTION =
+            "jr_call_action"
+
+        private const val ACTION_OPEN =
+            "open"
+
+        private const val ACTION_ACCEPT =
+            "accept"
+
+        private const val ACTION_REJECT =
+            "reject"
+
+        // Use literal permission name so minSdk < 29 remains
+        // compile/lint safe.
+        private const val PERMISSION_USE_FULL_SCREEN_INTENT =
+            "android.permission.USE_FULL_SCREEN_INTENT"
+    }
+
+    // ===========================================================
+    // RUNTIME
+    // ===========================================================
+
+    private var methodChannel: MethodChannel? = null
+
+    private var flutterEngineReady = false
+
+    private var lastDeliveredActionKey: String? = null
+
+    // ===========================================================
+    // FLUTTER ENGINE
+    // ===========================================================
+
+    override fun configureFlutterEngine(
+        flutterEngine: FlutterEngine
+    ) {
+        super.configureFlutterEngine(flutterEngine)
+
+        createNotificationChannels()
+
+        val channel =
+            MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                CHANNEL_NAME
+            )
+
+        channel.setMethodCallHandler { call, result ->
+            handleFlutterMethod(
+                call = call,
+                result = result
+            )
+        }
+
+        methodChannel = channel
+
+        flutterEngineReady = true
+
+        handleLaunchIntent(intent)
+    }
+
+    // ===========================================================
+    // NEW INTENT
+    // ===========================================================
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+
+        setIntent(intent)
+
+        handleLaunchIntent(intent)
+    }
+
+    // ===========================================================
+    // FLUTTER -> ANDROID
+    // ===========================================================
+
+    private fun handleFlutterMethod(
+        call: MethodCall,
+        result: MethodChannel.Result
+    ) {
+        try {
+            when (call.method) {
+
+                "initializeBackgroundCallService" -> {
+                    createNotificationChannels()
+
+                    result.success(true)
+                }
+
+                "showIncomingCall" -> {
+                    val payload =
+                        normalizeArguments(
+                            call.arguments
+                        )
+
+                    val callId =
+                        readString(
+                            payload["callId"]
+                        )
+
+                    val callerId =
+                        readString(
+                            payload["callerId"]
+                                ?: payload["senderId"]
+                        )
+
+                    val receiverId =
+                        readString(
+                            payload["receiverId"]
+                                ?: payload["recipientId"]
+                        )
+
+                    if (
+                        callId == null ||
+                        callerId == null ||
+                        receiverId == null
+                    ) {
+                        result.error(
+                            "INVALID_ARGUMENT",
+                            "callId, callerId and receiverId are required.",
+                            null
+                        )
+
+                        return
+                    }
+
+                    savePendingCall(payload)
+
+                    val posted =
+                        showIncomingCallNotification(
+                            payload
+                        )
+
+                    result.success(posted)
+                }
+
+                "setCallConnecting" -> {
+                    val payload =
+                        normalizeArguments(
+                            call.arguments
+                        )
+
+                    val callId =
+                        readString(
+                            payload["callId"]
+                        )
+
+                    if (callId != null) {
+                        cancelIncomingNotification()
+
+                        showActiveCallNotification(
+                            callId = callId,
+                            title = "Connecting",
+                            body = "JR CALL is connecting…"
+                        )
+                    }
+
+                    result.success(true)
+                }
+
+                "setCallOngoing" -> {
+                    val payload =
+                        normalizeArguments(
+                            call.arguments
+                        )
+
+                    val callId =
+                        readString(
+                            payload["callId"]
+                        )
+
+                    if (callId != null) {
+                        cancelIncomingNotification()
+
+                        showActiveCallNotification(
+                            callId = callId,
+                            title = "JR CALL",
+                            body = "Call in progress"
+                        )
+                    }
+
+                    clearPendingCall()
+
+                    result.success(true)
+                }
+
+                "dismissIncomingCall" -> {
+                    cancelIncomingNotification()
+
+                    clearPendingCall()
+
+                    result.success(true)
+                }
+
+                "endNativeCall" -> {
+                    cancelIncomingNotification()
+
+                    cancelActiveNotification()
+
+                    clearPendingCall()
+
+                    result.success(true)
+                }
+
+                "getPendingCall" -> {
+                    result.success(
+                        loadPendingCall()
+                    )
+                }
+
+                else -> {
+                    result.notImplemented()
+                }
+            }
+        } catch (error: Throwable) {
+            result.error(
+                "JR_CALL_NATIVE_ERROR",
+                error.message
+                    ?: "Native call operation failed.",
+                null
+            )
+        }
+    }
+
+    // ===========================================================
+    // INCOMING CALL NOTIFICATION
+    // ===========================================================
+
+    private fun showIncomingCallNotification(
+        payload: Map<String, Any?>
+    ): Boolean {
+
+        val callId =
+            readString(
+                payload["callId"]
+            ) ?: return false
+
+        if (!canPostNotifications()) {
+            return false
+        }
+
+        val callerName =
+            readString(
+                payload["callerName"]
+            )
+                ?: readString(
+                    payload["senderName"]
+                )
+                ?: "JR CALL User"
+
+        val isVideoCall =
+            readBoolean(
+                payload["isVideoCall"]
+            )
+
+        val openIntent =
+            createCallIntent(
+                callId = callId,
+                action = ACTION_OPEN
+            )
+
+        val openPendingIntent =
+            PendingIntent.getActivity(
+                this,
+                requestCode(
+                    callId = callId,
+                    suffix = 1
+                ),
+                openIntent,
+                pendingIntentFlags()
+            )
+
+        val acceptIntent =
+            createCallIntent(
+                callId = callId,
+                action = ACTION_ACCEPT
+            )
+
+        val acceptPendingIntent =
+            PendingIntent.getActivity(
+                this,
+                requestCode(
+                    callId = callId,
+                    suffix = 2
+                ),
+                acceptIntent,
+                pendingIntentFlags()
+            )
+
+        val rejectIntent =
+            createCallIntent(
+                callId = callId,
+                action = ACTION_REJECT
+            )
+
+        val rejectPendingIntent =
+            PendingIntent.getActivity(
+                this,
+                requestCode(
+                    callId = callId,
+                    suffix = 3
+                ),
+                rejectIntent,
+                pendingIntentFlags()
+            )
+
+        val builder =
+            NotificationCompat.Builder(
+                this,
+                INCOMING_CHANNEL_ID
+            )
+                .setSmallIcon(
+                    applicationInfo.icon
+                )
+                .setContentTitle(
+                    if (isVideoCall) {
+                        "Incoming Video Call"
+                    } else {
+                        "Incoming Voice Call"
+                    }
+                )
+                .setContentText(
+                    "$callerName is calling you"
+                )
+                .setCategory(
+                    NotificationCompat.CATEGORY_CALL
+                )
+                .setPriority(
+                    NotificationCompat.PRIORITY_MAX
+                )
+                .setVisibility(
+                    NotificationCompat.VISIBILITY_PUBLIC
+                )
+                .setOngoing(true)
+                .setAutoCancel(false)
+                .setContentIntent(
+                    openPendingIntent
+                )
+                .addAction(
+                    android.R.drawable
+                        .ic_menu_close_clear_cancel,
+                    "Decline",
+                    rejectPendingIntent
+                )
+                .addAction(
+                    android.R.drawable
+                        .sym_action_call,
+                    "Accept",
+                    acceptPendingIntent
+                )
+
+        applyFullScreenIntentIfAllowed(
+            builder = builder,
+            pendingIntent = openPendingIntent
+        )
+
+        val notification =
+            builder.build()
+
+        return postNotification(
+            id = INCOMING_NOTIFICATION_ID,
+            notification = notification
+        )
+    }
+
+    // ===========================================================
+    // FULL-SCREEN CALL PRESENTATION
+    // ===========================================================
+
+    @SuppressLint("FullScreenIntentPolicy")
+    private fun applyFullScreenIntentIfAllowed(
+        builder: NotificationCompat.Builder,
+        pendingIntent: PendingIntent
+    ) {
+        if (!canUseFullScreenIntent()) {
+            return
+        }
+
+        builder.setFullScreenIntent(
+            pendingIntent,
+            true
+        )
+    }
+
+    // ===========================================================
+    // ACTIVE CALL NOTIFICATION
+    // ===========================================================
+
+    private fun showActiveCallNotification(
+        callId: String,
+        title: String,
+        body: String
+    ): Boolean {
+
+        if (!canPostNotifications()) {
+            return false
+        }
+
+        val openIntent =
+            createCallIntent(
+                callId = callId,
+                action = ACTION_OPEN
+            )
+
+        val openPendingIntent =
+            PendingIntent.getActivity(
+                this,
+                requestCode(
+                    callId = callId,
+                    suffix = 4
+                ),
+                openIntent,
+                pendingIntentFlags()
+            )
+
+        val notification =
+            NotificationCompat.Builder(
+                this,
+                ACTIVE_CHANNEL_ID
+            )
+                .setSmallIcon(
+                    applicationInfo.icon
+                )
+                .setContentTitle(title)
+                .setContentText(body)
+                .setCategory(
+                    NotificationCompat.CATEGORY_CALL
+                )
+                .setPriority(
+                    NotificationCompat.PRIORITY_HIGH
+                )
+                .setVisibility(
+                    NotificationCompat.VISIBILITY_PRIVATE
+                )
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentIntent(
+                    openPendingIntent
+                )
+                .build()
+
+        return postNotification(
+            id = ACTIVE_NOTIFICATION_ID,
+            notification = notification
+        )
+    }
+
+    // ===========================================================
+    // SAFE NOTIFICATION POST
+    // ===========================================================
+
+    @SuppressLint("MissingPermission")
+    private fun postNotification(
+        id: Int,
+        notification: Notification
+    ): Boolean {
+
+        if (!canPostNotifications()) {
+            return false
+        }
+
+        return try {
+            NotificationManagerCompat
+                .from(this)
+                .notify(
+                    id,
+                    notification
+                )
+
+            true
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
+    // ===========================================================
+    // NOTIFICATION PERMISSION
+    // ===========================================================
+
+    private fun canPostNotifications(): Boolean {
+
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.TIRAMISU
+        ) {
+            val granted =
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) ==
+                        PackageManager.PERMISSION_GRANTED
+
+            if (!granted) {
+                return false
+            }
+        }
+
+        return NotificationManagerCompat
+            .from(this)
+            .areNotificationsEnabled()
+    }
+
+    // ===========================================================
+    // FULL-SCREEN INTENT AVAILABILITY
+    // ===========================================================
+
+    private fun canUseFullScreenIntent(): Boolean {
+
+        if (
+            Build.VERSION.SDK_INT <
+            Build.VERSION_CODES.Q
+        ) {
+            return true
+        }
+
+        val manifestPermissionGranted =
+            ContextCompat.checkSelfPermission(
+                this,
+                PERMISSION_USE_FULL_SCREEN_INTENT
+            ) ==
+                    PackageManager.PERMISSION_GRANTED
+
+        if (!manifestPermissionGranted) {
+            return false
+        }
+
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+        ) {
+            val manager =
+                getSystemService(
+                    NotificationManager::class.java
+                )
+
+            return manager.canUseFullScreenIntent()
+        }
+
+        return true
+    }
+
+    // ===========================================================
+    // NOTIFICATION CHANNELS
+    // ===========================================================
+
+    private fun createNotificationChannels() {
+
+        if (
+            Build.VERSION.SDK_INT <
+            Build.VERSION_CODES.O
+        ) {
+            return
+        }
+
+        val manager =
+            getSystemService(
+                NotificationManager::class.java
+            )
+
+        createIncomingNotificationChannel(
+            manager
+        )
+
+        createActiveNotificationChannel(
+            manager
+        )
+    }
+
+    private fun createIncomingNotificationChannel(
+        manager: NotificationManager
+    ) {
+        if (
+            Build.VERSION.SDK_INT <
+            Build.VERSION_CODES.O
+        ) {
+            return
+        }
+
+        val ringtone =
+            RingtoneManager.getDefaultUri(
+                RingtoneManager.TYPE_RINGTONE
+            )
+
+        val audioAttributes =
+            AudioAttributes.Builder()
+                .setUsage(
+                    AudioAttributes
+                        .USAGE_NOTIFICATION_RINGTONE
+                )
+                .build()
+
+        val channel =
+            NotificationChannel(
+                INCOMING_CHANNEL_ID,
+                INCOMING_CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+
+                description =
+                    "Incoming JR CALL voice and video calls"
+
+                enableVibration(true)
+
+                lockscreenVisibility =
+                    Notification.VISIBILITY_PUBLIC
+
+                setSound(
+                    ringtone,
+                    audioAttributes
+                )
+            }
+
+        manager.createNotificationChannel(
+            channel
+        )
+    }
+
+    private fun createActiveNotificationChannel(
+        manager: NotificationManager
+    ) {
+        if (
+            Build.VERSION.SDK_INT <
+            Build.VERSION_CODES.O
+        ) {
+            return
+        }
+
+        val channel =
+            NotificationChannel(
+                ACTIVE_CHANNEL_ID,
+                ACTIVE_CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+
+                description =
+                    "Active JR CALL voice and video calls"
+
+                enableVibration(false)
+
+                setSound(
+                    null,
+                    null
+                )
+
+                lockscreenVisibility =
+                    Notification.VISIBILITY_PRIVATE
+            }
+
+        manager.createNotificationChannel(
+            channel
+        )
+    }
+
+    // ===========================================================
+    // INTENT CREATION
+    // ===========================================================
+
+    private fun createCallIntent(
+        callId: String,
+        action: String
+    ): Intent {
+
+        return Intent(
+            this,
+            MainActivity::class.java
+        ).apply {
+
+            flags =
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP
+
+            putExtra(
+                EXTRA_CALL_ID,
+                callId
+            )
+
+            putExtra(
+                EXTRA_CALL_ACTION,
+                action
+            )
+        }
+    }
+
+    // ===========================================================
+    // INTENT HANDLING
+    // ===========================================================
+
+    private fun handleLaunchIntent(
+        launchIntent: Intent?
+    ) {
+        if (
+            launchIntent == null ||
+            !flutterEngineReady
+        ) {
+            return
+        }
+
+        val callId =
+            readString(
+                launchIntent.getStringExtra(
+                    EXTRA_CALL_ID
+                )
+            ) ?: return
+
+        val action =
+            readString(
+                launchIntent.getStringExtra(
+                    EXTRA_CALL_ACTION
+                )
+            ) ?: ACTION_OPEN
+
+        val deliveryKey =
+            "$callId|$action"
+
+        if (
+            lastDeliveredActionKey ==
+            deliveryKey
+        ) {
+            clearHandledIntent(
+                launchIntent
+            )
+
+            return
+        }
+
+        lastDeliveredActionKey =
+            deliveryKey
+
+        val storedPayload =
+            loadPendingCall()
+
+        val payload =
+            storedPayload.ifEmpty {
+                mapOf<String, Any?>(
+                    "callId" to callId
+                )
+            }
+
+        window.decorView.post {
+
+            when (action) {
+
+                ACTION_ACCEPT -> {
+                    methodChannel?.invokeMethod(
+                        "incomingCallAccepted",
+                        mapOf<String, Any?>(
+                            "callId" to callId
+                        )
+                    )
+                }
+
+                ACTION_REJECT -> {
+                    methodChannel?.invokeMethod(
+                        "incomingCallRejected",
+                        mapOf<String, Any?>(
+                            "callId" to callId
+                        )
+                    )
+                }
+
+                else -> {
+                    methodChannel?.invokeMethod(
+                        "appLaunchedForCall",
+                        payload
+                    )
+                }
+            }
+
+            clearHandledIntent(
+                launchIntent
+            )
+        }
+    }
+
+    private fun clearHandledIntent(
+        handledIntent: Intent
+    ) {
+        handledIntent.removeExtra(
+            EXTRA_CALL_ID
+        )
+
+        handledIntent.removeExtra(
+            EXTRA_CALL_ACTION
+        )
+    }
+
+    // ===========================================================
+    // SHARED PREFERENCES
+    // ===========================================================
+
+    private fun preferences():
+            SharedPreferences {
+
+        return getSharedPreferences(
+            PREFS_NAME,
+            MODE_PRIVATE
+        )
+    }
+
+    // ===========================================================
+    // SAVE PENDING CALL
+    // ===========================================================
+
+    //noinspection SpellCheckingInspection
+    @SuppressLint("UseKtx")
+    private fun savePendingCall(
+        payload: Map<String, Any?>
+    ) {
+        val json =
+            mapToJson(payload)
+
+        val editor =
+            preferences().edit()
+
+        editor.putString(
+            PREF_PENDING_CALL,
+            json.toString()
+        )
+
+        editor.apply()
+    }
+
+    // ===========================================================
+    // LOAD PENDING CALL
+    // ===========================================================
+
+    private fun loadPendingCall():
+            Map<String, Any?> {
+
+        val raw =
+            preferences()
+                .getString(
+                    PREF_PENDING_CALL,
+                    null
+                )
+                ?: return emptyMap()
+
+        return try {
+            jsonToMap(
+                JSONObject(raw)
+            )
+        } catch (_: Throwable) {
+            emptyMap()
+        }
+    }
+
+    // ===========================================================
+    // CLEAR PENDING CALL
+    // ===========================================================
+
+    //noinspection SpellCheckingInspection
+    @SuppressLint("UseKtx")
+    private fun clearPendingCall() {
+
+        val editor =
+            preferences().edit()
+
+        editor.remove(
+            PREF_PENDING_CALL
+        )
+
+        editor.apply()
+    }
+
+    // ===========================================================
+    // MAP -> JSON
+    // ===========================================================
+
+    private fun mapToJson(
+        map: Map<String, Any?>
+    ): JSONObject {
+
+        val json =
+            JSONObject()
+
+        for (
+        (key, value) in map
+        ) {
+            json.put(
+                key,
+                toJsonValue(value)
+            )
+        }
+
+        return json
+    }
+
+    private fun toJsonValue(
+        value: Any?
+    ): Any? {
+
+        return when (value) {
+
+            null ->
+                JSONObject.NULL
+
+            is JSONObject ->
+                value
+
+            is JSONArray ->
+                value
+
+            is String ->
+                value
+
+            is Number ->
+                value
+
+            is Boolean ->
+                value
+
+            is Map<*, *> -> {
+                val normalized =
+                    mutableMapOf<String, Any?>()
+
+                for (
+                (key, nestedValue) in value
+                ) {
+                    key
+                        ?.toString()
+                        ?.let { normalizedKey ->
+                            normalized[
+                                normalizedKey
+                            ] = nestedValue
+                        }
+                }
+
+                mapToJson(
+                    normalized
+                )
+            }
+
+            is Iterable<*> -> {
+                val array =
+                    JSONArray()
+
+                for (
+                entry in value
+                ) {
+                    array.put(
+                        toJsonValue(
+                            entry
+                        )
+                    )
+                }
+
+                array
+            }
+
+            is Array<*> -> {
+                val array =
+                    JSONArray()
+
+                for (
+                entry in value
+                ) {
+                    array.put(
+                        toJsonValue(
+                            entry
+                        )
+                    )
+                }
+
+                array
+            }
+
+            else ->
+                value.toString()
+        }
+    }
+
+    // ===========================================================
+    // JSON -> MAP
+    // ===========================================================
+
+    private fun jsonToMap(
+        json: JSONObject
+    ): Map<String, Any?> {
+
+        val result =
+            mutableMapOf<String, Any?>()
+
+        val keys =
+            json.keys()
+
+        while (
+            keys.hasNext()
+        ) {
+            val key =
+                keys.next()
+
+            result[key] =
+                fromJsonValue(
+                    json.opt(key)
+                )
+        }
+
+        return result
+    }
+
+    private fun fromJsonValue(
+        value: Any?
+    ): Any? {
+
+        return when (value) {
+
+            null ->
+                null
+
+            JSONObject.NULL ->
+                null
+
+            is JSONObject ->
+                jsonToMap(value)
+
+            is JSONArray -> {
+                val result =
+                    mutableListOf<Any?>()
+
+                for (
+                index in
+                0 until value.length()
+                ) {
+                    result.add(
+                        fromJsonValue(
+                            value.opt(index)
+                        )
+                    )
+                }
+
+                result
+            }
+
+            else ->
+                value
+        }
+    }
+
+    // ===========================================================
+    // DISMISS NOTIFICATIONS
+    // ===========================================================
+
+    private fun cancelIncomingNotification() {
+        NotificationManagerCompat
+            .from(this)
+            .cancel(
+                INCOMING_NOTIFICATION_ID
+            )
+    }
+
+    private fun cancelActiveNotification() {
+        NotificationManagerCompat
+            .from(this)
+            .cancel(
+                ACTIVE_NOTIFICATION_ID
+            )
+    }
+
+    // ===========================================================
+    // ARGUMENT NORMALIZATION
+    // ===========================================================
+
+    private fun normalizeArguments(
+        arguments: Any?
+    ): Map<String, Any?> {
+
+        if (
+            arguments !is Map<*, *>
+        ) {
+            return emptyMap()
+        }
+
+        val normalized =
+            mutableMapOf<String, Any?>()
+
+        for (
+        (key, value) in arguments
+        ) {
+            key
+                ?.toString()
+                ?.let { normalizedKey ->
+                    normalized[
+                        normalizedKey
+                    ] = value
+                }
+        }
+
+        return normalized
+    }
+
+    // ===========================================================
+    // STRING NORMALIZATION
+    // ===========================================================
+
+    private fun readString(
+        value: Any?
+    ): String? {
+
+        val normalized =
+            value
+                ?.toString()
+                ?.trim()
+                ?: return null
+
+        return normalized
+            .ifEmpty {
+                null
+            }
+    }
+
+    // ===========================================================
+    // BOOLEAN NORMALIZATION
+    // ===========================================================
+
+    private fun readBoolean(
+        value: Any?
+    ): Boolean {
+
+        return when (value) {
+
+            is Boolean ->
+                value
+
+            is Number ->
+                value.toInt() != 0
+
+            is String -> {
+                when (
+                    value
+                        .trim()
+                        .lowercase()
+                ) {
+                    "true",
+                    "1",
+                    "yes",
+                    "video" ->
+                        true
+
+                    else ->
+                        false
+                }
+            }
+
+            else ->
+                false
+        }
+    }
+
+    // ===========================================================
+    // PENDING INTENT REQUEST CODE
+    // ===========================================================
+
+    private fun requestCode(
+        callId: String,
+        suffix: Int
+    ): Int {
+
+        return (
+                31 *
+                        callId.hashCode()
+                ) + suffix
+    }
+
+    // ===========================================================
+    // PENDING INTENT FLAGS
+    // ===========================================================
+
+    private fun pendingIntentFlags():
+            Int {
+
+        return PendingIntent
+            .FLAG_UPDATE_CURRENT or
+                PendingIntent.FLAG_IMMUTABLE
+    }
+
+    // ===========================================================
+    // CLEANUP
+    // ===========================================================
+
+    override fun cleanUpFlutterEngine(
+        flutterEngine: FlutterEngine
+    ) {
+        flutterEngineReady = false
+
+        methodChannel
+            ?.setMethodCallHandler(
+                null
+            )
+
+        methodChannel = null
+
+        lastDeliveredActionKey = null
+
+        super.cleanUpFlutterEngine(
+            flutterEngine
+        )
+    }
+}
+
+// ===============================================================
+// END OF FILE
+// File: MainActivity.kt
+// Location:
+// android/app/src/main/kotlin/com/example/jr_call/MainActivity.kt
+//
+// IDE / LINT:
+//
+// - Android UseKtx lint is suppressed only on the two intentional
+//   SharedPreferences editor operations.
+// - JetBrains spelling inspection is suppressed only at those
+//   exact suppression annotations.
+// - No global dictionary or project inspection change is needed.
+// - Runtime behavior is unchanged.
+//
+// CALL ENGINE:
+//
+// - Existing MethodChannel name is preserved.
+// - Incoming notification flow is preserved.
+// - Accept/reject native handoff is preserved.
+// - Pending-call restore flow is preserved.
+// - Android 14+ full-screen availability check is preserved.
+// - Notification permission processing is preserved.
+// - Notification channels are preserved.
+// - CallService/WebRTC/SDP/ICE/signaling ownership is untouched.
+// ===============================================================
+
+===== FILE: lib/main.dart =====
+
+// ===============================================================
+// JR CALL
+// File: main.dart
+// Location: lib/main.dart
+//
+// FINAL PRODUCTION APP ENTRY
+// + FIREBASE APP CHECK
+// + SHARED FCM LIFECYCLE
+// + INCOMING ACTIVE CALL SESSION ROUTING
+//
+// MASTER CONTRACT:
+//
+// - Firebase initializes once before Firebase services.
+// - Firebase App Check activates immediately after Firebase init.
+// - Current firebase_app_check 0.3.x API compatibility preserved.
+// - Android debug/emulator -> App Check Debug provider.
+// - Android production/release -> Play Integrity.
+// - Apple debug -> App Check Debug provider.
+// - Apple production -> App Attest + Device Check fallback.
+// - Web remains safe until the real registered reCAPTCHA key exists.
+// - Unsupported desktop App Check providers are never invented.
+// - Existing Call / Message / FCM / theme architecture preserved.
+// - Call Engine / WebRTC / SDP / ICE / signaling ownership preserved.
+// - OTP remains AuthService/Firebase Authentication owned.
+//
+// INCOMING CALL:
+// - Existing incoming-call presentation remains unchanged.
+// - CallService remains acceptance/lifecycle authority.
+// - Receiver CONNECTED state opens CallSessionScreen.
+// - Outgoing caller can never enter this receiver-only route.
+// - Duplicate incoming active-call routes are blocked.
+// - Firebase UID remains canonical participant identity.
+// - No fake CONNECTED state.
+// ===============================================================
+
+import 'dart:async';
+
+import 'package:firebase_app_check/firebase_app_check.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+
+//noinspection SpellCheckingInspection
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'core/theme/jr_colors.dart';
+import 'core/theme/jr_typography.dart';
+import 'firebase_options.dart';
+import 'screens/call_session_screen.dart';
+import 'screens/home_screen.dart';
+import 'services/auth_service.dart';
+import 'services/call/background_call_service.dart';
+import 'services/call/call_service.dart';
+import 'services/call/stun_turn_service.dart';
+import 'services/message/message_app_coordinator.dart';
+import 'services/message/message_push_service.dart';
+
+// ===============================================================
+// NAVIGATION
+// ===============================================================
+
+final GlobalKey<NavigatorState> _jrCallNavigatorKey =
+GlobalKey<NavigatorState>();
+
+// ===============================================================
+// JR CALL MESSAGE INTEGRATION — START
+// ===============================================================
+
+MessageAppCoordinator? _messageCoordinator;
+
+bool _messageCoordinatorReady = false;
+
+Future<void> installJRCallMessageCoordinator(
+    MessageAppCoordinator coordinator,
+    ) async {
+  if (coordinator.isDisposed) {
+    throw const MessageAppCoordinatorException(
+      'Cannot install a disposed Message coordinator.',
+    );
+  }
+
+  final MessageAppCoordinator? existing = _messageCoordinator;
+
+  if (identical(existing, coordinator) &&
+      coordinator.isInitialized &&
+      !coordinator.isDisposed) {
+    _messageCoordinatorReady = true;
+    return;
+  }
+
+  if (existing != null &&
+      !identical(existing, coordinator)) {
+    _messageCoordinator = null;
+    _messageCoordinatorReady = false;
+
+    try {
+      await existing.dispose();
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [Message/install]: '
+            'previous coordinator disposal failed: $error',
+      );
+
+      debugPrintStack(
+        label: 'JR CALL [Message/install]',
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  _messageCoordinator = coordinator;
+  _messageCoordinatorReady = false;
+
+  try {
+    await coordinator.initialize();
+
+    if (!identical(
+      _messageCoordinator,
+      coordinator,
+    ) ||
+        coordinator.isDisposed ||
+        !coordinator.isInitialized) {
+      throw const MessageAppCoordinatorException(
+        'Message coordinator initialization did not remain active.',
+      );
+    }
+
+    _messageCoordinatorReady = true;
+
+    debugPrint(
+      'JR CALL [Message]: '
+          'application coordinator initialized.',
+    );
+  } catch (error, stackTrace) {
+    if (identical(
+      _messageCoordinator,
+      coordinator,
+    )) {
+      _messageCoordinator = null;
+      _messageCoordinatorReady = false;
+    }
+
+    try {
+      await coordinator.dispose();
+    } catch (_) {
+      // Original initialization failure remains authoritative.
+    }
+
+    debugPrint(
+      'JR CALL [Message/install] failed: $error',
+    );
+
+    debugPrintStack(
+      label: 'JR CALL [Message/install]',
+      stackTrace: stackTrace,
+    );
+
+    rethrow;
+  }
+}
+
+Future<void> uninstallJRCallMessageCoordinator() async {
+  final MessageAppCoordinator? coordinator =
+      _messageCoordinator;
+
+  _messageCoordinator = null;
+  _messageCoordinatorReady = false;
+
+  if (coordinator == null) {
+    return;
+  }
+
+  try {
+    await coordinator.dispose();
+  } catch (error, stackTrace) {
+    debugPrint(
+      'JR CALL [Message/uninstall] failed: $error',
+    );
+
+    debugPrintStack(
+      label: 'JR CALL [Message/uninstall]',
+      stackTrace: stackTrace,
+    );
+  }
+}
+
+// ===============================================================
+// JR CALL MESSAGE INTEGRATION — END
+// ===============================================================
+
+// ===============================================================
+// BACKGROUND FCM HANDLER
+// ===============================================================
+
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(
+    RemoteMessage message,
+    ) async {
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+
+    debugPrint(
+      'JR CALL [FCM/background]: '
+          'messageId=${message.messageId ?? 'unknown'} '
+          'type=${message.data['type'] ?? message.data['event'] ?? 'unknown'} '
+          'callId=${message.data['callId'] ?? ''} '
+          'conversationId=${message.data['conversationId'] ?? ''}',
+    );
+  } catch (error, stackTrace) {
+    debugPrint(
+      'JR CALL [FCM/background] error: $error',
+    );
+
+    debugPrintStack(
+      label: 'JR CALL [FCM/background]',
+      stackTrace: stackTrace,
+    );
+  }
+}
+
+// ===============================================================
+// FIREBASE APP CHECK
+// ===============================================================
+
+Future<void> _activateFirebaseAppCheck() async {
+  // -------------------------------------------------------------
+  // WEB
+  // -------------------------------------------------------------
+
+  if (kIsWeb) {
+    debugPrint(
+      'JR CALL [AppCheck]: '
+          'Web activation deferred until the real registered '
+          'Web reCAPTCHA site key is configured.',
+    );
+
+    return;
+  }
+
+  // -------------------------------------------------------------
+  // ANDROID
+  // -------------------------------------------------------------
+
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    await FirebaseAppCheck.instance.activate(
+      androidProvider: kDebugMode
+          ? AndroidProvider.debug
+          : AndroidProvider.playIntegrity,
+    );
+
+    debugPrint(
+      'JR CALL [AppCheck]: Android provider='
+          '${kDebugMode ? 'debug' : 'play-integrity'}',
+    );
+
+    return;
+  }
+
+  // -------------------------------------------------------------
+  // APPLE
+  // -------------------------------------------------------------
+
+  if (defaultTargetPlatform == TargetPlatform.iOS ||
+      defaultTargetPlatform == TargetPlatform.macOS) {
+    await FirebaseAppCheck.instance.activate(
+      appleProvider: kDebugMode
+          ? AppleProvider.debug
+          : AppleProvider.appAttestWithDeviceCheckFallback,
+    );
+
+    debugPrint(
+      'JR CALL [AppCheck]: Apple provider='
+          '${kDebugMode ? 'debug' : 'app-attest-with-device' 'check-fallback'}',
+    );
+
+    return;
+  }
+
+  // -------------------------------------------------------------
+  // OTHER DESKTOP
+  // -------------------------------------------------------------
+
+  debugPrint(
+    'JR CALL [AppCheck]: '
+        'No compatible native App Check provider is configured for '
+        '$defaultTargetPlatform with the current plugin generation.',
+  );
+}
+
+// ===============================================================
+// BOOTSTRAP
+// ===============================================================
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  _configureFlutterErrors();
+
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+
+    try {
+      await _activateFirebaseAppCheck();
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [AppCheck]: activation failed: $error',
+      );
+
+      debugPrintStack(
+        label: 'JR CALL [AppCheck]',
+        stackTrace: stackTrace,
+      );
+    }
+
+    FirebaseMessaging.onBackgroundMessage(
+      _firebaseMessagingBackgroundHandler,
+    );
+
+    runApp(
+      const ProviderScope(
+        child: JRCallApp(),
+      ),
+    );
+  } catch (error, stackTrace) {
+    debugPrint(
+      'JR CALL bootstrap error: $error',
+    );
+
+    debugPrintStack(
+      label: 'JR CALL bootstrap',
+      stackTrace: stackTrace,
+    );
+
+    runApp(
+      JRCallBootstrapErrorApp(
+        error: error,
+      ),
+    );
+  }
+}
+
+// ===============================================================
+// GLOBAL FLUTTER ERROR HANDLING
+// ===============================================================
+
+void _configureFlutterErrors() {
+  final FlutterExceptionHandler? previous =
+      FlutterError.onError;
+
+  FlutterError.onError = (
+      FlutterErrorDetails details,
+      ) {
+    if (previous != null) {
+      previous(details);
+    } else {
+      FlutterError.presentError(details);
+    }
+
+    debugPrint(
+      'JR CALL Flutter error: '
+          '${details.exceptionAsString()}',
+    );
+
+    final StackTrace? stack = details.stack;
+
+    if (stack != null) {
+      debugPrintStack(
+        label: 'JR CALL Flutter error',
+        stackTrace: stack,
+      );
+    }
+  };
+
+  ErrorWidget.builder = (
+      FlutterErrorDetails details,
+      ) {
+    return const Material(
+      color: JrColors.background,
+      child: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: _FatalDisplayError(),
+          ),
+        ),
+      ),
+    );
+  };
+}
+
+// ===============================================================
+// AUTHENTICATED CALL INFRASTRUCTURE PRE-WARM
+// ===============================================================
+
+Future<void> _prewarmCallInfrastructure() async {
+  if (AuthService.instance.currentUser == null) {
+    return;
+  }
+
+  try {
+    await StunTurnService.instance
+        .loadTokenInitialization();
+
+    debugPrint(
+      'JR CALL: STUN/TURN pre-warmed.',
+    );
+  } catch (error, stackTrace) {
+    debugPrint(
+      'JR CALL: STUN/TURN pre-warm fallback: $error',
+    );
+
+    debugPrintStack(
+      label: 'JR CALL STUN/TURN pre-warm',
+      stackTrace: stackTrace,
+    );
+  }
+}
+
+// ===============================================================
+// APP
+// ===============================================================
+
+class JRCallApp extends StatelessWidget {
+  const JRCallApp({
+    super.key,
+  });
+
+  @override
+  Widget build(
+      BuildContext context,
+      ) {
+    return MaterialApp(
+      navigatorKey: _jrCallNavigatorKey,
+      title: 'JR CALL',
+      debugShowCheckedModeBanner: false,
+      themeMode: ThemeMode.light,
+      theme: _buildApplicationTheme(),
+      home: const SessionGate(),
+      builder: (
+          BuildContext context,
+          Widget? child,
+          ) {
+        final MediaQueryData media =
+        MediaQuery.of(context);
+
+        return MediaQuery(
+          data: media.copyWith(
+            textScaler: media.textScaler.clamp(
+              minScaleFactor: 0.85,
+              maxScaleFactor: 1.35,
+            ),
+          ),
+          child:
+          child ??
+              const SizedBox.shrink(),
+        );
+      },
+    );
+  }
+}
+
+// ===============================================================
+// SESSION GATE
+// ===============================================================
+
+class SessionGate extends StatefulWidget {
+  const SessionGate({
+    super.key,
+  });
+
+  @override
+  State<SessionGate> createState() =>
+      _SessionGateState();
+}
+
+class _SessionGateState extends State<SessionGate> {
+  // =============================================================
+  // SERVICES
+  // =============================================================
+
+  final AuthService _auth =
+      AuthService.instance;
+
+  final FirebaseMessaging _messaging =
+      FirebaseMessaging.instance;
+
+  final BackgroundCallService _backgroundCallService =
+      BackgroundCallService.instance;
+
+  final CallService _callService =
+  CallService();
+
+  // =============================================================
+  // RUNTIME STATE
+  // =============================================================
+
+  StreamSubscription<RemoteMessage>?
+  _foregroundMessageSubscription;
+
+  StreamSubscription<RemoteMessage>?
+  _openedMessageSubscription;
+
+  StreamSubscription<String>?
+  _tokenRefreshSubscription;
+
+  StreamSubscription<String>?
+  _callStatusSubscription;
+
+  String? _prewarmedUid;
+
+  String? _lastHandledCallMessageKey;
+
+  String? _activeIncomingSessionCallId;
+
+  bool _pushInitialized = false;
+
+  bool _pushInitializationRunning = false;
+
+  bool _openingIncomingSession = false;
+
+  // =============================================================
+  // LIFECYCLE
+  // =============================================================
+
+  @override
+  void initState() {
+    super.initState();
+
+    _callStatusSubscription =
+        _callService.callStatusStream.listen(
+              (String status) {
+            unawaited(
+              _handleCallServiceStatus(
+                status,
+              ),
+            );
+          },
+          onError: (
+              Object error,
+              StackTrace stackTrace,
+              ) {
+            debugPrint(
+              'JR CALL [Call/session-route] '
+                  'status stream error: $error',
+            );
+
+            debugPrintStack(
+              label: 'JR CALL [Call/session-route]',
+              stackTrace: stackTrace,
+            );
+          },
+        );
+
+    unawaited(
+      _initializeSharedPushDelivery(),
+    );
+  }
+
+  @override
+  void dispose() {
+    final StreamSubscription<RemoteMessage>?
+    foregroundSubscription =
+        _foregroundMessageSubscription;
+
+    final StreamSubscription<RemoteMessage>?
+    openedSubscription =
+        _openedMessageSubscription;
+
+    final StreamSubscription<String>?
+    tokenSubscription =
+        _tokenRefreshSubscription;
+
+    final StreamSubscription<String>?
+    callStatusSubscription =
+        _callStatusSubscription;
+
+    _foregroundMessageSubscription = null;
+    _openedMessageSubscription = null;
+    _tokenRefreshSubscription = null;
+    _callStatusSubscription = null;
+
+    if (foregroundSubscription != null) {
+      unawaited(
+        foregroundSubscription.cancel(),
+      );
+    }
+
+    if (openedSubscription != null) {
+      unawaited(
+        openedSubscription.cancel(),
+      );
+    }
+
+    if (tokenSubscription != null) {
+      unawaited(
+        tokenSubscription.cancel(),
+      );
+    }
+
+    if (callStatusSubscription != null) {
+      unawaited(
+        callStatusSubscription.cancel(),
+      );
+    }
+
+    super.dispose();
+  }
+
+  // =============================================================
+  // INCOMING ACTIVE CALL SESSION ROUTING
+  // =============================================================
+
+  Future<void> _handleCallServiceStatus(
+      String rawStatus,
+      ) async {
+    if (!mounted) {
+      return;
+    }
+
+    final String status =
+    rawStatus.trim().toUpperCase();
+
+    if (status.isEmpty) {
+      return;
+    }
+
+    if (_isTerminalCallStatus(status)) {
+      final String? currentCallId =
+      _normalizeString(
+        _callService.currentCallId,
+      );
+
+      if (currentCallId == null ||
+          currentCallId ==
+              _activeIncomingSessionCallId) {
+        _activeIncomingSessionCallId = null;
+      }
+
+      return;
+    }
+
+    if (status != CallServiceStatus.connected &&
+        status != CallServiceStatus.reconnected) {
+      return;
+    }
+
+    if (_callService.currentRole !=
+        CallRole.receiver) {
+      return;
+    }
+
+    final String? callId =
+    _normalizeString(
+      _callService.currentCallId,
+    );
+
+    final String? remoteUid =
+    _normalizeString(
+      _callService.currentPeerId,
+    );
+
+    final String? serviceLocalUid =
+    _normalizeString(
+      _callService.currentUserId,
+    );
+
+    final String? authenticatedUid =
+    _normalizeString(
+      _auth.currentUser?.uid,
+    );
+
+    if (callId == null ||
+        remoteUid == null ||
+        serviceLocalUid == null ||
+        authenticatedUid == null) {
+      return;
+    }
+
+    if (serviceLocalUid != authenticatedUid) {
+      debugPrint(
+        'JR CALL [Call/session-route]: '
+            'receiver session ignored because local Firebase UID '
+            'does not match the authenticated account.',
+      );
+
+      return;
+    }
+
+    if (_openingIncomingSession ||
+        _activeIncomingSessionCallId ==
+            callId) {
+      return;
+    }
+
+    await Future<void>.delayed(
+      Duration.zero,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    if (_callService.currentRole !=
+        CallRole.receiver ||
+        _normalizeString(
+          _callService.currentCallId,
+        ) !=
+            callId ||
+        _normalizeString(
+          _callService.currentPeerId,
+        ) !=
+            remoteUid ||
+        _normalizeString(
+          _callService.currentUserId,
+        ) !=
+            authenticatedUid ||
+        !_callService
+            .webRTCService
+            .isPeerConnected) {
+      return;
+    }
+
+    if (_openingIncomingSession ||
+        _activeIncomingSessionCallId ==
+            callId) {
+      return;
+    }
+
+    final NavigatorState? navigator =
+        _jrCallNavigatorKey.currentState;
+
+    if (navigator == null) {
+      return;
+    }
+
+    _openingIncomingSession = true;
+
+    _activeIncomingSessionCallId =
+        callId;
+
+    final bool isVideoCall =
+        _callService.isVideoCall;
+
+    final int duration =
+    _callService.callDurationSeconds < 0
+        ? 0
+        : _callService.callDurationSeconds;
+
+    try {
+      await navigator.push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) {
+            return CallSessionScreen(
+              callerName:
+              'JR CALL User',
+              remoteUid:
+              remoteUid,
+              isVideoCall:
+              isVideoCall,
+              showOutgoingStage:
+              false,
+              initialStatus:
+              status,
+              initialDurationSeconds:
+              duration,
+            );
+          },
+          settings: RouteSettings(
+            name:
+            '/call/session/incoming/$callId',
+            arguments: <String, Object?>{
+              'callId': callId,
+              'remoteUid': remoteUid,
+              'isVideoCall': isVideoCall,
+              'role': 'receiver',
+            },
+          ),
+        ),
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [Call/session-route] '
+            'navigation failed: $error',
+      );
+
+      debugPrintStack(
+        label:
+        'JR CALL [Call/session-route]',
+        stackTrace:
+        stackTrace,
+      );
+    } finally {
+      _openingIncomingSession = false;
+
+      final String? remainingCallId =
+      _normalizeString(
+        _callService.currentCallId,
+      );
+
+      if (remainingCallId != callId) {
+        _activeIncomingSessionCallId = null;
+      }
+    }
+  }
+
+  bool _isTerminalCallStatus(
+      String status,
+      ) {
+    switch (status.trim().toUpperCase()) {
+      case CallServiceStatus.userBusy:
+      case CallServiceStatus.rejected:
+      case CallServiceStatus.declined:
+      case CallServiceStatus.cancelled:
+      case CallServiceStatus.timeout:
+      case CallServiceStatus.failed:
+      case CallServiceStatus.ended:
+        return true;
+
+      default:
+        return false;
+    }
+  }
+
+  String? _normalizeString(
+      String? value,
+      ) {
+    final String normalized =
+        value?.trim() ?? '';
+
+    return normalized.isEmpty
+        ? null
+        : normalized;
+  }
+
+  // =============================================================
+  // SHARED FCM INITIALIZATION
+  // =============================================================
+
+  Future<void> _initializeSharedPushDelivery() async {
+    if (_pushInitialized ||
+        _pushInitializationRunning) {
+      return;
+    }
+
+    _pushInitializationRunning = true;
+
+    try {
+      await _backgroundCallService.initialize();
+
+      if (!mounted) {
+        return;
+      }
+
+      try {
+        final NotificationSettings settings =
+        await _messaging.requestPermission(
+          alert: true,
+          badge: true,
+          sound: true,
+          provisional: false,
+        );
+
+        debugPrint(
+          'JR CALL [FCM]: '
+              'notification permission -> '
+              '${settings.authorizationStatus}',
+        );
+      } catch (error, stackTrace) {
+        debugPrint(
+          'JR CALL [FCM]: '
+              'notification permission request failed: '
+              '$error',
+        );
+
+        debugPrintStack(
+          label: 'JR CALL [FCM/permission]',
+          stackTrace: stackTrace,
+        );
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      final StreamSubscription<RemoteMessage>?
+      previousForegroundSubscription =
+          _foregroundMessageSubscription;
+
+      _foregroundMessageSubscription = null;
+
+      if (previousForegroundSubscription != null) {
+        await previousForegroundSubscription.cancel();
+      }
+
+      _foregroundMessageSubscription =
+          FirebaseMessaging.onMessage.listen(
+                (RemoteMessage message) {
+              unawaited(
+                _handleRemoteMessage(
+                  message,
+                  source:
+                  _SharedPushSource.foreground,
+                ),
+              );
+            },
+            onError: (
+                Object error,
+                StackTrace stackTrace,
+                ) {
+              debugPrint(
+                'JR CALL [FCM/foreground] '
+                    'stream error: $error',
+              );
+
+              debugPrintStack(
+                label:
+                'JR CALL [FCM/foreground]',
+                stackTrace:
+                stackTrace,
+              );
+            },
+          );
+
+      final StreamSubscription<RemoteMessage>?
+      previousOpenedSubscription =
+          _openedMessageSubscription;
+
+      _openedMessageSubscription = null;
+
+      if (previousOpenedSubscription != null) {
+        await previousOpenedSubscription.cancel();
+      }
+
+      _openedMessageSubscription =
+          FirebaseMessaging.onMessageOpenedApp.listen(
+                (RemoteMessage message) {
+              unawaited(
+                _handleRemoteMessage(
+                  message,
+                  source:
+                  _SharedPushSource.notificationTap,
+                ),
+              );
+            },
+            onError: (
+                Object error,
+                StackTrace stackTrace,
+                ) {
+              debugPrint(
+                'JR CALL [FCM/opened-app] '
+                    'stream error: $error',
+              );
+
+              debugPrintStack(
+                label:
+                'JR CALL [FCM/opened-app]',
+                stackTrace:
+                stackTrace,
+              );
+            },
+          );
+
+      final StreamSubscription<String>?
+      previousTokenSubscription =
+          _tokenRefreshSubscription;
+
+      _tokenRefreshSubscription = null;
+
+      if (previousTokenSubscription != null) {
+        await previousTokenSubscription.cancel();
+      }
+
+      _tokenRefreshSubscription =
+          _messaging.onTokenRefresh.listen(
+                (String token) {
+              final String normalizedToken =
+              token.trim();
+
+              if (normalizedToken.isEmpty) {
+                return;
+              }
+
+              debugPrint(
+                'JR CALL [FCM]: '
+                    'registration token refreshed.',
+              );
+            },
+            onError: (
+                Object error,
+                StackTrace stackTrace,
+                ) {
+              debugPrint(
+                'JR CALL [FCM/token-refresh] '
+                    'stream error: $error',
+              );
+
+              debugPrintStack(
+                label:
+                'JR CALL [FCM/token-refresh]',
+                stackTrace:
+                stackTrace,
+              );
+            },
+          );
+
+      final RemoteMessage? initialMessage =
+      await _messaging.getInitialMessage();
+
+      if (initialMessage != null &&
+          mounted) {
+        await _handleRemoteMessage(
+          initialMessage,
+          source:
+          _SharedPushSource.initialMessage,
+        );
+      }
+
+      _pushInitialized = true;
+
+      debugPrint(
+        'JR CALL [FCM]: '
+            'shared Call/Message lifecycle initialized.',
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [FCM]: '
+            'push initialization failed: $error',
+      );
+
+      debugPrintStack(
+        label: 'JR CALL [FCM/initialize]',
+        stackTrace: stackTrace,
+      );
+    } finally {
+      _pushInitializationRunning = false;
+    }
+  }
+
+  // =============================================================
+  // SHARED FCM ROUTER
+  // =============================================================
+
+  Future<void> _handleRemoteMessage(
+      RemoteMessage message, {
+        required _SharedPushSource source,
+      }) async {
+    if (!mounted) {
+      return;
+    }
+
+    final Map<String, Object?> data =
+    Map<String, Object?>.from(
+      message.data,
+    );
+
+    if (_isCallPush(data)) {
+      await _handleCallRemotePayload(
+        message,
+        data: data,
+        source: source,
+      );
+
+      return;
+    }
+
+    final bool handledAsMessage =
+    await _handleMessageRemotePayload(
+      data,
+      source: source,
+    );
+
+    if (handledAsMessage) {
+      return;
+    }
+
+    debugPrint(
+      'JR CALL [FCM/${source.logName}]: '
+          'payload ignored by Call/Message router.',
+    );
+  }
+
+  // =============================================================
+  // MESSAGE FCM HANDOFF
+  // =============================================================
+
+  Future<bool> _handleMessageRemotePayload(
+      Map<String, Object?> data, {
+        required _SharedPushSource source,
+      }) async {
+    final MessageAppCoordinator? coordinator =
+        _messageCoordinator;
+
+    if (!_messageCoordinatorReady ||
+        coordinator == null ||
+        coordinator.isDisposed ||
+        !coordinator.isInitialized) {
+      return false;
+    }
+
+    try {
+      final MessagePushClassification classification =
+      coordinator.classifyMessagePush(
+        data,
+      );
+
+      switch (classification) {
+        case MessagePushClassification.notMessage:
+          return false;
+
+        case MessagePushClassification.invalidMessage:
+          debugPrint(
+            'JR CALL [Message/${source.logName}]: '
+                'invalid explicit Message payload ignored.',
+          );
+
+          return true;
+
+        case MessagePushClassification.message:
+          break;
+      }
+
+      final MessagePushSource messageSource =
+      _messagePushSource(
+        source,
+      );
+
+      if (source ==
+          _SharedPushSource.notificationTap ||
+          source ==
+              _SharedPushSource.initialMessage) {
+        final MessagePushHandlingResult result =
+        await coordinator.openMessagePush(
+          data,
+          source: messageSource,
+        );
+
+        debugPrint(
+          'JR CALL [Message/${source.logName}]: '
+              'notification-open result='
+              '${result.status.name}',
+        );
+
+        return true;
+      }
+
+      final MessagePushHandlingResult result =
+      await coordinator.handleMessagePush(
+        data,
+        source: messageSource,
+        openConversation: false,
+      );
+
+      debugPrint(
+        'JR CALL [Message/${source.logName}]: '
+            'foreground result='
+            '${result.status.name}',
+      );
+
+      return true;
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [Message/${source.logName}] '
+            'payload processing failed: $error',
+      );
+
+      debugPrintStack(
+        label:
+        'JR CALL [Message/${source.logName}]',
+        stackTrace:
+        stackTrace,
+      );
+
+      return true;
+    }
+  }
+
+  // =============================================================
+  // CALL FCM HANDOFF
+  // =============================================================
+
+  Future<void> _handleCallRemotePayload(
+      RemoteMessage message, {
+        required Map<String, Object?> data,
+        required _SharedPushSource source,
+      }) async {
+    final String? callId =
+    _readNonEmptyString(
+      data['callId'],
+    );
+
+    if (callId == null) {
+      debugPrint(
+        'JR CALL [FCM/${source.logName}]: '
+            'call payload ignored because callId is missing.',
+      );
+
+      return;
+    }
+
+    final String messageKey =
+        '${message.messageId ?? 'no-message-id'}|'
+        '$callId|'
+        '${data['type'] ?? data['event'] ?? ''}';
+
+    if (_lastHandledCallMessageKey ==
+        messageKey) {
+      return;
+    }
+
+    _lastHandledCallMessageKey =
+        messageKey;
+
+    try {
+      final String? currentUid =
+      _auth.currentUser?.uid.trim();
+
+      final String? receiverUid =
+          _readNonEmptyString(
+            data['receiverId'],
+          ) ??
+              _readNonEmptyString(
+                data['recipientId'],
+              );
+
+      if (currentUid != null &&
+          currentUid.isNotEmpty &&
+          receiverUid != null &&
+          receiverUid != currentUid) {
+        debugPrint(
+          'JR CALL [FCM/${source.logName}]: '
+              'call payload ignored for another Firebase UID.',
+        );
+
+        return;
+      }
+
+      final Map<String, dynamic> callData =
+      <String, dynamic>{};
+
+      data.forEach(
+            (
+            String key,
+            Object? value,
+            ) {
+          callData[key] = value;
+        },
+      );
+
+      final bool handled =
+      await _backgroundCallService
+          .handleIncomingCallData(
+        callData,
+      );
+
+      debugPrint(
+        'JR CALL [FCM/${source.logName}]: '
+            'incoming-call handoff '
+            'callId=$callId handled=$handled',
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [FCM/${source.logName}] '
+            'incoming-call handoff error: $error',
+      );
+
+      debugPrintStack(
+        label:
+        'JR CALL [FCM/${source.logName}]',
+        stackTrace:
+        stackTrace,
+      );
+    }
+  }
+
+  // =============================================================
+  // CALL PUSH CLASSIFICATION
+  // =============================================================
+
+  bool _isCallPush(
+      Map<String, Object?> data,
+      ) {
+    final String type =
+    (_readNonEmptyString(
+      data['type'],
+    ) ??
+        _readNonEmptyString(
+          data['event'],
+        ) ??
+        _readNonEmptyString(
+          data['notificationType'],
+        ) ??
+        '')
+        .toLowerCase();
+
+    if (type == 'incoming_call' ||
+        type == 'incoming-call' ||
+        type == 'incoming' 'call' ||
+        type == 'call' ||
+        type == 'video_call' ||
+        type == 'voice_call') {
+      return true;
+    }
+
+    final String? callId =
+    _readNonEmptyString(
+      data['callId'],
+    );
+
+    final String? callerId =
+        _readNonEmptyString(
+          data['callerId'],
+        ) ??
+            _readNonEmptyString(
+              data['senderId'],
+            );
+
+    final String? receiverId =
+        _readNonEmptyString(
+          data['receiverId'],
+        ) ??
+            _readNonEmptyString(
+              data['recipientId'],
+            );
+
+    return callId != null &&
+        callerId != null &&
+        receiverId != null;
+  }
+
+  String? _readNonEmptyString(
+      Object? value,
+      ) {
+    if (value == null) {
+      return null;
+    }
+
+    final String normalized =
+    value.toString().trim();
+
+    return normalized.isEmpty
+        ? null
+        : normalized;
+  }
+
+  // =============================================================
+  // CALL INFRASTRUCTURE PRE-WARM
+  // =============================================================
+
+  void _schedulePrewarm(
+      User? user,
+      ) {
+    final String uid =
+        user?.uid.trim() ?? '';
+
+    if (uid.isEmpty) {
+      _prewarmedUid = null;
+      return;
+    }
+
+    if (_prewarmedUid == uid) {
+      return;
+    }
+
+    _prewarmedUid = uid;
+
+    WidgetsBinding.instance
+        .addPostFrameCallback(
+          (_) {
+        if (!mounted) {
+          return;
+        }
+
+        if (_auth.currentUser?.uid !=
+            uid) {
+          return;
+        }
+
+        unawaited(
+          _prewarmCallInfrastructure(),
+        );
+      },
+    );
+  }
+
+  // =============================================================
+  // BUILD
+  // =============================================================
+
+  @override
+  Widget build(
+      BuildContext context,
+      ) {
+    return StreamBuilder<User?>(
+      stream:
+      _auth.userChanges,
+      initialData:
+      _auth.currentUser,
+      builder: (
+          BuildContext context,
+          AsyncSnapshot<User?> snapshot,
+          ) {
+        final User? user =
+        snapshot.hasError
+            ? _auth.currentUser
+            : snapshot.data;
+
+        if (user == null) {
+          _prewarmedUid = null;
+
+          return const HomeScreen(
+            initialIndex: 2,
+          );
+        }
+
+        _schedulePrewarm(
+          user,
+        );
+
+        return const HomeScreen(
+          initialIndex: 0,
+        );
+      },
+    );
+  }
+}
+
+// ===============================================================
+// SHARED PUSH SOURCE
+// ===============================================================
+
+enum _SharedPushSource {
+  foreground,
+  notificationTap,
+  initialMessage,
+}
+
+extension on _SharedPushSource {
+  String get logName {
+    switch (this) {
+      case _SharedPushSource.foreground:
+        return 'foreground';
+
+      case _SharedPushSource.notificationTap:
+        return 'opened-app';
+
+      case _SharedPushSource.initialMessage:
+        return 'initial-message';
+    }
+  }
+}
+
+MessagePushSource _messagePushSource(
+    _SharedPushSource source,
+    ) {
+  switch (source) {
+    case _SharedPushSource.foreground:
+      return MessagePushSource.foreground;
+
+    case _SharedPushSource.notificationTap:
+      return MessagePushSource.notificationTap;
+
+    case _SharedPushSource.initialMessage:
+      return MessagePushSource.initialMessage;
+  }
+}
+
+// ===============================================================
+// APPLICATION THEME
+// ===============================================================
+
+ThemeData _buildApplicationTheme() {
+  final ColorScheme scheme =
+  ColorScheme.fromSeed(
+    seedColor: JrColors.primaryBlue,
+    brightness: Brightness.light,
+    primary: JrColors.primaryBlue,
+    error: JrColors.error,
+    surface: JrColors.surface,
+  );
+
+  return ThemeData(
+    useMaterial3: true,
+    brightness: Brightness.light,
+    colorScheme: scheme,
+    scaffoldBackgroundColor:
+    JrColors.background,
+    canvasColor:
+    JrColors.background,
+    disabledColor:
+    JrColors.disabled,
+    dividerColor:
+    JrColors.divider,
+
+    textTheme: TextTheme(
+      displayLarge:
+      JrTypography.brandLarge,
+      displayMedium:
+      JrTypography.brandTitle,
+      headlineLarge:
+      JrTypography.screenTitle,
+      headlineMedium:
+      JrTypography.sectionTitle,
+      bodyLarge:
+      JrTypography.bodyLarge,
+      bodyMedium:
+      JrTypography.body,
+      bodySmall:
+      JrTypography.bodySmall,
+      labelLarge:
+      JrTypography.buttonLabel,
+      labelMedium:
+      JrTypography.navigationLabel,
+      labelSmall:
+      JrTypography.metadata,
+    ).apply(
+      bodyColor:
+      JrColors.textPrimary,
+      displayColor:
+      JrColors.textPrimary,
+    ),
+
+    appBarTheme: const AppBarTheme(
+      backgroundColor:
+      JrColors.background,
+      foregroundColor:
+      JrColors.textPrimary,
+      surfaceTintColor:
+      Colors.transparent,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      centerTitle: false,
+    ),
+
+    filledButtonTheme:
+    FilledButtonThemeData(
+      style: ButtonStyle(
+        minimumSize:
+        const WidgetStatePropertyAll<Size>(
+          Size.fromHeight(54),
+        ),
+        backgroundColor:
+        WidgetStateProperty.resolveWith<Color>(
+              (
+              Set<WidgetState> states,
+              ) {
+            if (states.contains(
+              WidgetState.disabled,
+            )) {
+              return JrColors.disabled;
+            }
+
+            return JrColors.primaryBlue;
+          },
+        ),
+        foregroundColor:
+        const WidgetStatePropertyAll<Color>(
+          Colors.white,
+        ),
+        overlayColor:
+        WidgetStatePropertyAll<Color>(
+          Colors.white.withValues(
+            alpha: 0.10,
+          ),
+        ),
+        textStyle:
+        const WidgetStatePropertyAll<TextStyle>(
+          JrTypography.buttonLabel,
+        ),
+        shape:
+        WidgetStatePropertyAll<OutlinedBorder>(
+          RoundedRectangleBorder(
+            borderRadius:
+            BorderRadius.circular(18),
+          ),
+        ),
+      ),
+    ),
+
+    outlinedButtonTheme:
+    OutlinedButtonThemeData(
+      style: ButtonStyle(
+        minimumSize:
+        const WidgetStatePropertyAll<Size>(
+          Size.fromHeight(54),
+        ),
+        foregroundColor:
+        const WidgetStatePropertyAll<Color>(
+          JrColors.primaryBlue,
+        ),
+        textStyle:
+        const WidgetStatePropertyAll<TextStyle>(
+          JrTypography.buttonLabel,
+        ),
+        side:
+        WidgetStateProperty.resolveWith<BorderSide>(
+              (
+              Set<WidgetState> states,
+              ) {
+            return BorderSide(
+              color: states.contains(
+                WidgetState.disabled,
+              )
+                  ? JrColors.disabled
+                  : JrColors.border,
+              width: 1.2,
+            );
+          },
+        ),
+        shape:
+        WidgetStatePropertyAll<OutlinedBorder>(
+          RoundedRectangleBorder(
+            borderRadius:
+            BorderRadius.circular(18),
+          ),
+        ),
+      ),
+    ),
+
+    inputDecorationTheme:
+    InputDecorationTheme(
+      filled: true,
+      fillColor:
+      JrColors.surface,
+      hintStyle:
+      JrTypography.inputHint,
+      labelStyle:
+      JrTypography.inputLabel,
+      errorStyle:
+      JrTypography.inputError,
+      prefixIconColor:
+      JrColors.primaryBlue,
+      suffixIconColor:
+      JrColors.textSecondary,
+      contentPadding:
+      const EdgeInsets.symmetric(
+        horizontal: 18,
+        vertical: 18,
+      ),
+      enabledBorder:
+      _inputBorder(
+        JrColors.border,
+      ),
+      focusedBorder:
+      _inputBorder(
+        JrColors.primaryBlue,
+        width: 1.5,
+      ),
+      errorBorder:
+      _inputBorder(
+        JrColors.error,
+      ),
+      focusedErrorBorder:
+      _inputBorder(
+        JrColors.error,
+        width: 1.5,
+      ),
+      disabledBorder:
+      _inputBorder(
+        JrColors.disabled,
+      ),
+    ),
+
+    cardTheme: CardThemeData(
+      color:
+      JrColors.surface,
+      surfaceTintColor:
+      Colors.transparent,
+      elevation: 0,
+      margin:
+      EdgeInsets.zero,
+      shape:
+      RoundedRectangleBorder(
+        borderRadius:
+        BorderRadius.circular(22),
+        side:
+        const BorderSide(
+          color: JrColors.border,
+        ),
+      ),
+    ),
+
+    dialogTheme:
+    DialogThemeData(
+      backgroundColor:
+      JrColors.surface,
+      surfaceTintColor:
+      Colors.transparent,
+      shape:
+      RoundedRectangleBorder(
+        borderRadius:
+        BorderRadius.circular(24),
+      ),
+      titleTextStyle:
+      JrTypography.sectionTitle,
+      contentTextStyle:
+      JrTypography.bodySecondary,
+    ),
+
+    snackBarTheme:
+    SnackBarThemeData(
+      behavior:
+      SnackBarBehavior.floating,
+      backgroundColor:
+      JrColors.textPrimary,
+      contentTextStyle:
+      JrTypography.body.copyWith(
+        color: Colors.white,
+      ),
+      shape:
+      RoundedRectangleBorder(
+        borderRadius:
+        BorderRadius.circular(16),
+      ),
+    ),
+
+    progressIndicatorTheme:
+    const ProgressIndicatorThemeData(
+      color:
+      JrColors.primaryBlue,
+    ),
+  );
+}
+
+// ===============================================================
+// INPUT BORDER
+// ===============================================================
+
+OutlineInputBorder _inputBorder(
+    Color color, {
+      double width = 1,
+    }) {
+  return OutlineInputBorder(
+    borderRadius:
+    BorderRadius.circular(18),
+    borderSide:
+    BorderSide(
+      color: color,
+      width: width,
+    ),
+  );
+}
+
+// ===============================================================
+// DISPLAY ERROR FALLBACK
+// ===============================================================
+
+class _FatalDisplayError
+    extends StatelessWidget {
+  const _FatalDisplayError();
+
+  @override
+  Widget build(
+      BuildContext context,
+      ) {
+    return Column(
+      mainAxisSize:
+      MainAxisSize.min,
+      children: <Widget>[
+        const Icon(
+          Icons.error_outline_rounded,
+          color:
+          JrColors.error,
+          size: 48,
+        ),
+        const SizedBox(
+          height: 16,
+        ),
+        Text(
+          'JR CALL',
+          style:
+          JrTypography.sectionTitle,
+        ),
+        const SizedBox(
+          height: 8,
+        ),
+        Text(
+          'Something went wrong while displaying this screen.',
+          textAlign:
+          TextAlign.center,
+          style:
+          JrTypography.bodySecondary,
+        ),
+      ],
+    );
+  }
+}
+
+// ===============================================================
+// FIREBASE BOOTSTRAP ERROR
+// ===============================================================
+
+class JRCallBootstrapErrorApp
+    extends StatelessWidget {
+  const JRCallBootstrapErrorApp({
+    required this.error,
+    super.key,
+  });
+
+  final Object error;
+
+  @override
+  Widget build(
+      BuildContext context,
+      ) {
+    return MaterialApp(
+      title: 'JR CALL',
+      debugShowCheckedModeBanner: false,
+      theme:
+      _buildApplicationTheme(),
+      home: Scaffold(
+        backgroundColor:
+        JrColors.background,
+        body: SafeArea(
+          child: Center(
+            child:
+            SingleChildScrollView(
+              padding:
+              const EdgeInsets.all(24),
+              child:
+              ConstrainedBox(
+                constraints:
+                const BoxConstraints(
+                  maxWidth: 460,
+                ),
+                child: Container(
+                  width:
+                  double.infinity,
+                  padding:
+                  const EdgeInsets.all(26),
+                  decoration:
+                  BoxDecoration(
+                    color:
+                    JrColors.surface,
+                    borderRadius:
+                    BorderRadius.circular(26),
+                    border:
+                    Border.all(
+                      color:
+                      JrColors.border,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize:
+                    MainAxisSize.min,
+                    children: <Widget>[
+                      const Icon(
+                        Icons.cloud_off_rounded,
+                        size: 56,
+                        color:
+                        JrColors.error,
+                      ),
+                      const SizedBox(
+                        height: 18,
+                      ),
+                      Text(
+                        'JR CALL',
+                        style:
+                        JrTypography.brandTitle,
+                      ),
+                      const SizedBox(
+                        height: 10,
+                      ),
+                      Text(
+                        'Application initialization failed.',
+                        textAlign:
+                        TextAlign.center,
+                        style:
+                        JrTypography.sectionTitle,
+                      ),
+                      const SizedBox(
+                        height: 8,
+                      ),
+                      Text(
+                        'Please check the Firebase configuration '
+                            'and restart the application.',
+                        textAlign:
+                        TextAlign.center,
+                        style:
+                        JrTypography.bodySecondary,
+                      ),
+                      if (kDebugMode)
+                        ...<Widget>[
+                          const SizedBox(
+                            height: 20,
+                          ),
+                          Text(
+                            error.toString(),
+                            textAlign:
+                            TextAlign.center,
+                            style:
+                            JrTypography.metadata,
+                          ),
+                        ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ===============================================================
+// END OF FILE
+//
+// IDE INSPECTION:
+//
+// ✓ Provider package import preserved exactly.
+// ✓ Required ProviderScope root preserved.
+// ✓ Apple provider runtime label preserved exactly.
+// ✓ Legacy incoming-call compatibility token preserved exactly.
+// ✓ No runtime behavior changed.
+//
+// CALL SESSION ROUTING:
+//
+// ✓ CallService singleton reused.
+// ✓ Receiver role required.
+// ✓ Firebase authenticated UID revalidated.
+// ✓ Exact current callId revalidated.
+// ✓ Exact remote Firebase UID revalidated.
+// ✓ Real PeerConnection CONNECTED required.
+// ✓ Outgoing caller cannot trigger incoming route.
+// ✓ Duplicate incoming session route blocked.
+// ✓ Accept/navigation race protected.
+// ✓ CallSessionScreen receives real video/voice type.
+// ✓ CallSessionScreen receives real duration.
+// ✓ Remote profile identity resolves inside CallSessionScreen.
+//
+// EXISTING ARCHITECTURE:
+//
+// ✓ Firebase initialization preserved.
+// ✓ Firebase App Check preserved.
+// ✓ AuthService preserved.
+// ✓ Phone OTP ownership preserved.
+// ✓ Message coordinator preserved.
+// ✓ BackgroundCallService preserved.
+// ✓ STUN/TURN pre-warm preserved.
+// ✓ FCM routing preserved.
+// ✓ Theme/UI preserved.
+//
+// PROTECTED:
+//
+// ✓ No CallService lifecycle duplicated.
+// ✓ No WebRTC ownership duplicated.
+// ✓ No SDP ownership duplicated.
+// ✓ No ICE ownership duplicated.
+// ✓ No signaling ownership duplicated.
+// ✓ No HomeScreen visual changes.
+// ===============================================================
+
+===== FILE: lib/services/call/background_call_service.dart =====
+
+// ===============================================================
+// JR CALL
+// File: background_call_service.dart
+// Location: lib/services/call/background_call_service.dart
+//
+// MASTER PRODUCTION BACKGROUND CALL ORCHESTRATOR
+//
+// RESPONSIBILITIES:
+//
+// - Coordinate native Android/iOS incoming-call presentation.
+// - Validate background/restore payloads against signaling truth.
+// - Coordinate native answer/reject/end actions with CallService.
+// - Restore pending incoming-call presentation after app resume.
+// - Prevent duplicate/stale native call actions.
+// - Expire incoming-call PRESENTATION safely.
+// - Bridge localized NotificationService metadata to native layer.
+// - Serialize native action ownership per call.
+// - Keep platform-channel payloads codec-safe.
+//
+// OWNERSHIP:
+//
+// Native Android/iOS:
+// - System incoming-call UI / full-screen presentation.
+// - Native notification/call integration.
+//
+// SignalingService:
+// - Server/signaling truth.
+// - Read validation from this service is allowed.
+//
+// CallService:
+// - Actual call lifecycle.
+// - Answer / reject / end.
+// - Canonical timeout/history/signaling mutation.
+//
+// NotificationService:
+// - Notification presentation state.
+// - Locale-ready title/body and localization resource metadata.
+//
+// BackgroundCallService:
+// - Background/native orchestration only.
+//
+// IMPORTANT:
+//
+// - This service does NOT create PeerConnection.
+// - This service does NOT own media.
+// - This service does NOT own ICE.
+// - This service does NOT own recovery.
+// - This service does NOT directly write call history.
+// - This service does NOT directly mutate signaling status.
+// - Native presentation timeout NEVER ends the actual call.
+// - FCM background handler registration does NOT belong here.
+// ===============================================================
+
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
+
+import 'call_service.dart';
+import 'notification_service.dart';
+import 'signaling_service.dart';
+
+// ===============================================================
+// BACKGROUND EVENT TYPE
+// ===============================================================
+
+enum BackgroundCallEventType {
+  incoming,
+  accepted,
+  rejected,
+  cancelled,
+  ended,
+  timeout,
+  restored,
+  error,
+}
+
+// ===============================================================
+// BACKGROUND EVENT
+// ===============================================================
+
+@immutable
+class BackgroundCallEvent {
+  const BackgroundCallEvent({
+    required this.type,
+    required this.callId,
+    this.payload,
+    this.error,
+  });
+
+  final BackgroundCallEventType type;
+
+  final String callId;
+
+  final BackgroundCallPayload? payload;
+
+  final Object? error;
+}
+
+// ===============================================================
+// BACKGROUND CALL PAYLOAD
+// ===============================================================
+
+@immutable
+class BackgroundCallPayload {
+  const BackgroundCallPayload({
+    required this.callId,
+    required this.callerId,
+    required this.receiverId,
+    required this.callerName,
+    required this.isVideoCall,
+    this.callerAvatarUrl,
+    this.createdAt,
+    this.extra = const <String, dynamic>{},
+  });
+
+  final String callId;
+
+  final String callerId;
+
+  final String receiverId;
+
+  final String callerName;
+
+  final String? callerAvatarUrl;
+
+  final bool isVideoCall;
+
+  final DateTime? createdAt;
+
+  final Map<String, dynamic> extra;
+
+  // =============================================================
+  // FROM MAP
+  // =============================================================
+
+  factory BackgroundCallPayload.fromMap(
+      Map<String, dynamic> map,
+      ) {
+    final String callId = _readRequiredString(
+      map['callId'],
+      fieldName: 'callId',
+    );
+
+    final String callerId = _readRequiredString(
+      map['callerId'] ??
+          map['callerUid'] ??
+          map['senderId'],
+      fieldName: 'callerId',
+    );
+
+    final String receiverId = _readRequiredString(
+      map['receiverId'] ??
+          map['receiverUid'],
+      fieldName: 'receiverId',
+    );
+
+    final String callerName =
+        _readOptionalString(
+          map['callerName'],
+        ) ??
+            _readOptionalString(
+              map['senderName'],
+            ) ??
+            'JR CALL User';
+
+    final String? avatarUrl =
+        _readOptionalString(
+          map['callerAvatarUrl'],
+        ) ??
+            _readOptionalString(
+              map['callerPhotoUrl'],
+            ) ??
+            _readOptionalString(
+              map['photoUrl'],
+            );
+
+    final String? callType =
+    _readOptionalString(
+      map['callType'],
+    )?.toLowerCase();
+
+    final bool isVideoCall = _readBoolean(
+      map['isVideoCall'] ??
+          map['video'],
+      fallback:
+      callType == 'video',
+    );
+
+    return BackgroundCallPayload(
+      callId: callId,
+      callerId: callerId,
+      receiverId: receiverId,
+      callerName: callerName,
+      callerAvatarUrl: avatarUrl,
+      isVideoCall: isVideoCall,
+      createdAt: _readDateTime(
+        map['createdAt'],
+      ),
+      extra: Map<String, dynamic>.unmodifiable(
+        Map<String, dynamic>.from(
+          map,
+        ),
+      ),
+    );
+  }
+
+  // =============================================================
+  // TO MAP
+  // =============================================================
+
+  Map<String, dynamic> toMap() {
+    return <String, dynamic>{
+      ...extra,
+      'callId': callId,
+      'callerId': callerId,
+      'receiverId': receiverId,
+      'callerName': callerName,
+      'callerAvatarUrl':
+      callerAvatarUrl,
+      'isVideoCall':
+      isVideoCall,
+      'callType':
+      isVideoCall
+          ? 'video'
+          : 'voice',
+      'createdAt':
+      createdAt?.toIso8601String(),
+    };
+  }
+
+  // =============================================================
+  // PARSING
+  // =============================================================
+
+  static String _readRequiredString(
+      Object? value, {
+        required String fieldName,
+      }) {
+    final String? result =
+    _readOptionalString(
+      value,
+    );
+
+    if (result == null) {
+      throw FormatException(
+        'Background call payload field '
+            '"$fieldName" is missing.',
+      );
+    }
+
+    return result;
+  }
+
+  static String? _readOptionalString(
+      Object? value,
+      ) {
+    if (value is! String) {
+      return null;
+    }
+
+    final String normalized =
+    value.trim();
+
+    if (normalized.isEmpty) {
+      return null;
+    }
+
+    return normalized;
+  }
+
+  static bool _readBoolean(
+      Object? value, {
+        required bool fallback,
+      }) {
+    if (value is bool) {
+      return value;
+    }
+
+    if (value is num) {
+      return value != 0;
+    }
+
+    if (value is String) {
+      switch (value
+          .trim()
+          .toLowerCase()) {
+        case 'true':
+        case '1':
+        case 'yes':
+        case 'video':
+          return true;
+
+        case 'false':
+        case '0':
+        case 'no':
+        case 'voice':
+          return false;
+      }
+    }
+
+    return fallback;
+  }
+
+  static DateTime? _readDateTime(
+      Object? value,
+      ) {
+    if (value == null) {
+      return null;
+    }
+
+    if (value is DateTime) {
+      return value;
+    }
+
+    if (value is int) {
+      return DateTime
+          .fromMillisecondsSinceEpoch(
+        value,
+      );
+    }
+
+    if (value is num) {
+      return DateTime
+          .fromMillisecondsSinceEpoch(
+        value.toInt(),
+      );
+    }
+
+    if (value is String) {
+      final String normalized =
+      value.trim();
+
+      if (normalized.isEmpty) {
+        return null;
+      }
+
+      final int? milliseconds =
+      int.tryParse(
+        normalized,
+      );
+
+      if (milliseconds != null &&
+          normalized.length >= 11) {
+        return DateTime
+            .fromMillisecondsSinceEpoch(
+          milliseconds,
+        );
+      }
+
+      return DateTime.tryParse(
+        normalized,
+      );
+    }
+
+    // Firestore Timestamp-style compatibility without forcing
+    // this orchestration file to own a cloud_firestore import.
+    try {
+      final dynamic dynamicValue =
+          value;
+
+      final Object? converted =
+      dynamicValue.toDate();
+
+      if (converted is DateTime) {
+        return converted;
+      }
+    } catch (_) {
+      // Unsupported date-like object.
+    }
+
+    return null;
+  }
+}
+
+// ===============================================================
+// BACKGROUND CALL SERVICE
+// ===============================================================
+
+class BackgroundCallService
+    with WidgetsBindingObserver {
+  BackgroundCallService._();
+
+  static final BackgroundCallService
+  instance =
+  BackgroundCallService._();
+
+  // =============================================================
+  // PLATFORM CHANNEL
+  // =============================================================
+
+  static const MethodChannel
+  _platformChannel =
+  MethodChannel(
+    'jr_call/background_call',
+  );
+
+  // =============================================================
+  // POLICY
+  // =============================================================
+
+  static const Duration
+  _defaultIncomingCallTimeout =
+  Duration(
+    seconds: 45,
+  );
+
+  static const int
+  _completedCallCacheLimit =
+  64;
+
+  // =============================================================
+  // DEPENDENCIES
+  // =============================================================
+
+  final CallService _callService =
+  CallService();
+
+  final SignalingService
+  _signalingService =
+      SignalingService.instance;
+
+  final NotificationService
+  _notificationService =
+      NotificationService.instance;
+
+  // =============================================================
+  // EVENTS
+  // =============================================================
+
+  final StreamController<
+      BackgroundCallEvent>
+  _eventController =
+  StreamController<
+      BackgroundCallEvent>.broadcast();
+
+  // =============================================================
+  // INITIALIZATION
+  // =============================================================
+
+  Future<void>?
+  _initializationFuture;
+
+  bool _isInitialized = false;
+
+  bool _isDisposed = false;
+
+  // =============================================================
+  // SESSION STATE
+  // =============================================================
+
+  bool _isShowingIncomingCall =
+  false;
+
+  String? _activeActionCallId;
+
+  int _sessionGeneration = 0;
+
+  BackgroundCallPayload?
+  _pendingCall;
+
+  Timer?
+  _incomingCallTimeoutTimer;
+
+  String? _lastPresentedCallId;
+
+  final List<String>
+  _completedCallIds =
+  <String>[];
+
+  // =============================================================
+  // PUBLIC STATE
+  // =============================================================
+
+  Stream<BackgroundCallEvent>
+  get events =>
+      _eventController.stream;
+
+  bool get isInitialized =>
+      _isInitialized;
+
+  bool get isDisposed =>
+      _isDisposed;
+
+  bool get hasPendingCall =>
+      _pendingCall != null;
+
+  BackgroundCallPayload?
+  get pendingCall =>
+      _pendingCall;
+
+  String? get pendingCallId =>
+      _pendingCall?.callId;
+
+  // =============================================================
+  // INITIALIZATION
+  // =============================================================
+
+  Future<void> initialize() {
+    if (_isDisposed) {
+      return Future<void>.error(
+        StateError(
+          'BackgroundCallService '
+              'has been disposed.',
+        ),
+      );
+    }
+
+    if (_isInitialized) {
+      return Future<void>.value();
+    }
+
+    final Future<void>?
+    existing =
+        _initializationFuture;
+
+    if (existing != null) {
+      return existing;
+    }
+
+    final Future<void> future =
+    _initializeInternal();
+
+    _initializationFuture =
+        future;
+
+    return future;
+  }
+
+  Future<void>
+  _initializeInternal() async {
+    bool observerAttached =
+    false;
+
+    bool handlerAttached =
+    false;
+
+    try {
+      if (_isDisposed ||
+          _isInitialized) {
+        return;
+      }
+
+      WidgetsBinding.instance
+          .addObserver(
+        this,
+      );
+
+      observerAttached = true;
+
+      _platformChannel
+          .setMethodCallHandler(
+        _handleNativeMethodCall,
+      );
+
+      handlerAttached = true;
+
+      // Existing CallService initialization contract.
+      await _callService.initialize();
+
+      if (_isDisposed) {
+        return;
+      }
+
+      _isInitialized = true;
+
+      await _notifyNativeServiceReady();
+
+      if (_isDisposed) {
+        return;
+      }
+
+      await restorePendingCall();
+
+      debugPrint(
+        'JR CALL: '
+            'BackgroundCallService initialized.',
+      );
+    } catch (error, stackTrace) {
+      _reportError(
+        'Initialize',
+        error,
+        stackTrace,
+      );
+
+      if (!_isInitialized) {
+        if (observerAttached) {
+          WidgetsBinding.instance
+              .removeObserver(
+            this,
+          );
+        }
+
+        if (handlerAttached) {
+          _platformChannel
+              .setMethodCallHandler(
+            null,
+          );
+        }
+      }
+
+      rethrow;
+    } finally {
+      if (!_isInitialized) {
+        _initializationFuture =
+        null;
+      }
+    }
+  }
+
+  Future<void>
+  _ensureInitialized() async {
+    if (_isDisposed) {
+      throw StateError(
+        'BackgroundCallService '
+            'has been disposed.',
+      );
+    }
+
+    if (!_isInitialized) {
+      await initialize();
+    }
+  }
+
+  // =============================================================
+  // APP LIFECYCLE
+  // =============================================================
+
+  @override
+  void didChangeAppLifecycleState(
+      AppLifecycleState state,
+      ) {
+    if (_isDisposed ||
+        !_isInitialized) {
+      return;
+    }
+
+    switch (state) {
+      case AppLifecycleState.resumed:
+        unawaited(
+          restorePendingCall(),
+        );
+        break;
+
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.detached:
+        break;
+    }
+  }
+
+  // =============================================================
+  // INCOMING PUSH / DATA PAYLOAD
+  //
+  // IMPORTANT:
+  //
+  // This is an application-runtime entry API.
+  //
+  // FirebaseMessaging.onBackgroundMessage registration must remain
+  // a top-level @pragma('vm:entry-point') function in application
+  // bootstrap according to FlutterFire requirements.
+  // =============================================================
+
+  Future<bool>
+  handleIncomingCallData(
+      Map<String, dynamic> data,
+      ) async {
+    await _ensureInitialized();
+
+    try {
+      final BackgroundCallPayload
+      payload =
+      BackgroundCallPayload
+          .fromMap(
+        data,
+      );
+
+      return presentIncomingCall(
+        payload,
+      );
+    } catch (error, stackTrace) {
+      _reportError(
+        'Incoming call payload',
+        error,
+        stackTrace,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .error,
+          callId:
+          _readCallIdSafely(
+            data,
+          ),
+          error:
+          error,
+        ),
+      );
+
+      return false;
+    }
+  }
+
+  // =============================================================
+  // PRESENT INCOMING CALL
+  // =============================================================
+
+  Future<bool> presentIncomingCall(
+      BackgroundCallPayload payload,
+      ) async {
+    await _ensureInitialized();
+
+    if (_isDisposed) {
+      return false;
+    }
+
+    final String callId =
+    payload.callId.trim();
+
+    if (callId.isEmpty) {
+      return false;
+    }
+
+    if (_isCallCompleted(
+      callId,
+    )) {
+      await _dismissNativeCall(
+        callId,
+      );
+
+      return false;
+    }
+
+    // Exact duplicate already pending.
+    if (_pendingCall?.callId ==
+        callId &&
+        _lastPresentedCallId ==
+            callId) {
+      return true;
+    }
+
+    // Call has already moved into CallService lifecycle.
+    if (_callService.isCallActive &&
+        _callService.currentCallId ==
+            callId) {
+      await _dismissNativeCall(
+        callId,
+      );
+
+      return false;
+    }
+
+    // Another real call is active.
+    if (_callService.isCallActive &&
+        _callService.currentCallId !=
+            callId) {
+      await _rejectBusyIncomingCall(
+        callId,
+      );
+
+      return false;
+    }
+
+    if (_isShowingIncomingCall) {
+      return false;
+    }
+
+    if (_activeActionCallId !=
+        null) {
+      return false;
+    }
+
+    _isShowingIncomingCall =
+    true;
+
+    final int sessionToken =
+    ++_sessionGeneration;
+
+    try {
+      final bool active =
+      await _validateCallIsActive(
+        callId,
+      );
+
+      if (!_isSessionCurrent(
+        sessionToken,
+      ) ||
+          !active) {
+        return false;
+      }
+
+      final Map<String, dynamic>
+      callData =
+      await _signalingService
+          .getCallDocument(
+        callId,
+      );
+
+      if (!_isSessionCurrent(
+        sessionToken,
+      )) {
+        return false;
+      }
+
+      final BackgroundCallPayload
+      normalizedPayload =
+      _mergePayloadWithCallDocument(
+        payload,
+        callData,
+      );
+
+      if (_isPayloadPresentationExpired(
+        normalizedPayload,
+      )) {
+        _markCallCompleted(
+          normalizedPayload.callId,
+        );
+
+        await _dismissNativeCall(
+          normalizedPayload.callId,
+        );
+
+        return false;
+      }
+
+      _pendingCall =
+          normalizedPayload;
+
+      _lastPresentedCallId =
+          normalizedPayload.callId;
+
+      _removeCompletedCall(
+        normalizedPayload.callId,
+      );
+
+      _startIncomingCallTimeout(
+        normalizedPayload,
+        sessionToken,
+      );
+
+      final Map<String, dynamic>
+      nativeArguments =
+      await _buildIncomingNativeArguments(
+        normalizedPayload,
+      );
+
+      if (!_isSessionCurrent(
+        sessionToken,
+      )) {
+        return false;
+      }
+
+      await _invokeNativeMethod(
+        'showIncomingCall',
+        nativeArguments,
+      );
+
+      if (!_isSessionCurrent(
+        sessionToken,
+      )) {
+        return false;
+      }
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .incoming,
+          callId:
+          normalizedPayload
+              .callId,
+          payload:
+          normalizedPayload,
+        ),
+      );
+
+      return true;
+    } catch (error, stackTrace) {
+      _reportError(
+        'Present incoming call',
+        error,
+        stackTrace,
+      );
+
+      await _clearPendingCall(
+        dismissNativeUi:
+        true,
+        callIdOverride:
+        callId,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .error,
+          callId:
+          callId,
+          payload:
+          payload,
+          error:
+          error,
+        ),
+      );
+
+      return false;
+    } finally {
+      _isShowingIncomingCall =
+      false;
+    }
+  }
+
+  // =============================================================
+  // SIGNALING READ VALIDATION
+  // =============================================================
+
+  Future<bool> _validateCallIsActive(
+      String callId,
+      ) async {
+    final String normalizedCallId =
+    callId.trim();
+
+    if (normalizedCallId.isEmpty) {
+      return false;
+    }
+
+    try {
+      return await _signalingService
+          .checkCallActiveStatus(
+        normalizedCallId,
+      );
+    } catch (error, stackTrace) {
+      _reportError(
+        'Validate active call',
+        error,
+        stackTrace,
+      );
+
+      return false;
+    }
+  }
+
+  BackgroundCallPayload
+  _mergePayloadWithCallDocument(
+      BackgroundCallPayload payload,
+      Map<String, dynamic> callData,
+      ) {
+    final Map<String, dynamic>
+    merged =
+    <String, dynamic>{
+      ...payload.toMap(),
+      ...callData,
+
+      // Never permit a malformed/stale document merge to replace
+      // the push/session identifier being validated.
+      'callId':
+      payload.callId,
+    };
+
+    return BackgroundCallPayload
+        .fromMap(
+      merged,
+    );
+  }
+
+  // =============================================================
+  // ACCEPT
+  // =============================================================
+
+  Future<void> acceptPendingCall({
+    String? callId,
+  }) async {
+    await _ensureInitialized();
+
+    final String? targetCallId =
+    _resolveActionCallId(
+      callId,
+    );
+
+    if (targetCallId == null ||
+        !_beginAction(
+          targetCallId,
+        )) {
+      return;
+    }
+
+    final BackgroundCallPayload?
+    payload =
+    _pendingCall?.callId ==
+        targetCallId
+        ? _pendingCall
+        : null;
+
+    try {
+      _cancelIncomingCallTimeout();
+
+      final bool active =
+      await _validateCallIsActive(
+        targetCallId,
+      );
+
+      if (!active) {
+        await _clearPendingCall(
+          dismissNativeUi:
+          true,
+          callIdOverride:
+          targetCallId,
+        );
+
+        _notificationService.dismiss(
+          targetCallId,
+        );
+
+        return;
+      }
+
+      await _notificationService
+          .showConnecting(
+        callId:
+        targetCallId,
+      );
+
+      await _invokeNativeMethod(
+        'setCallConnecting',
+        <String, dynamic>{
+          'callId':
+          targetCallId,
+        },
+      );
+
+      // CallService owns the real accept lifecycle.
+      await _callService.acceptCall(
+        callId:
+        targetCallId,
+      );
+
+      if (_callService.currentCallId ==
+          targetCallId) {
+        await _invokeNativeMethod(
+          'setCallOngoing',
+          <String, dynamic>{
+            'callId':
+            targetCallId,
+            'isVideoCall':
+            payload?.isVideoCall ??
+                false,
+          },
+        );
+
+        _emitEvent(
+          BackgroundCallEvent(
+            type:
+            BackgroundCallEventType
+                .accepted,
+            callId:
+            targetCallId,
+            payload:
+            payload,
+          ),
+        );
+
+        _pendingCall = null;
+
+        _lastPresentedCallId =
+        null;
+
+        _sessionGeneration++;
+
+        _cancelIncomingCallTimeout();
+
+        // Do NOT call showConnected() here.
+        //
+        // Accept completion is not proof that the native WebRTC
+        // transport has reached connected state.
+      } else {
+        await _invokeNativeMethod(
+          'endNativeCall',
+          <String, dynamic>{
+            'callId':
+            targetCallId,
+            'reason':
+            'connection_failed',
+          },
+        );
+
+        await _notificationService
+            .showCallFailed(
+          callId:
+          targetCallId,
+        );
+
+        await _clearPendingCall(
+          dismissNativeUi:
+          false,
+          callIdOverride:
+          targetCallId,
+        );
+      }
+    } catch (error, stackTrace) {
+      _reportError(
+        'Accept background call',
+        error,
+        stackTrace,
+      );
+
+      await _invokeNativeMethod(
+        'endNativeCall',
+        <String, dynamic>{
+          'callId':
+          targetCallId,
+          'reason':
+          'accept_failed',
+        },
+      );
+
+      await _notificationService
+          .showCallFailed(
+        callId:
+        targetCallId,
+      );
+
+      await _clearPendingCall(
+        dismissNativeUi:
+        false,
+        callIdOverride:
+        targetCallId,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .error,
+          callId:
+          targetCallId,
+          payload:
+          payload,
+          error:
+          error,
+        ),
+      );
+    } finally {
+      _endAction(
+        targetCallId,
+      );
+    }
+  }
+
+  // =============================================================
+  // REJECT
+  // =============================================================
+
+  Future<void> rejectPendingCall({
+    String? callId,
+  }) async {
+    await _ensureInitialized();
+
+    final String? targetCallId =
+    _resolveActionCallId(
+      callId,
+    );
+
+    if (targetCallId == null ||
+        !_beginAction(
+          targetCallId,
+        )) {
+      return;
+    }
+
+    final BackgroundCallPayload?
+    payload =
+    _pendingCall?.callId ==
+        targetCallId
+        ? _pendingCall
+        : null;
+
+    bool rejectedSuccessfully =
+    false;
+
+    try {
+      _cancelIncomingCallTimeout();
+
+      // CallService owns rejection/status/history.
+      await _callService.rejectCall(
+        callId:
+        targetCallId,
+      );
+
+      rejectedSuccessfully =
+      true;
+
+      _markCallCompleted(
+        targetCallId,
+      );
+
+      await _notificationService
+          .showRejected(
+        callId:
+        targetCallId,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .rejected,
+          callId:
+          targetCallId,
+          payload:
+          payload,
+        ),
+      );
+    } catch (error, stackTrace) {
+      _reportError(
+        'Reject background call',
+        error,
+        stackTrace,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .error,
+          callId:
+          targetCallId,
+          payload:
+          payload,
+          error:
+          error,
+        ),
+      );
+    } finally {
+      await _clearPendingCall(
+        dismissNativeUi:
+        true,
+        callIdOverride:
+        targetCallId,
+      );
+
+      if (!rejectedSuccessfully) {
+        _removeCompletedCall(
+          targetCallId,
+        );
+      }
+
+      _endAction(
+        targetCallId,
+      );
+    }
+  }
+
+  // =============================================================
+  // CANCEL INCOMING PRESENTATION
+  //
+  // This method owns PRESENTATION cancellation only.
+  // It does not mutate signaling/call lifecycle.
+  // =============================================================
+
+  Future<void>
+  cancelIncomingPresentation({
+    String? callId,
+  }) async {
+    final String? targetCallId =
+    _resolveActionCallId(
+      callId,
+    );
+
+    if (targetCallId == null) {
+      return;
+    }
+
+    _markCallCompleted(
+      targetCallId,
+    );
+
+    await _notificationService
+        .showCancelled(
+      callId:
+      targetCallId,
+    );
+
+    _emitEvent(
+      BackgroundCallEvent(
+        type:
+        BackgroundCallEventType
+            .cancelled,
+        callId:
+        targetCallId,
+        payload:
+        _pendingCall,
+      ),
+    );
+
+    await _clearPendingCall(
+      dismissNativeUi:
+      true,
+      callIdOverride:
+      targetCallId,
+    );
+  }
+
+  // =============================================================
+  // END ACTIVE CALL
+  // =============================================================
+
+  Future<void> endBackgroundCall({
+    required String callId,
+    String status = 'COMPLETED',
+  }) async {
+    await _ensureInitialized();
+
+    final String normalizedCallId =
+    callId.trim();
+
+    if (normalizedCallId.isEmpty) {
+      return;
+    }
+
+    if (_isCallCompleted(
+      normalizedCallId,
+    )) {
+      return;
+    }
+
+    if (!_beginAction(
+      normalizedCallId,
+    )) {
+      return;
+    }
+
+    bool endedSuccessfully =
+    false;
+
+    try {
+      // CallService owns real terminal signaling/history.
+      await _callService.endCall(
+        callId:
+        normalizedCallId,
+        status:
+        status,
+      );
+
+      endedSuccessfully =
+      true;
+
+      _markCallCompleted(
+        normalizedCallId,
+      );
+
+      await _notificationService
+          .showCallEnded(
+        callId:
+        normalizedCallId,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .ended,
+          callId:
+          normalizedCallId,
+        ),
+      );
+    } catch (error, stackTrace) {
+      _reportError(
+        'End background call',
+        error,
+        stackTrace,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .error,
+          callId:
+          normalizedCallId,
+          error:
+          error,
+        ),
+      );
+
+      rethrow;
+    } finally {
+      if (endedSuccessfully) {
+        await _clearPendingCall(
+          dismissNativeUi:
+          true,
+          callIdOverride:
+          normalizedCallId,
+        );
+      }
+
+      _endAction(
+        normalizedCallId,
+      );
+    }
+  }
+
+  // =============================================================
+  // NATIVE METHOD HANDLER
+  // =============================================================
+
+  Future<Object?>
+  _handleNativeMethodCall(
+      MethodCall call,
+      ) async {
+    if (_isDisposed) {
+      return null;
+    }
+
+    final Map<String, dynamic>
+    arguments =
+    _normalizeArguments(
+      call.arguments,
+    );
+
+    final String? callId =
+    _readOptionalString(
+      arguments['callId'],
+    );
+
+    switch (call.method) {
+      case 'incomingCallAccepted':
+        await acceptPendingCall(
+          callId:
+          callId,
+        );
+
+        return true;
+
+      case 'incomingCallRejected':
+        await rejectPendingCall(
+          callId:
+          callId,
+        );
+
+        return true;
+
+      case 'incomingCallTimedOut':
+        await _handleIncomingTimeout(
+          callId ??
+              pendingCallId,
+        );
+
+        return true;
+
+      case 'nativeCallEnded':
+        final String? targetCallId =
+            callId ??
+                _callService
+                    .currentCallId ??
+                pendingCallId;
+
+        if (targetCallId != null) {
+          await endBackgroundCall(
+            callId:
+            targetCallId,
+          );
+        }
+
+        return true;
+
+      case 'appLaunchedForCall':
+      case 'restoreIncomingCall':
+        await restorePendingCall(
+          nativeArguments:
+          arguments,
+        );
+
+        return true;
+
+      default:
+        debugPrint(
+          'JR CALL: Unknown '
+              'background-call native method: '
+              '${call.method}',
+        );
+
+        return null;
+    }
+  }
+
+  // =============================================================
+  // RESTORE PENDING CALL
+  // =============================================================
+
+  Future<void> restorePendingCall({
+    Map<String, dynamic>?
+    nativeArguments,
+  }) async {
+    if (_isDisposed) {
+      return;
+    }
+
+    try {
+      final Map<String, dynamic>
+      arguments =
+          nativeArguments ??
+              await _getNativePendingCall();
+
+      if (arguments.isEmpty) {
+        return;
+      }
+
+      final BackgroundCallPayload
+      rawPayload =
+      BackgroundCallPayload.fromMap(
+        arguments,
+      );
+
+      if (_isCallCompleted(
+        rawPayload.callId,
+      )) {
+        await _dismissNativeCall(
+          rawPayload.callId,
+        );
+
+        return;
+      }
+
+      if (_callService.isCallActive &&
+          _callService.currentCallId ==
+              rawPayload.callId) {
+        await _dismissNativeCall(
+          rawPayload.callId,
+        );
+
+        return;
+      }
+
+      if (_callService.isCallActive &&
+          _callService.currentCallId !=
+              rawPayload.callId) {
+        await _rejectBusyIncomingCall(
+          rawPayload.callId,
+        );
+
+        await _dismissNativeCall(
+          rawPayload.callId,
+        );
+
+        return;
+      }
+
+      if (_pendingCall?.callId ==
+          rawPayload.callId &&
+          _lastPresentedCallId ==
+              rawPayload.callId) {
+        return;
+      }
+
+      final bool active =
+      await _validateCallIsActive(
+        rawPayload.callId,
+      );
+
+      if (!active) {
+        await _dismissNativeCall(
+          rawPayload.callId,
+        );
+
+        return;
+      }
+
+      final Map<String, dynamic>
+      callData =
+      await _signalingService
+          .getCallDocument(
+        rawPayload.callId,
+      );
+
+      final BackgroundCallPayload
+      payload =
+      _mergePayloadWithCallDocument(
+        rawPayload,
+        callData,
+      );
+
+      if (_isPayloadPresentationExpired(
+        payload,
+      )) {
+        _markCallCompleted(
+          payload.callId,
+        );
+
+        await _dismissNativeCall(
+          payload.callId,
+        );
+
+        _notificationService.dismiss(
+          payload.callId,
+        );
+
+        return;
+      }
+
+      _pendingCall =
+          payload;
+
+      _lastPresentedCallId =
+          payload.callId;
+
+      final int sessionToken =
+      ++_sessionGeneration;
+
+      _startIncomingCallTimeout(
+        payload,
+        sessionToken,
+      );
+
+      await _notificationService
+          .showIncomingCall(
+        callId:
+        payload.callId,
+        callerId:
+        payload.callerId,
+        callerName:
+        payload.callerName,
+        callerPhotoUrl:
+        payload.callerAvatarUrl,
+        isVideoCall:
+        payload.isVideoCall,
+        data:
+        payload.extra,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .restored,
+          callId:
+          payload.callId,
+          payload:
+          payload,
+        ),
+      );
+    } catch (error, stackTrace) {
+      _reportError(
+        'Restore pending call',
+        error,
+        stackTrace,
+      );
+    }
+  }
+
+  Future<Map<String, dynamic>>
+  _getNativePendingCall() async {
+    final Object? result =
+    await _invokeNativeMethod(
+      'getPendingCall',
+    );
+
+    return _normalizeArguments(
+      result,
+    );
+  }
+
+  // =============================================================
+  // PRESENTATION TIMEOUT
+  //
+  // CRITICAL:
+  //
+  // This timer only controls incoming-call presentation.
+  //
+  // It MUST NOT:
+  // - update signaling status;
+  // - write call history;
+  // - mark the call missed;
+  // - terminate PeerConnection.
+  //
+  // CallService owns canonical timeout/history behavior.
+  // =============================================================
+
+  void _startIncomingCallTimeout(
+      BackgroundCallPayload payload,
+      int sessionToken,
+      ) {
+    _cancelIncomingCallTimeout();
+
+    final Duration remaining =
+    _remainingIncomingPresentationTime(
+      payload,
+    );
+
+    if (remaining <=
+        Duration.zero) {
+      unawaited(
+        _handleIncomingTimeout(
+          payload.callId,
+        ),
+      );
+
+      return;
+    }
+
+    _incomingCallTimeoutTimer =
+        Timer(
+          remaining,
+              () {
+            if (!_isSessionCurrent(
+              sessionToken,
+            ) ||
+                _pendingCall?.callId !=
+                    payload.callId ||
+                _isCallCompleted(
+                  payload.callId,
+                )) {
+              return;
+            }
+
+            unawaited(
+              _handleIncomingTimeout(
+                payload.callId,
+              ),
+            );
+          },
+        );
+  }
+
+  Duration
+  _remainingIncomingPresentationTime(
+      BackgroundCallPayload payload,
+      ) {
+    final DateTime? createdAt =
+        payload.createdAt;
+
+    if (createdAt == null) {
+      return _defaultIncomingCallTimeout;
+    }
+
+    final DateTime expiresAt =
+    createdAt.add(
+      _defaultIncomingCallTimeout,
+    );
+
+    final Duration remaining =
+    expiresAt.difference(
+      DateTime.now(),
+    );
+
+    if (remaining <=
+        Duration.zero) {
+      return Duration.zero;
+    }
+
+    // If server/client clock skew places createdAt in the future,
+    // never grant more than the configured presentation window.
+    if (remaining >
+        _defaultIncomingCallTimeout) {
+      return _defaultIncomingCallTimeout;
+    }
+
+    return remaining;
+  }
+
+  bool _isPayloadPresentationExpired(
+      BackgroundCallPayload payload,
+      ) {
+    return _remainingIncomingPresentationTime(
+      payload,
+    ) <=
+        Duration.zero;
+  }
+
+  Future<void>
+  _handleIncomingTimeout(
+      String? callId,
+      ) async {
+    final String? normalizedCallId =
+    _readOptionalString(
+      callId,
+    );
+
+    if (normalizedCallId == null) {
+      return;
+    }
+
+    if (_isCallCompleted(
+      normalizedCallId,
+    )) {
+      return;
+    }
+
+    if (_activeActionCallId ==
+        normalizedCallId) {
+      return;
+    }
+
+    if (!_beginAction(
+      normalizedCallId,
+    )) {
+      return;
+    }
+
+    final BackgroundCallPayload?
+    payload =
+    _pendingCall?.callId ==
+        normalizedCallId
+        ? _pendingCall
+        : null;
+
+    try {
+      _cancelIncomingCallTimeout();
+
+      _markCallCompleted(
+        normalizedCallId,
+      );
+
+      // Presentation-only cleanup.
+      //
+      // CallService already owns canonical timeout/missed/history.
+      _notificationService.dismiss(
+        normalizedCallId,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .timeout,
+          callId:
+          normalizedCallId,
+          payload:
+          payload,
+        ),
+      );
+    } catch (error, stackTrace) {
+      _reportError(
+        'Incoming presentation timeout',
+        error,
+        stackTrace,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .error,
+          callId:
+          normalizedCallId,
+          payload:
+          payload,
+          error:
+          error,
+        ),
+      );
+    } finally {
+      await _clearPendingCall(
+        dismissNativeUi:
+        true,
+        callIdOverride:
+        normalizedCallId,
+      );
+
+      _endAction(
+        normalizedCallId,
+      );
+    }
+  }
+
+  void _cancelIncomingCallTimeout() {
+    _incomingCallTimeoutTimer
+        ?.cancel();
+
+    _incomingCallTimeoutTimer =
+    null;
+  }
+
+  // =============================================================
+  // BUSY HANDLING
+  //
+  // CallService owns lifecycle mutation/history.
+  // =============================================================
+
+  Future<void>
+  _rejectBusyIncomingCall(
+      String callId,
+      ) async {
+    final String normalizedCallId =
+    callId.trim();
+
+    if (normalizedCallId.isEmpty ||
+        _isCallCompleted(
+          normalizedCallId,
+        )) {
+      return;
+    }
+
+    try {
+      await _callService.rejectCall(
+        callId:
+        normalizedCallId,
+      );
+
+      _markCallCompleted(
+        normalizedCallId,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .rejected,
+          callId:
+          normalizedCallId,
+        ),
+      );
+    } catch (error, stackTrace) {
+      _reportError(
+        'Reject busy incoming call',
+        error,
+        stackTrace,
+      );
+    }
+  }
+
+  // =============================================================
+  // NOTIFICATION / LOCALIZATION BRIDGE
+  // =============================================================
+
+  Future<Map<String, dynamic>>
+  _buildIncomingNativeArguments(
+      BackgroundCallPayload payload,
+      ) async {
+    await _notificationService
+        .showIncomingCall(
+      callId:
+      payload.callId,
+      callerId:
+      payload.callerId,
+      callerName:
+      payload.callerName,
+      callerPhotoUrl:
+      payload.callerAvatarUrl,
+      isVideoCall:
+      payload.isVideoCall,
+      data:
+      payload.extra,
+    );
+
+    final CallNotification?
+    notification =
+    _findNotification(
+      payload.callId,
+    );
+
+    final Map<String, dynamic>
+    result =
+    <String, dynamic>{
+      ...payload.toMap(),
+    };
+
+    if (notification != null) {
+      result.addAll(
+        <String, dynamic>{
+          // Current localized/fallback presentation.
+          'notificationTitle':
+          notification.title,
+          'notificationBody':
+          notification.body,
+
+          // Stable resource metadata for Android/iOS mapping.
+          'notificationTitleLocKey':
+          notification
+              .titleLocalizationKey,
+          'notificationBodyLocKey':
+          notification
+              .bodyLocalizationKey,
+          'notificationTitleLocArgs':
+          notification
+              .titleLocalizationArgs,
+          'notificationBodyLocArgs':
+          notification
+              .bodyLocalizationArgs,
+        },
+      );
+    }
+
+    return result;
+  }
+
+  CallNotification?
+  _findNotification(
+      String callId,
+      ) {
+    for (final CallNotification
+    notification
+    in _notificationService
+        .activeNotifications) {
+      if (notification.callId ==
+          callId) {
+        return notification;
+      }
+    }
+
+    return null;
+  }
+
+  // =============================================================
+  // NATIVE SERVICE READY
+  // =============================================================
+
+  Future<void>
+  _notifyNativeServiceReady() async {
+    await _invokeNativeMethod(
+      'initializeBackgroundCallService',
+      <String, dynamic>{
+        'supportsVideo':
+        true,
+        'incomingTimeoutSeconds':
+        _defaultIncomingCallTimeout
+            .inSeconds,
+      },
+    );
+  }
+
+  // =============================================================
+  // NATIVE METHOD INVOCATION
+  // =============================================================
+
+  Future<Object?> _invokeNativeMethod(
+      String method, [
+        Map<String, dynamic>?
+        arguments,
+      ]) async {
+    if (kIsWeb ||
+        _isDisposed) {
+      return null;
+    }
+
+    final Map<String, dynamic>?
+    safeArguments =
+    arguments == null
+        ? null
+        : _toPlatformSafeMap(
+      arguments,
+    );
+
+    try {
+      return await _platformChannel
+          .invokeMethod<Object?>(
+        method,
+        safeArguments,
+      );
+    } on MissingPluginException {
+      debugPrint(
+        'JR CALL: Native background-call '
+            'implementation is not connected '
+            'for this platform.',
+      );
+
+      return null;
+    } on PlatformException
+    catch (error, stackTrace) {
+      _reportError(
+        'Native method $method',
+        error,
+        stackTrace,
+      );
+
+      return null;
+    }
+  }
+
+  Future<void> _dismissNativeCall(
+      String callId,
+      ) async {
+    final String normalized =
+    callId.trim();
+
+    if (normalized.isEmpty) {
+      return;
+    }
+
+    await _invokeNativeMethod(
+      'dismissIncomingCall',
+      <String, dynamic>{
+        'callId':
+        normalized,
+      },
+    );
+  }
+
+  // =============================================================
+  // PLATFORM CODEC SAFETY
+  //
+  // Firestore Timestamp and arbitrary plugin objects cannot be sent
+  // directly through StandardMethodCodec.
+  // =============================================================
+
+  Map<String, dynamic>
+  _toPlatformSafeMap(
+      Map<String, dynamic> map,
+      ) {
+    final Map<String, dynamic>
+    result =
+    <String, dynamic>{};
+
+    for (final MapEntry<
+        String,
+        dynamic>
+    entry
+    in map.entries) {
+      result[entry.key] =
+          _toPlatformSafeValue(
+            entry.value,
+          );
+    }
+
+    return result;
+  }
+
+  dynamic _toPlatformSafeValue(
+      Object? value,
+      ) {
+    if (value == null ||
+        value is String ||
+        value is bool ||
+        value is int ||
+        value is double) {
+      return value;
+    }
+
+    if (value is num) {
+      return value.toDouble();
+    }
+
+    if (value is DateTime) {
+      return value
+          .toIso8601String();
+    }
+
+    if (value is Duration) {
+      return value
+          .inMilliseconds;
+    }
+
+    if (value is Map) {
+      final Map<String, dynamic>
+      normalized =
+      <String, dynamic>{};
+
+      for (final MapEntry<dynamic, dynamic>
+      entry
+      in value.entries) {
+        normalized[
+        entry.key.toString()] =
+            _toPlatformSafeValue(
+              entry.value,
+            );
+      }
+
+      return normalized;
+    }
+
+    if (value is Iterable) {
+      return value
+          .map<dynamic>(
+        _toPlatformSafeValue,
+      )
+          .toList(
+        growable: false,
+      );
+    }
+
+    // Firestore Timestamp-style object.
+    try {
+      final dynamic dynamicValue =
+          value;
+
+      final Object? converted =
+      dynamicValue.toDate();
+
+      if (converted is DateTime) {
+        return converted
+            .toIso8601String();
+      }
+    } catch (_) {
+      // Not a supported date-like object.
+    }
+
+    // Never allow an unsupported platform-channel value to crash
+    // incoming-call presentation.
+    return value.toString();
+  }
+
+  // =============================================================
+  // ACTION / CONCURRENCY PROTECTION
+  // =============================================================
+
+  bool _beginAction(
+      String callId,
+      ) {
+    final String normalizedCallId =
+    callId.trim();
+
+    if (_isDisposed ||
+        normalizedCallId.isEmpty) {
+      return false;
+    }
+
+    if (_activeActionCallId !=
+        null) {
+      return false;
+    }
+
+    _activeActionCallId =
+        normalizedCallId;
+
+    return true;
+  }
+
+  void _endAction(
+      String callId,
+      ) {
+    if (_activeActionCallId ==
+        callId.trim()) {
+      _activeActionCallId =
+      null;
+    }
+  }
+
+  // =============================================================
+  // COMPLETED CALL DEDUPE
+  // =============================================================
+
+  bool _isCallCompleted(
+      String callId,
+      ) {
+    return _completedCallIds
+        .contains(
+      callId.trim(),
+    );
+  }
+
+  void _markCallCompleted(
+      String callId,
+      ) {
+    final String normalizedCallId =
+    callId.trim();
+
+    if (normalizedCallId.isEmpty) {
+      return;
+    }
+
+    _completedCallIds.remove(
+      normalizedCallId,
+    );
+
+    _completedCallIds.add(
+      normalizedCallId,
+    );
+
+    while (_completedCallIds.length >
+        _completedCallCacheLimit) {
+      _completedCallIds.removeAt(
+        0,
+      );
+    }
+  }
+
+  void _removeCompletedCall(
+      String callId,
+      ) {
+    _completedCallIds.remove(
+      callId.trim(),
+    );
+  }
+
+  // =============================================================
+  // ACTION CALL-ID RESOLUTION
+  // =============================================================
+
+  String? _resolveActionCallId(
+      String? callId,
+      ) {
+    final String? normalizedCallId =
+    _readOptionalString(
+      callId,
+    );
+
+    if (normalizedCallId != null) {
+      if (_pendingCall?.callId ==
+          normalizedCallId ||
+          _callService.currentCallId ==
+              normalizedCallId) {
+        return normalizedCallId;
+      }
+
+      // Ignore stale/native actions for a different call.
+      return null;
+    }
+
+    return _pendingCall?.callId ??
+        _callService.currentCallId;
+  }
+
+  bool _isSessionCurrent(
+      int sessionToken,
+      ) {
+    return !_isDisposed &&
+        sessionToken ==
+            _sessionGeneration;
+  }
+
+  // =============================================================
+  // PENDING CALL CLEANUP
+  // =============================================================
+
+  Future<void> _clearPendingCall({
+    required bool dismissNativeUi,
+    String? callIdOverride,
+  }) async {
+    final String? callId =
+        _readOptionalString(
+          callIdOverride,
+        ) ??
+            _pendingCall?.callId;
+
+    _sessionGeneration++;
+
+    _cancelIncomingCallTimeout();
+
+    _pendingCall = null;
+
+    _lastPresentedCallId =
+    null;
+
+    _isShowingIncomingCall =
+    false;
+
+    if (dismissNativeUi &&
+        callId != null) {
+      await _dismissNativeCall(
+        callId,
+      );
+    }
+  }
+
+  // =============================================================
+  // RESET
+  // =============================================================
+
+  void reset() {
+    final String? pendingId =
+        _pendingCall?.callId;
+
+    _sessionGeneration++;
+
+    _cancelIncomingCallTimeout();
+
+    _pendingCall = null;
+
+    _lastPresentedCallId =
+    null;
+
+    _completedCallIds.clear();
+
+    _activeActionCallId =
+    null;
+
+    _isShowingIncomingCall =
+    false;
+
+    if (pendingId != null) {
+      _notificationService.dismiss(
+        pendingId,
+      );
+    }
+  }
+
+  // =============================================================
+  // EVENT EMITTER
+  // =============================================================
+
+  void _emitEvent(
+      BackgroundCallEvent event,
+      ) {
+    if (_isDisposed ||
+        _eventController.isClosed) {
+      return;
+    }
+
+    _eventController.add(
+      event,
+    );
+  }
+
+  // =============================================================
+  // ARGUMENT NORMALIZATION
+  // =============================================================
+
+  Map<String, dynamic>
+  _normalizeArguments(
+      Object? arguments,
+      ) {
+    if (arguments
+    is Map<String, dynamic>) {
+      return Map<String, dynamic>.from(
+        arguments,
+      );
+    }
+
+    if (arguments is Map) {
+      final Map<String, dynamic>
+      normalized =
+      <String, dynamic>{};
+
+      for (final MapEntry<dynamic, dynamic>
+      entry
+      in arguments.entries) {
+        normalized[
+        entry.key.toString()] =
+            entry.value;
+      }
+
+      return normalized;
+    }
+
+    return <String, dynamic>{};
+  }
+
+  String _readCallIdSafely(
+      Map<String, dynamic> map,
+      ) {
+    return _readOptionalString(
+      map['callId'],
+    ) ??
+        '';
+  }
+
+  String? _readOptionalString(
+      Object? value,
+      ) {
+    if (value is! String) {
+      return null;
+    }
+
+    final String normalized =
+    value.trim();
+
+    if (normalized.isEmpty) {
+      return null;
+    }
+
+    return normalized;
+  }
+
+  // =============================================================
+  // ERROR LOGGING
+  // =============================================================
+
+  void _reportError(
+      String source,
+      Object error, [
+        StackTrace? stackTrace,
+      ]) {
+    debugPrint(
+      'JR CALL BackgroundCallService '
+          '[$source] error: $error',
+    );
+
+    if (stackTrace != null) {
+      debugPrintStack(
+        label:
+        'JR CALL BackgroundCallService '
+            '[$source]',
+        stackTrace:
+        stackTrace,
+      );
+    }
+  }
+
+  // =============================================================
+  // DISPOSE
+  // =============================================================
+
+  Future<void> dispose() async {
+    if (_isDisposed) {
+      return;
+    }
+
+    _isDisposed = true;
+
+    WidgetsBinding.instance
+        .removeObserver(
+      this,
+    );
+
+    _platformChannel
+        .setMethodCallHandler(
+      null,
+    );
+
+    _sessionGeneration++;
+
+    _cancelIncomingCallTimeout();
+
+    _pendingCall = null;
+
+    _lastPresentedCallId =
+    null;
+
+    _completedCallIds.clear();
+
+    _activeActionCallId =
+    null;
+
+    _isShowingIncomingCall =
+    false;
+
+    if (!_eventController.isClosed) {
+      await _eventController.close();
+    }
+
+    _isInitialized = false;
+
+    _initializationFuture =
+    null;
+
+    debugPrint(
+      'JR CALL: '
+          'BackgroundCallService disposed.',
+    );
+  }
+}
+
+// ===============================================================
+// END OF FILE
+//
+// FILE 36 PRODUCTION CONTRACT:
+//
+// ✓ Existing BackgroundCallService.instance preserved.
+// ✓ Existing MethodChannel name preserved.
+// ✓ Existing event types preserved.
+// ✓ Existing payload public API preserved.
+// ✓ Existing events stream preserved.
+// ✓ Existing initialization API preserved.
+// ✓ Existing incoming-data API preserved.
+// ✓ Existing accept/reject/end APIs preserved.
+// ✓ Existing restore/reset/dispose APIs preserved.
+//
+// ✓ SignalingService used READ-ONLY here.
+// ✓ No direct updateCallStatus() from background service.
+// ✓ No direct saveCallHistory() from background service.
+// ✓ CallService remains lifecycle/history owner.
+//
+// ✓ Presentation timeout no longer writes TIMEOUT status.
+// ✓ Presentation timeout no longer writes history.
+// ✓ Presentation timeout never ends actual call.
+// ✓ Original createdAt controls remaining presentation time.
+// ✓ Delayed push cannot receive a fresh extra 45 seconds.
+// ✓ Restored push cannot receive a fresh extra 45 seconds.
+// ✓ Future clock skew cannot extend beyond 45 seconds.
+//
+// ✓ Busy rejection delegates to CallService.
+// ✓ Native stale action IDs are rejected.
+// ✓ Completed-call dedupe supports multiple recent calls.
+// ✓ Duplicate incoming presentation protected.
+// ✓ Accepted call is not falsely labeled WebRTC-connected.
+//
+// ✓ NotificationService FILE 35 integration added.
+// ✓ Current localized title/body bridged to native.
+// ✓ Stable native localization keys bridged.
+// ✓ Ordered localization arguments bridged.
+// ✓ No country-specific language hardcoding.
+// ✓ Native platform can map keys to Android/iOS resources.
+//
+// ✓ Firestore Timestamp-like values normalized safely.
+// ✓ Unsupported MethodChannel values cannot break codec encoding.
+// ✓ Platform payload is recursively codec-safe.
+//
+// ✓ No FCM background-handler ownership added.
+// ✓ No PeerConnection ownership added.
+// ✓ No media ownership added.
+// ✓ No ICE ownership added.
+// ✓ No RecoveryManager ownership added.
+// ✓ No UI/design ownership added.
+// ===============================================================

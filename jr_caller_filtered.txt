@@ -1,0 +1,309 @@
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:8:09-05 03:51:49.333 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:9:09-05 03:51:49.419 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:10:09-05 03:51:49.466 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:11:09-05 03:51:49.646 I/ImeTracker( 5822): com.example.jr_call:3a2bf8ff: onShown
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:12:09-05 03:51:49.647 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:13:09-05 03:51:49.673 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:14:09-05 03:51:52.610 D/MediaConstraintsUtils( 5822): mandatory constraints are not a map
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:15:09-05 03:51:52.610 D/MediaConstraintsUtils( 5822): optional constraints are not an array
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:16:09-05 03:51:52.610 I/FlutterWebRTCPlugin( 5822): getUserMedia(audio): mandatory: [], optional: []
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:17:09-05 03:51:52.618 D/FlutterWebRTCPlugin( 5822): MediaStream id: ddf60839-53df-4e35-9304-2bb1c3bc9d44
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:18:09-05 03:51:52.651 I/flutter ( 5822): JR CALL [WebRTCService] PeerConnection and local media initialized.
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:19:09-05 03:51:52.936 I/flutter ( 5822): JR CALL [IceManager]: initialized call=Bdi7j3u7LIehXZkQWK7R role=caller.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:20:09-05 03:51:52.955 D/MediaConstraintsUtils( 5822): mandatory constraints are not a map
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:21:09-05 03:51:52.957 D/MediaConstraintsUtils( 5822): optional constraints are not an array
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:22:09-05 03:51:53.024 D/FlutterWebRTCPlugin( 5822): onIceGatheringChangeGATHERING
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:23:09-05 03:51:53.329 I/flutter ( 5822): JR CALL [WebRTCService] Signaling state -> RTCSignalingState.RTCSignalingStateHaveLocalOffer
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:24:09-05 03:51:53.329 I/flutter ( 5822): JR CALL: WebRTC signaling state -> RTCSignalingState.RTCSignalingStateHaveLocalOffer
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:25:09-05 03:51:53.344 I/flutter ( 5822): JR CALL [WebRTCService] ICE gathering state -> RTCIceGatheringState.RTCIceGatheringStateGathering
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:26:09-05 03:51:53.345 I/flutter ( 5822): JR CALL: ICE gathering state -> RTCIceGatheringState.RTCIceGatheringStateGathering
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:27:09-05 03:51:53.430 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:28:09-05 03:51:53.430 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:29:09-05 03:51:53.430 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:30:09-05 03:51:53.435 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:31:09-05 03:51:53.446 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:32:09-05 03:51:53.446 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:33:09-05 03:51:53.484 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:34:09-05 03:51:53.532 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:35:09-05 03:51:53.544 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:36:09-05 03:51:53.598 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:37:09-05 03:51:53.663 I/ImeTracker( 5822): system_server:73c0e321: onCancelled at PHASE_CLIENT_ON_CONTROLS_CHANGED
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:38:09-05 03:51:54.035 I/example.jr_call( 5822): Background young concurrent mark compact GC freed 2657KB AllocSpace bytes, 0(0B) LOS objects, 14% free, 13MB/16MB, paused 1.808ms,15.678ms total 38.601ms
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:39:09-05 03:51:55.296 I/example.jr_call( 5822): Background young concurrent mark compact GC freed 2531KB AllocSpace bytes, 0(0B) LOS objects, 15% free, 13MB/16MB, paused 197us,9.403ms total 17.818ms
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:40:09-05 03:51:56.070 I/ImeTracker( 5822): com.example.jr_call:5ce1c9cf: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false userId 0 displayId 0
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:41:09-05 03:51:56.071 D/InsetsController( 5822): hide(ime())
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:42:09-05 03:51:56.071 D/InsetsController( 5822): Setting requestedVisibleTypes to 503 (was 511)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:43:09-05 03:51:56.109 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:44:09-05 03:51:56.139 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:45:09-05 03:51:56.251 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:46:09-05 03:51:56.278 I/ImeTracker( 5822): system_server:e812f558: onCancelled at PHASE_CLIENT_ON_CONTROLS_CHANGED
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:47:09-05 03:51:56.287 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:48:09-05 03:51:56.339 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:49:09-05 03:51:56.350 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:50:09-05 03:52:02.979 I/example.jr_call( 5822): Background young concurrent mark compact GC freed 2465KB AllocSpace bytes, 0(0B) LOS objects, 15% free, 13MB/16MB, paused 118us,8.760ms total 14.304ms
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:51:09-05 03:52:33.240 D/FlutterWebRTCPlugin( 5822): onIceGatheringChangeCOMPLETE
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:52:09-05 03:52:33.241 I/flutter ( 5822): JR CALL [WebRTCService] ICE gathering state -> RTCIceGatheringState.RTCIceGatheringStateComplete
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:53:09-05 03:52:33.242 I/flutter ( 5822): JR CALL: ICE gathering state -> RTCIceGatheringState.RTCIceGatheringStateComplete
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:54:09-05 03:52:41.034 I/example.jr_call( 5822): Background young concurrent mark compact GC freed 2626KB AllocSpace bytes, 0(0B) LOS objects, 14% free, 13MB/16MB, paused 127us,14.612ms total 22.917ms
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:55:09-05 03:52:41.589 I/flutter ( 5822): JR CALL [Complete call] error: [cloud_firestore/permission-denied] The caller does not have permission to execute the specified operation.
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:56:09-05 03:52:41.589 I/flutter ( 5822): JR CALL [Complete call]
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:57:09-05 03:52:41.589 I/flutter ( 5822): #0      FirebaseFirestoreHostApi.transactionGet (package:cloud_firestore_platform_interface/src/pigeon/messages.pigeon.dart:1000:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:58:09-05 03:52:41.590 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:59:09-05 03:52:41.590 I/flutter ( 5822): #1      MethodChannelTransaction.get (package:cloud_firestore_platform_interface/src/method_channel/method_channel_transaction.dart:50:22)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:60:09-05 03:52:41.590 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:61:09-05 03:52:41.590 I/flutter ( 5822): #2      Transaction.get (package:cloud_firestore/src/transaction.dart:28:9)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:62:09-05 03:52:41.590 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:63:09-05 03:52:41.590 I/flutter ( 5822): #3      SignalingService.saveCallHistory.<anonymous closure> (package:jr_call/services/call/signaling_service.dart:2224:9)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:64:09-05 03:52:41.590 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:65:09-05 03:52:41.592 I/flutter ( 5822): #4      FirebaseFirestore.runTransaction.<anonymous closure> (package:cloud_firestore/src/firestore.dart:291:18)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:66:09-05 03:52:41.592 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:67:09-05 03:52:41.592 I/flutter ( 5822): #5      MethodChannelFirebaseFirestore.runTransaction.<anonymous closure> (package:cloud_firestore_platform_interface/src/method_channel/method_channel_firestore.dart:278:20)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:68:09-05 03:52:41.592 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:69:09-05 03:52:41.594 I/flutter ( 5822): JR CALL [IceManager]: reset complete.
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:70:09-05 03:52:41.608 D/FlutterWebRTCPlugin( 5822): onConnectionChangeCLOSED
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:71:09-05 03:52:41.766 I/flutter ( 5822): JR CALL [WebRTCService] WebRTC resources released.
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:72:09-05 03:53:05.228 I/flutter ( 5822): [StunTurnService] TURN credential attempt 1/2 failed (functions-unknown).
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:73:09-05 03:53:05.229 I/flutter ( 5822): StunTurnService
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:74:09-05 03:53:05.229 I/flutter ( 5822): #0      CloudFunctionsHostApi.call (package:cloud_functions_platform_interface/src/pigeon/messages.pigeon.dart:84:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:75:09-05 03:53:05.229 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:76:09-05 03:53:05.229 I/flutter ( 5822): #1      MethodChannelHttpsCallable.call (package:cloud_functions_platform_interface/src/method_channel/method_channel_https_callable.dart:33:24)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:77:09-05 03:53:05.229 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:78:09-05 03:53:05.229 I/flutter ( 5822): #2      HttpsCallable.call (package:cloud_functions/src/https_callable.dart:49:37)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:79:09-05 03:53:05.229 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:80:09-05 03:53:05.229 I/flutter ( 5822): #3      StunTurnService._fetchTokensFromCallable (package:jr_call/services/call/stun_turn_service.dart:492:5)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:81:09-05 03:53:05.229 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:82:09-05 03:53:05.229 I/flutter ( 5822): #4      StunTurnService._fetchWithRetry (package:jr_call/services/call/stun_turn_service.dart:383:16)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:83:09-05 03:53:05.229 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:84:09-05 03:53:05.229 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:85:09-05 03:53:05.229 I/flutter ( 5822): #6      StunTurnService._loadTurnCredentialInternal (package:jr_call/services/call/stun_turn_service.dart:330:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:86:09-05 03:53:05.229 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:87:09-05 03:53:05.229 I/flutter ( 5822): #7      StunTurnService._copyConfiguration (package:jr_call/services/call/stun_turn_service.dart:1315:3)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:88:09-05 03:53:05.229 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:89:09-05 03:53:05.229 I/flutter ( 5822): #8      StunTurnService.loadTurnCredential.<anonymous closure> (package:jr_call/services/call/stun_turn_service.dart:303:57)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:90:09-05 03:53:05.229 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:91:09-05 03:53:05.229 I/flutter ( 5822): #9      StunTurnService.refreshConfiguration (package:jr_call/services/call/stun_turn_service.dart:1410:5)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:92:09-05 03:53:05.229 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:93:09-05 03:53:05.229 I/flutter ( 5822): (elided one frame from dart:async)
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:94:09-05 03:53:05.918 I/flutter ( 5822): [StunTurnService] TURN credential attempt 2/2 failed (functions-unknown).
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:95:09-05 03:53:05.918 I/flutter ( 5822): StunTurnService
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:96:09-05 03:53:05.921 I/flutter ( 5822): #0      CloudFunctionsHostApi.call (package:cloud_functions_platform_interface/src/pigeon/messages.pigeon.dart:84:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:97:09-05 03:53:05.921 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:98:09-05 03:53:05.921 I/flutter ( 5822): #1      MethodChannelHttpsCallable.call (package:cloud_functions_platform_interface/src/method_channel/method_channel_https_callable.dart:33:24)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:99:09-05 03:53:05.922 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:100:09-05 03:53:05.923 I/flutter ( 5822): #2      HttpsCallable.call (package:cloud_functions/src/https_callable.dart:49:37)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:101:09-05 03:53:05.923 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:102:09-05 03:53:05.923 I/flutter ( 5822): #3      StunTurnService._fetchTokensFromCallable (package:jr_call/services/call/stun_turn_service.dart:492:5)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:103:09-05 03:53:05.923 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:104:09-05 03:53:05.924 I/flutter ( 5822): #4      StunTurnService._fetchWithRetry (package:jr_call/services/call/stun_turn_service.dart:383:16)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:105:09-05 03:53:05.924 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:106:09-05 03:53:05.924 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:107:09-05 03:53:05.925 I/flutter ( 5822): #6      StunTurnService._loadTurnCredentialInternal (package:jr_call/services/call/stun_turn_service.dart:330:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:108:09-05 03:53:05.925 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:109:09-05 03:53:05.925 I/flutter ( 5822): #7      StunTurnService._copyConfiguration (package:jr_call/services/call/stun_turn_service.dart:1315:3)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:110:09-05 03:53:05.925 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:111:09-05 03:53:05.925 I/flutter ( 5822): #8      StunTurnService.loadTurnCredential.<anonymous closure> (package:jr_call/services/call/stun_turn_service.dart:303:57)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:112:09-05 03:53:05.925 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:113:09-05 03:53:05.925 I/flutter ( 5822): #9      StunTurnService.refreshConfiguration (package:jr_call/services/call/stun_turn_service.dart:1410:5)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:114:09-05 03:53:05.925 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:115:09-05 03:53:05.925 I/flutter ( 5822): (elided one frame from dart:async)
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:116:09-05 03:53:05.928 I/flutter ( 5822): [StunTurnService] TURN credential loading failed; STUN fallback activated (functions-unknown).
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:117:09-05 03:53:05.928 I/flutter ( 5822): StunTurnService
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:118:09-05 03:53:05.929 I/flutter ( 5822): #0      CloudFunctionsHostApi.call (package:cloud_functions_platform_interface/src/pigeon/messages.pigeon.dart:84:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:119:09-05 03:53:05.929 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:120:09-05 03:53:05.929 I/flutter ( 5822): #1      MethodChannelHttpsCallable.call (package:cloud_functions_platform_interface/src/method_channel/method_channel_https_callable.dart:33:24)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:121:09-05 03:53:05.929 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:122:09-05 03:53:05.929 I/flutter ( 5822): #2      HttpsCallable.call (package:cloud_functions/src/https_callable.dart:49:37)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:123:09-05 03:53:05.929 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:124:09-05 03:53:05.929 I/flutter ( 5822): #3      StunTurnService._fetchTokensFromCallable (package:jr_call/services/call/stun_turn_service.dart:492:5)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:125:09-05 03:53:05.929 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:126:09-05 03:53:05.929 I/flutter ( 5822): #4      StunTurnService._fetchWithRetry (package:jr_call/services/call/stun_turn_service.dart:383:16)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:127:09-05 03:53:05.929 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:128:09-05 03:53:05.929 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:129:09-05 03:53:05.929 I/flutter ( 5822): #6      StunTurnService._loadTurnCredentialInternal (package:jr_call/services/call/stun_turn_service.dart:330:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:130:09-05 03:53:05.929 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:131:09-05 03:53:05.929 I/flutter ( 5822): #7      StunTurnService._copyConfiguration (package:jr_call/services/call/stun_turn_service.dart:1315:3)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:132:09-05 03:53:05.929 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:133:09-05 03:53:05.929 I/flutter ( 5822): #8      StunTurnService.loadTurnCredential.<anonymous closure> (package:jr_call/services/call/stun_turn_service.dart:303:57)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:134:09-05 03:53:05.929 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:135:09-05 03:53:05.929 I/flutter ( 5822): #9      StunTurnService.refreshConfiguration (package:jr_call/services/call/stun_turn_service.dart:1410:5)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:136:09-05 03:53:05.929 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:137:09-05 03:53:05.929 I/flutter ( 5822): (elided one frame from dart:async)
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:138:09-05 03:53:05.929 I/flutter ( 5822): StunTurnService: STUN fallback active (functions-unknown).
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:139:09-05 03:54:04.047 I/flutter ( 5822): JR CALL [Persist detached call history] error: [cloud_firestore/permission-denied] The caller does not have permission to execute the specified operation.
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:140:09-05 03:54:04.048 I/flutter ( 5822): JR CALL [Persist detached call history]
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:141:09-05 03:54:04.049 I/flutter ( 5822): #0      FirebaseFirestoreHostApi.transactionGet (package:cloud_firestore_platform_interface/src/pigeon/messages.pigeon.dart:1000:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:142:09-05 03:54:04.050 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:143:09-05 03:54:04.050 I/flutter ( 5822): #1      MethodChannelTransaction.get (package:cloud_firestore_platform_interface/src/method_channel/method_channel_transaction.dart:50:22)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:144:09-05 03:54:04.050 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:145:09-05 03:54:04.050 I/flutter ( 5822): #2      Transaction.get (package:cloud_firestore/src/transaction.dart:28:9)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:146:09-05 03:54:04.050 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:147:09-05 03:54:04.050 I/flutter ( 5822): #3      SignalingService.saveCallHistory.<anonymous closure> (package:jr_call/services/call/signaling_service.dart:2224:9)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:148:09-05 03:54:04.050 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:149:09-05 03:54:04.050 I/flutter ( 5822): #4      FirebaseFirestore.runTransaction.<anonymous closure> (package:cloud_firestore/src/firestore.dart:291:18)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:150:09-05 03:54:04.050 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:151:09-05 03:54:04.050 I/flutter ( 5822): #5      MethodChannelFirebaseFirestore.runTransaction.<anonymous closure> (package:cloud_firestore_platform_interface/src/method_channel/method_channel_firestore.dart:278:20)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:152:09-05 03:54:04.051 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:153:09-05 03:54:04.088 I/ImeTracker( 5822): com.example.jr_call:587e947e: onRequestShow at ORIGIN_CLIENT reason SHOW_SOFT_INPUT fromUser false userId 0 displayId 0
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:154:09-05 03:54:04.088 D/InsetsController( 5822): show(ime())
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:155:09-05 03:54:04.089 D/InsetsController( 5822): Setting requestedVisibleTypes to 511 (was 503)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:156:09-05 03:54:04.116 D/InputConnectionAdaptor( 5822): The input method toggled cursor monitoring on
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:157:09-05 03:54:04.417 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:158:09-05 03:54:04.440 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:159:09-05 03:54:04.474 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:160:09-05 03:54:04.488 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:161:09-05 03:54:04.530 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:162:09-05 03:54:04.549 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:164:09-05 03:54:04.585 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:165:09-05 03:54:04.604 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:166:09-05 03:54:04.619 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:167:09-05 03:54:04.642 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:168:09-05 03:54:04.674 I/example.jr_call( 5822): Background young concurrent mark compact GC freed 2356KB AllocSpace bytes, 0(0B) LOS objects, 14% free, 13MB/16MB, paused 393us,25.824ms total 70.698ms
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:169:09-05 03:54:04.678 I/ImeTracker( 5822): com.example.jr_call:587e947e: onShown
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:170:09-05 03:54:04.679 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:171:09-05 03:54:04.681 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:172:09-05 03:54:07.876 I/flutter ( 5822): [StunTurnService] TURN credential attempt 1/2 failed (functions-unknown).
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:173:09-05 03:54:07.876 I/flutter ( 5822): StunTurnService
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:174:09-05 03:54:07.877 I/flutter ( 5822): #0      CloudFunctionsHostApi.call (package:cloud_functions_platform_interface/src/pigeon/messages.pigeon.dart:84:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:175:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:176:09-05 03:54:07.877 I/flutter ( 5822): #1      MethodChannelHttpsCallable.call (package:cloud_functions_platform_interface/src/method_channel/method_channel_https_callable.dart:33:24)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:177:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:178:09-05 03:54:07.877 I/flutter ( 5822): #2      HttpsCallable.call (package:cloud_functions/src/https_callable.dart:49:37)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:179:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:180:09-05 03:54:07.877 I/flutter ( 5822): #3      StunTurnService._fetchTokensFromCallable (package:jr_call/services/call/stun_turn_service.dart:492:5)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:181:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:182:09-05 03:54:07.877 I/flutter ( 5822): #4      StunTurnService._fetchWithRetry (package:jr_call/services/call/stun_turn_service.dart:383:16)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:183:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:184:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:185:09-05 03:54:07.877 I/flutter ( 5822): #6      StunTurnService._loadTurnCredentialInternal (package:jr_call/services/call/stun_turn_service.dart:330:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:186:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:187:09-05 03:54:07.877 I/flutter ( 5822): #7      StunTurnService._copyConfiguration (package:jr_call/services/call/stun_turn_service.dart:1315:3)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:188:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:189:09-05 03:54:07.877 I/flutter ( 5822): #8      StunTurnService.loadTurnCredential.<anonymous closure> (package:jr_call/services/call/stun_turn_service.dart:303:57)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:190:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:191:09-05 03:54:07.877 I/flutter ( 5822): #9      CallService._loadIceConfiguration (package:jr_call/services/call/call_service.dart:1406:14)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:192:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:193:09-05 03:54:07.877 I/flutter ( 5822): #10     CallService._initializePeerConnection (package:jr_call/services/call/call_service.dart:1371:5)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:194:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:195:09-05 03:54:07.877 I/flutter ( 5822): #11     CallService.startCall (package:jr_call/services/call/call_service.dart:612:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:196:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:197:09-05 03:54:07.877 I/flutter ( 5822): #12     _ContactsScreenState._startCall (package:jr_call/screens/contacts_screen.dart:992:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:198:09-05 03:54:07.877 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:199:09-05 03:54:07.877 I/flutter ( 5822): (elided one frame from dart:async)
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:200:09-05 03:54:08.579 I/flutter ( 5822): [StunTurnService] TURN credential attempt 2/2 failed (functions-unknown).
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:201:09-05 03:54:08.579 I/flutter ( 5822): StunTurnService
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:202:09-05 03:54:08.580 I/flutter ( 5822): #0      CloudFunctionsHostApi.call (package:cloud_functions_platform_interface/src/pigeon/messages.pigeon.dart:84:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:203:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:204:09-05 03:54:08.580 I/flutter ( 5822): #1      MethodChannelHttpsCallable.call (package:cloud_functions_platform_interface/src/method_channel/method_channel_https_callable.dart:33:24)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:205:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:206:09-05 03:54:08.580 I/flutter ( 5822): #2      HttpsCallable.call (package:cloud_functions/src/https_callable.dart:49:37)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:207:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:208:09-05 03:54:08.580 I/flutter ( 5822): #3      StunTurnService._fetchTokensFromCallable (package:jr_call/services/call/stun_turn_service.dart:492:5)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:209:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:210:09-05 03:54:08.580 I/flutter ( 5822): #4      StunTurnService._fetchWithRetry (package:jr_call/services/call/stun_turn_service.dart:383:16)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:211:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:212:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:213:09-05 03:54:08.580 I/flutter ( 5822): #6      StunTurnService._loadTurnCredentialInternal (package:jr_call/services/call/stun_turn_service.dart:330:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:214:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:215:09-05 03:54:08.580 I/flutter ( 5822): #7      StunTurnService._copyConfiguration (package:jr_call/services/call/stun_turn_service.dart:1315:3)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:216:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:217:09-05 03:54:08.580 I/flutter ( 5822): #8      StunTurnService.loadTurnCredential.<anonymous closure> (package:jr_call/services/call/stun_turn_service.dart:303:57)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:218:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:219:09-05 03:54:08.580 I/flutter ( 5822): #9      CallService._loadIceConfiguration (package:jr_call/services/call/call_service.dart:1406:14)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:220:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:221:09-05 03:54:08.580 I/flutter ( 5822): #10     CallService._initializePeerConnection (package:jr_call/services/call/call_service.dart:1371:5)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:222:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:223:09-05 03:54:08.580 I/flutter ( 5822): #11     CallService.startCall (package:jr_call/services/call/call_service.dart:612:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:224:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:225:09-05 03:54:08.580 I/flutter ( 5822): #12     _ContactsScreenState._startCall (package:jr_call/screens/contacts_screen.dart:992:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:226:09-05 03:54:08.580 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:227:09-05 03:54:08.580 I/flutter ( 5822): (elided one frame from dart:async)
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:228:09-05 03:54:08.580 I/flutter ( 5822): [StunTurnService] TURN credential loading failed; STUN fallback activated (functions-unknown).
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:229:09-05 03:54:08.580 I/flutter ( 5822): StunTurnService
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:230:09-05 03:54:08.581 I/flutter ( 5822): #0      CloudFunctionsHostApi.call (package:cloud_functions_platform_interface/src/pigeon/messages.pigeon.dart:84:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:231:09-05 03:54:08.581 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:232:09-05 03:54:08.581 I/flutter ( 5822): #1      MethodChannelHttpsCallable.call (package:cloud_functions_platform_interface/src/method_channel/method_channel_https_callable.dart:33:24)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:233:09-05 03:54:08.581 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:234:09-05 03:54:08.582 I/flutter ( 5822): #2      HttpsCallable.call (package:cloud_functions/src/https_callable.dart:49:37)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:235:09-05 03:54:08.582 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:236:09-05 03:54:08.582 I/flutter ( 5822): #3      StunTurnService._fetchTokensFromCallable (package:jr_call/services/call/stun_turn_service.dart:492:5)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:237:09-05 03:54:08.582 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:238:09-05 03:54:08.582 I/flutter ( 5822): #4      StunTurnService._fetchWithRetry (package:jr_call/services/call/stun_turn_service.dart:383:16)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:239:09-05 03:54:08.582 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:240:09-05 03:54:08.582 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:241:09-05 03:54:08.582 I/flutter ( 5822): #6      StunTurnService._loadTurnCredentialInternal (package:jr_call/services/call/stun_turn_service.dart:330:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:242:09-05 03:54:08.583 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:243:09-05 03:54:08.583 I/flutter ( 5822): #7      StunTurnService._copyConfiguration (package:jr_call/services/call/stun_turn_service.dart:1315:3)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:244:09-05 03:54:08.583 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:245:09-05 03:54:08.583 I/flutter ( 5822): #8      StunTurnService.loadTurnCredential.<anonymous closure> (package:jr_call/services/call/stun_turn_service.dart:303:57)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:246:09-05 03:54:08.583 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:247:09-05 03:54:08.583 I/flutter ( 5822): #9      CallService._loadIceConfiguration (package:jr_call/services/call/call_service.dart:1406:14)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:248:09-05 03:54:08.583 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:249:09-05 03:54:08.583 I/flutter ( 5822): #10     CallService._initializePeerConnection (package:jr_call/services/call/call_service.dart:1371:5)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:250:09-05 03:54:08.583 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:251:09-05 03:54:08.583 I/flutter ( 5822): #11     CallService.startCall (package:jr_call/services/call/call_service.dart:612:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:252:09-05 03:54:08.583 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:253:09-05 03:54:08.583 I/flutter ( 5822): #12     _ContactsScreenState._startCall (package:jr_call/screens/contacts_screen.dart:992:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:254:09-05 03:54:08.583 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:255:09-05 03:54:08.583 I/flutter ( 5822): (elided one frame from dart:async)
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:256:09-05 03:54:08.584 I/flutter ( 5822): StunTurnService: STUN fallback active (functions-unknown).
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:257:09-05 03:54:08.600 D/MediaConstraintsUtils( 5822): mandatory constraints are not a map
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:258:09-05 03:54:08.600 D/MediaConstraintsUtils( 5822): optional constraints are not an array
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:259:09-05 03:54:08.600 I/FlutterWebRTCPlugin( 5822): getUserMedia(audio): mandatory: [], optional: []
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:260:09-05 03:54:08.605 D/FlutterWebRTCPlugin( 5822): MediaStream id: 9afb7213-0545-4d67-bd48-bc586a5f6e7b
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:261:09-05 03:54:08.676 I/flutter ( 5822): JR CALL [WebRTCService] PeerConnection and local media initialized.
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:262:09-05 03:54:08.996 I/flutter ( 5822): JR CALL [IceManager]: initialized call=Dhjq34cjTruS5OtxNm1r role=caller.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:263:09-05 03:54:09.001 D/MediaConstraintsUtils( 5822): mandatory constraints are not a map
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:264:09-05 03:54:09.002 D/MediaConstraintsUtils( 5822): optional constraints are not an array
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:265:09-05 03:54:09.066 D/FlutterWebRTCPlugin( 5822): onIceGatheringChangeGATHERING
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:266:09-05 03:54:09.072 I/flutter ( 5822): JR CALL [WebRTCService] Signaling state -> RTCSignalingState.RTCSignalingStateHaveLocalOffer
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:267:09-05 03:54:09.073 I/flutter ( 5822): JR CALL: WebRTC signaling state -> RTCSignalingState.RTCSignalingStateHaveLocalOffer
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:268:09-05 03:54:09.083 I/flutter ( 5822): JR CALL [WebRTCService] ICE gathering state -> RTCIceGatheringState.RTCIceGatheringStateGathering
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:269:09-05 03:54:09.084 I/flutter ( 5822): JR CALL: ICE gathering state -> RTCIceGatheringState.RTCIceGatheringStateGathering
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:270:09-05 03:54:09.376 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:271:09-05 03:54:09.380 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:272:09-05 03:54:09.412 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:273:09-05 03:54:09.413 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:274:09-05 03:54:09.483 I/ImeTracker( 5822): system_server:1d731278: onCancelled at PHASE_CLIENT_ON_CONTROLS_CHANGED
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:275:09-05 03:54:09.511 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:276:09-05 03:54:09.514 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:277:09-05 03:54:09.560 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:278:09-05 03:54:09.560 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:279:09-05 03:54:09.574 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:280:09-05 03:54:09.574 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:281:09-05 03:54:09.577 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:282:09-05 03:54:09.579 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:283:09-05 03:54:09.632 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:284:09-05 03:54:09.632 D/FlutterWebRTCPlugin( 5822): onIceCandidate
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:285:09-05 03:54:09.711 I/example.jr_call( 5822): Background young concurrent mark compact GC freed 2318KB AllocSpace bytes, 0(0B) LOS objects, 13% free, 14MB/16MB, paused 108us,16.007ms total 21.254ms
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:286:09-05 03:54:10.634 I/example.jr_call( 5822): Background young concurrent mark compact GC freed 2265KB AllocSpace bytes, 0(0B) LOS objects, 13% free, 14MB/16MB, paused 121us,16.446ms total 22.679ms
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:287:09-05 03:54:10.752 I/ImeTracker( 5822): com.example.jr_call:30c69988: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false userId 0 displayId 0
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:288:09-05 03:54:10.752 D/InsetsController( 5822): hide(ime())
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:289:09-05 03:54:10.752 D/InsetsController( 5822): Setting requestedVisibleTypes to 503 (was 511)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:290:09-05 03:54:10.769 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:291:09-05 03:54:10.815 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:292:09-05 03:54:10.826 I/ImeTracker( 5822): system_server:dced3e3c: onCancelled at PHASE_CLIENT_ON_CONTROLS_CHANGED
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:293:09-05 03:54:10.859 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:294:09-05 03:54:10.870 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:295:09-05 03:54:10.980 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:296:09-05 03:54:11.024 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:297:09-05 03:54:11.029 D/FlutterJNI( 5822): Sending viewport metrics to the engine.
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:298:09-05 03:54:11.843 I/example.jr_call( 5822): Background young concurrent mark compact GC freed 2290KB AllocSpace bytes, 0(0B) LOS objects, 13% free, 14MB/16MB, paused 120us,7.922ms total 12.833ms
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:299:09-05 03:54:12.867 I/example.jr_call( 5822): Background young concurrent mark compact GC freed 2144KB AllocSpace bytes, 0(0B) LOS objects, 12% free, 14MB/16MB, paused 96us,10.231ms total 14.679ms
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:300:09-05 03:54:16.684 I/example.jr_call( 5822): Background young concurrent mark compact GC freed 2201KB AllocSpace bytes, 0(0B) LOS objects, 12% free, 14MB/16MB, paused 403us,7.424ms total 23.212ms
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:301:09-05 03:54:16.763 I/flutter ( 5822): JR CALL [Persist remote terminal call history] error: [cloud_firestore/permission-denied] The caller does not have permission to execute the specified operation.
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:302:09-05 03:54:16.763 I/flutter ( 5822): JR CALL [Persist remote terminal call history]
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:303:09-05 03:54:16.764 I/flutter ( 5822): #0      FirebaseFirestoreHostApi.transactionGet (package:cloud_firestore_platform_interface/src/pigeon/messages.pigeon.dart:1000:7)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:304:09-05 03:54:16.765 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:305:09-05 03:54:16.765 I/flutter ( 5822): #1      MethodChannelTransaction.get (package:cloud_firestore_platform_interface/src/method_channel/method_channel_transaction.dart:50:22)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:306:09-05 03:54:16.765 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:307:09-05 03:54:16.765 I/flutter ( 5822): #2      Transaction.get (package:cloud_firestore/src/transaction.dart:28:9)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:308:09-05 03:54:16.765 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:309:09-05 03:54:16.765 I/flutter ( 5822): #3      SignalingService.saveCallHistory.<anonymous closure> (package:jr_call/services/call/signaling_service.dart:2224:9)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:310:09-05 03:54:16.765 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:311:09-05 03:54:16.765 I/flutter ( 5822): #4      FirebaseFirestore.runTransaction.<anonymous closure> (package:cloud_firestore/src/firestore.dart:291:18)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:312:09-05 03:54:16.766 I/flutter ( 5822): <asynchronous suspension>
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:313:09-05 03:54:16.766 I/flutter ( 5822): #5      MethodChannelFirebaseFirestore.runTransaction.<anonymous closure> (package:cloud_firestore_platform_interface/src/method_channel/method_channel_firestore.dart:278:20)
+  E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:314:09-05 03:54:16.767 I/flutter ( 5822): <asynchronous suspension>
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:315:09-05 03:54:16.768 I/flutter ( 5822): JR CALL [IceManager]: reset complete.
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:316:09-05 03:54:16.775 D/FlutterWebRTCPlugin( 5822): onConnectionChangeCLOSED
+> E:\AndroidStudioProjects\jr_call\jr_caller_live.txt:317:09-05 03:54:16.931 I/flutter ( 5822): JR CALL [WebRTCService] WebRTC resources released.

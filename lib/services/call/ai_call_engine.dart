@@ -1,479 +1,1000 @@
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
 
-import 'ai_video_engine.dart';
-import 'ai_voice_engine.dart';
-import 'bitrate_controller.dart';
-import 'call_quality_monitor.dart';
+import '../../models/network_model.dart';
 import 'network_optimizer.dart';
+import 'video_manager.dart';
 
 // ===========================================================
 // JR CALL
-// File: ai_call_engine.dart
-// Location: lib/services/call/ai_call_engine.dart
+// File: ai_video_engine.dart
+// Location: lib/services/call/ai_video_engine.dart
 //
-// Description:
-// Central AI call-optimization coordinator.
+// FINAL PRODUCTION AI-ASSISTED VIDEO OPTIMIZATION COORDINATOR.
+//
+// IMPORTANT ARCHITECTURE:
+//
+// This file belongs to:
+//
+// lib/services/call/
+//
+// Therefore it uses:
+//
+// lib/services/call/video_manager.dart
+//
+// It MUST NOT be mixed with:
+//
+// lib/services/managers/video_manager.dart
 //
 // Architecture:
 //
-// CallQualityMonitor
-//        ↓
-// AICallEngine
-//        ↓
-// ┌───────────────┬───────────────┐
-// │ AIVoiceEngine │ AIVideoEngine │
-// └───────────────┴───────────────┘
-//        ↓
-// NetworkOptimizer / Audio-Video Managers
+// NetworkManager
+//      ↓
+// NetworkOptimizer
+//      ↓
+// AIVideoEngine
+//      ↓
+// CALL-LAYER VideoManager
 //
 // Ownership:
-// - CallQualityMonitor owns quality metrics
-// - NetworkOptimizer owns optimization policy
-// - AIVoiceEngine owns voice optimization decisions
-// - AIVideoEngine owns video optimization decisions
-// - BitrateController owns bitrate-controller compatibility
-// - AICallEngine coordinates them only
+//
+// NetworkManager:
+// - Network measurement.
+//
+// NetworkOptimizer:
+// - Adaptive media policy.
+//
+// CALL-LAYER VideoManager:
+// - Video adaptive settings.
+// - Video presentation/enhancement policy application.
+//
+// AIVideoEngine:
+// - Coordinates AI-assisted video decisions.
+//
+// WebRTC / sender layer:
+// - Actual transport ownership.
 //
 // Rules:
-// - No direct network polling
-// - No direct WebRTC lifecycle ownership
-// - No signaling
-// - No ICE
-// - No recovery duplication
-// - No duplicate timer
-// - No duplicate quality monitor
+//
+// - No NetworkHelper polling.
+// - No duplicate timers.
+// - No direct PeerConnection lifecycle.
+// - No signaling.
+// - No ICE.
+// - No recovery duplication.
+// - No duplicate MediaStream acquisition.
+// - No manager-layer VideoManager mixing.
+// - No UI/design changes.
 // ===========================================================
 
-class AICallEngine {
-  AICallEngine._();
+class AIVideoEngine extends ChangeNotifier {
+  AIVideoEngine._();
 
-  static final AICallEngine instance = AICallEngine._();
-
-  // ===========================================================
-  // Dependencies
-  // ===========================================================
-
-  final AIVoiceEngine voiceEngine = AIVoiceEngine.instance;
-
-  final AIVideoEngine videoEngine = AIVideoEngine.instance;
-
-  final NetworkOptimizer optimizer = NetworkOptimizer.instance;
-
-  final BitrateController bitrateController = BitrateController.instance;
-
-  final CallQualityMonitor qualityMonitor = CallQualityMonitor.instance;
+  static final AIVideoEngine instance =
+  AIVideoEngine._();
 
   // ===========================================================
-  // Runtime State
+  // DEPENDENCIES
   // ===========================================================
 
-  bool _running = false;
-  bool _starting = false;
-  bool _stopping = false;
+  final NetworkOptimizer _networkOptimizer =
+      NetworkOptimizer.instance;
+
+  final VideoManager _videoManager =
+      VideoManager.instance;
+
+  // ===========================================================
+  // RUNTIME STATE
+  // ===========================================================
+
+  bool _initialized = false;
+
+  bool _initializing = false;
+
+  bool _aiEnabled = true;
+
   bool _optimizing = false;
-  bool _disposed = false;
 
   bool _optimizationPending = false;
 
+  bool _disposed = false;
+
   int _generation = 0;
 
-  Future<void>? _startFuture;
-  Future<void>? _stopFuture;
+  int? _activeInitializationGeneration;
 
-  CallQualityMetrics? _latestMetrics;
+  Future<void>? _initializationFuture;
+
+  Future<void>? _optimizationFuture;
+
+  NetworkQuality _networkQuality =
+      NetworkQuality.good;
+
+  int _bitrate = 1500000;
+
+  int _fps = 30;
+
+  int _width = 1280;
+
+  int _height = 720;
 
   Object? _lastError;
 
   // ===========================================================
-  // Public State
+  // PUBLIC STATE
   // ===========================================================
 
-  bool get isRunning => _running;
+  bool get initialized =>
+      _initialized;
 
-  bool get isStarting => _starting;
+  bool get isInitialized =>
+      _initialized;
 
-  bool get isStopping => _stopping;
+  bool get isInitializing =>
+      _initializing;
 
-  bool get isOptimizing => _optimizing;
+  bool get aiEnabled =>
+      _aiEnabled;
 
-  bool get isDisposed => _disposed;
+  bool get isOptimizing =>
+      _optimizing;
 
-  CallQualityMetrics? get latestMetrics => _latestMetrics;
+  bool get isDisposed =>
+      _disposed;
 
-  Object? get lastError => _lastError;
+  NetworkQuality get networkQuality =>
+      _networkQuality;
+
+  int get bitrate =>
+      _bitrate;
+
+  int get fps =>
+      _fps;
+
+  int get width =>
+      _width;
+
+  int get height =>
+      _height;
+
+  Object? get lastError =>
+      _lastError;
+
+  Map<String, int> get resolution =>
+      Map<String, int>.unmodifiable(
+        <String, int>{
+          'width': _width,
+          'height': _height,
+        },
+      );
 
   // ===========================================================
-  // Start AI Engine
+  // INITIALIZATION
   // ===========================================================
 
-  Future<void> start() {
+  Future<void> initialize() {
     _ensureUsable();
 
-    if (_running) {
+    if (_initialized) {
       return Future<void>.value();
     }
 
-    final existing = _startFuture;
+    final Future<void>? active =
+        _initializationFuture;
 
-    if (existing != null) {
-      return existing;
+    if (active != null) {
+      return active;
     }
 
-    final generation = _generation;
+    final int generation =
+        _generation;
 
-    final future = _startInternal(generation);
+    final Future<void> operation =
+    _initializeInternal(
+      generation,
+    );
 
-    _startFuture = future;
+    late final Future<void> tracked;
 
-    return future.whenComplete(() {
-      if (identical(_startFuture, future)) {
-        _startFuture = null;
+    tracked = operation.whenComplete(() {
+      if (identical(
+        _initializationFuture,
+        tracked,
+      )) {
+        _initializationFuture = null;
       }
     });
+
+    _initializationFuture =
+        tracked;
+
+    return tracked;
   }
 
-  Future<void> _startInternal(int generation) async {
-    if (!_isGenerationValid(generation)) {
+  Future<void> _initializeInternal(
+      int generation,
+      ) async {
+    if (!_isGenerationValid(
+      generation,
+    )) {
       return;
     }
 
-    _starting = true;
-    _lastError = null;
+    _initializing =
+    true;
+
+    _activeInitializationGeneration =
+        generation;
+
+    _lastError =
+    null;
+
+    _notifySafely();
 
     try {
-      if (!optimizer.isInitialized) {
-        await optimizer.initialize();
+      if (!_networkOptimizer.isInitialized) {
+        await _networkOptimizer.initialize();
       }
 
-      if (!_isGenerationValid(generation)) {
+      if (!_isGenerationValid(
+        generation,
+      )) {
         return;
       }
 
-      await voiceEngine.initialize();
+      if (!_videoManager.isInitialized) {
+        await _videoManager.initialize();
+      }
 
-      if (!_isGenerationValid(generation)) {
+      if (!_isGenerationValid(
+        generation,
+      )) {
         return;
       }
 
-      await videoEngine.initialize();
+      final _VideoPolicySnapshot? policy =
+      await _captureVideoPolicy(
+        generation,
+      );
 
-      if (!_isGenerationValid(generation)) {
+      if (!_isGenerationValid(
+        generation,
+      )) {
         return;
       }
 
-      // Must become active before CallQualityMonitor starts,
-      // because its first forced metrics emission can feed
-      // processMetrics() immediately.
-      _running = true;
-
-      await qualityMonitor.start();
-
-      if (!_isGenerationValid(generation)) {
-        _running = false;
-        return;
+      if (policy != null) {
+        _applyPolicyState(
+          policy,
+        );
       }
 
-      debugPrint('JR CALL: AICallEngine started.');
+      _initialized =
+      true;
+
+      _notifySafely();
+
+      _debugPrint(
+        'initialized.',
+      );
     } catch (error, stackTrace) {
-      _running = false;
-      _lastError = error;
+      if (_isGenerationValid(
+        generation,
+      )) {
+        _initialized =
+        false;
 
-      _reportError('start', error, stackTrace);
+        _lastError =
+            error;
+
+        _reportError(
+          'initialize',
+          error,
+          stackTrace,
+        );
+      }
 
       rethrow;
     } finally {
-      _starting = false;
-    }
-  }
+      if (_activeInitializationGeneration ==
+          generation) {
+        _activeInitializationGeneration =
+        null;
 
-  // ===========================================================
-  // Stop AI Engine
-  // ===========================================================
+        _initializing =
+        false;
 
-  Future<void> stop() {
-    if (_disposed) {
-      return Future<void>.value();
-    }
-
-    final existing = _stopFuture;
-
-    if (existing != null) {
-      return existing;
-    }
-
-    final future = _stopInternal();
-
-    _stopFuture = future;
-
-    return future.whenComplete(() {
-      if (identical(_stopFuture, future)) {
-        _stopFuture = null;
+        _notifySafely();
       }
-    });
+    }
   }
 
-  Future<void> _stopInternal() async {
-    if (_stopping) {
+  Future<void> _ensureInitialized() async {
+    _ensureUsable();
+
+    if (_initialized) {
       return;
     }
 
-    _stopping = true;
+    await initialize();
+  }
 
-    // Invalidate pending start/optimization operations.
+  // ===========================================================
+  // AI ENABLE / DISABLE
+  // ===========================================================
+
+  Future<void> enableAI() async {
+    _ensureUsable();
+
+    if (_aiEnabled) {
+      return;
+    }
+
+    _aiEnabled =
+    true;
+
+    _lastError =
+    null;
+
+    _notifySafely();
+  }
+
+  Future<void> disableAI() async {
+    _ensureUsable();
+
+    if (!_aiEnabled) {
+      return;
+    }
+
+    // Invalidate in-flight AI policy work before it can apply
+    // additional video changes.
+
     _generation++;
 
-    try {
-      _running = false;
-      _optimizationPending = false;
+    _aiEnabled =
+    false;
 
-      qualityMonitor.stop();
+    _optimizationPending =
+    false;
 
-      debugPrint('JR CALL: AICallEngine stopped.');
-    } catch (error, stackTrace) {
-      _lastError = error;
+    _notifySafely();
+  }
 
-      _reportError('stop', error, stackTrace);
-    } finally {
-      _stopping = false;
+  Future<void> setAIEnabled(
+      bool enabled,
+      ) async {
+    if (enabled) {
+      await enableAI();
+    } else {
+      await disableAI();
     }
   }
 
   // ===========================================================
-  // Metrics Feed
+  // NETWORK ANALYSIS
   // ===========================================================
 
-  /// Called synchronously by CallQualityMonitor.
-  ///
-  /// Expensive asynchronous optimization is serialized below.
-  void processMetrics(CallQualityMetrics metrics) {
-    if (_disposed || !_running) {
+  Future<void> analyzeNetwork() async {
+    await _ensureInitialized();
+
+    if (_disposed) {
       return;
     }
 
-    _latestMetrics = metrics;
+    final int generation =
+        _generation;
 
-    if (_optimizing) {
-      _optimizationPending = true;
+    final _VideoPolicySnapshot? policy =
+    await _captureVideoPolicy(
+      generation,
+    );
+
+    if (!_isGenerationValid(
+      generation,
+    ) ||
+        policy == null) {
       return;
     }
 
-    unawaited(_processMetricsInternal());
+    _applyPolicyState(
+      policy,
+    );
+
+    _notifySafely();
   }
 
-  Future<void> _processMetricsInternal() async {
-    if (_disposed || !_running || _optimizing) {
+  // ===========================================================
+  // VIDEO OPTIMIZATION
+  // ===========================================================
+
+  Future<void> optimizeVideo() async {
+    await _ensureInitialized();
+
+    if (_disposed ||
+        !_aiEnabled) {
       return;
     }
 
-    _optimizing = true;
+    final Future<void>? active =
+        _optimizationFuture;
 
-    final generation = _generation;
+    if (active != null) {
+      _optimizationPending =
+      true;
+
+      await active;
+
+      return;
+    }
+
+    final int generation =
+        _generation;
+
+    final Future<void> operation =
+    _optimizeVideoInternal(
+      generation,
+    );
+
+    late final Future<void> tracked;
+
+    tracked = operation.whenComplete(() {
+      if (identical(
+        _optimizationFuture,
+        tracked,
+      )) {
+        _optimizationFuture = null;
+      }
+    });
+
+    _optimizationFuture =
+        tracked;
+
+    await tracked;
+  }
+
+  Future<void> _optimizeVideoInternal(
+      int generation,
+      ) async {
+    if (!_isGenerationValid(
+      generation,
+    ) ||
+        !_aiEnabled) {
+      return;
+    }
+
+    _optimizing =
+    true;
+
+    _lastError =
+    null;
+
+    _notifySafely();
 
     try {
       do {
-        _optimizationPending = false;
+        _optimizationPending =
+        false;
 
-        if (!_isGenerationValid(generation) || !_running) {
+        if (!_isGenerationValid(
+          generation,
+        ) ||
+            !_aiEnabled) {
           break;
         }
 
-        final metrics = _latestMetrics;
+        final _VideoPolicySnapshot? policy =
+        await _captureVideoPolicy(
+          generation,
+        );
 
-        if (metrics == null) {
+        if (!_isGenerationValid(
+          generation,
+        ) ||
+            !_aiEnabled ||
+            policy == null) {
           break;
         }
 
-        await _applyMetricPolicy(metrics, generation);
-      } while (_optimizationPending &&
-          _isGenerationValid(generation) &&
-          _running);
+        _applyPolicyState(
+          policy,
+        );
+
+        // -----------------------------------------------------
+        // NETWORK UNAVAILABLE
+        //
+        // Do not automatically turn the user's camera off.
+        //
+        // Temporary network loss/recovery must not overwrite
+        // explicit user video state.
+        // -----------------------------------------------------
+
+        if (!policy.network.isConnected ||
+            policy.network.quality ==
+                NetworkQuality.offline) {
+          continue;
+        }
+
+        // -----------------------------------------------------
+        // VIDEO AVAILABILITY POLICY
+        //
+        // This remains recommendation state only.
+        //
+        // Do not silently enable video if the user explicitly
+        // disabled their camera.
+        // -----------------------------------------------------
+
+        if (!policy.videoAllowed) {
+          continue;
+        }
+
+        if (!_videoManager.videoEnabled) {
+          continue;
+        }
+
+        // -----------------------------------------------------
+        // APPLY CALL-LAYER ADAPTIVE SETTINGS
+        // -----------------------------------------------------
+
+        await _videoManager
+            .applyAdaptiveSettings(
+          width: policy.width,
+          height: policy.height,
+          fps: policy.fps,
+          bitrate: policy.bitrate,
+        );
+
+        if (!_isGenerationValid(
+          generation,
+        ) ||
+            !_aiEnabled) {
+          break;
+        }
+
+        await _applyEnhancementPolicy(
+          policy,
+          generation,
+        );
+      } while (
+      _optimizationPending &&
+          _isGenerationValid(
+            generation,
+          ) &&
+          _aiEnabled);
     } catch (error, stackTrace) {
-      _lastError = error;
+      if (_isGenerationValid(
+        generation,
+      )) {
+        _lastError =
+            error;
 
-      _reportError('metrics optimization', error, stackTrace);
+        _reportError(
+          'optimizeVideo',
+          error,
+          stackTrace,
+        );
+      }
     } finally {
-      _optimizing = false;
+      _optimizing =
+      false;
 
-      if (_optimizationPending && _running && !_disposed) {
-        _optimizationPending = false;
-
-        unawaited(_processMetricsInternal());
-      }
+      _notifySafely();
     }
   }
 
-  Future<void> _applyMetricPolicy(
-    CallQualityMetrics metrics,
-    int generation,
-  ) async {
-    if (!_isGenerationValid(generation) || !_running) {
+  // ===========================================================
+  // CONSISTENT VIDEO POLICY SNAPSHOT
+  //
+  // NetworkOptimizer.recommendedProfile is asynchronous.
+  //
+  // Never treat Future<Map<...>> as a synchronous Map.
+  // ===========================================================
+
+  Future<_VideoPolicySnapshot?>
+  _captureVideoPolicy(
+      int generation,
+      ) async {
+    const int maxAttempts =
+    3;
+
+    for (int attempt = 0;
+    attempt < maxAttempts;
+    attempt++) {
+      if (!_isGenerationValid(
+        generation,
+      )) {
+        return null;
+      }
+
+      final NetworkModel network =
+          _networkOptimizer.currentNetwork;
+
+      final Map<String, dynamic> profile =
+      await _networkOptimizer
+          .recommendedProfile;
+
+      if (!_isGenerationValid(
+        generation,
+      )) {
+        return null;
+      }
+
+      final bool noiseReduction =
+      await _networkOptimizer
+          .enableNoiseReduction;
+
+      if (!_isGenerationValid(
+        generation,
+      )) {
+        return null;
+      }
+
+      final bool hdEnabled =
+      await _networkOptimizer
+          .enableHD;
+
+      if (!_isGenerationValid(
+        generation,
+      )) {
+        return null;
+      }
+
+      final bool superResolution =
+      await _networkOptimizer
+          .enableSuperResolution;
+
+      if (!_isGenerationValid(
+        generation,
+      )) {
+        return null;
+      }
+
+      if (!identical(
+        network,
+        _networkOptimizer.currentNetwork,
+      )) {
+        continue;
+      }
+
+      final int bitrate =
+          _readNonNegativeInt(
+            profile[
+            'videoBitrate'],
+          ) ??
+              0;
+
+      final int fps =
+          _readNonNegativeInt(
+            profile['fps'],
+          ) ??
+              0;
+
+      final int width =
+          _readPositiveInt(
+            profile['width'],
+          ) ??
+              640;
+
+      final int height =
+          _readPositiveInt(
+            profile['height'],
+          ) ??
+              360;
+
+      final bool videoAllowed =
+          profile['videoEnabled'] ==
+              true;
+
+      return _VideoPolicySnapshot(
+        network:
+        network,
+        bitrate:
+        bitrate,
+        fps:
+        fps,
+        width:
+        width,
+        height:
+        height,
+        videoAllowed:
+        videoAllowed,
+        noiseReduction:
+        noiseReduction,
+        hdEnabled:
+        hdEnabled,
+        superResolution:
+        superResolution,
+      );
+    }
+
+    // Continuous network churn:
+    // do not manufacture a mixed policy.
+
+    return null;
+  }
+
+  // ===========================================================
+  // POLICY STATE
+  // ===========================================================
+
+  void _applyPolicyState(
+      _VideoPolicySnapshot policy,
+      ) {
+    _networkQuality =
+        policy.network.quality;
+
+    _bitrate =
+        policy.bitrate;
+
+    _fps =
+        policy.fps;
+
+    _width =
+        policy.width;
+
+    _height =
+        policy.height;
+  }
+
+  // ===========================================================
+  // ENHANCEMENT POLICY
+  // ===========================================================
+
+  Future<void> _applyEnhancementPolicy(
+      _VideoPolicySnapshot policy,
+      int generation,
+      ) async {
+    if (!_isGenerationValid(
+      generation,
+    ) ||
+        !_aiEnabled) {
       return;
     }
 
-    // Voice processing remains useful for every active call.
-    await voiceEngine.optimizeAudio();
+    await _videoManager
+        .enableNoiseReduction(
+      policy.noiseReduction,
+    );
 
-    if (!_isGenerationValid(generation) || !_running) {
+    if (!_isGenerationValid(
+      generation,
+    ) ||
+        !_aiEnabled) {
       return;
     }
 
-    switch (metrics.recommendation) {
-      case CallRecommendation.increaseBitrate:
-      case CallRecommendation.decreaseBitrate:
-      case CallRecommendation.increaseFps:
-      case CallRecommendation.decreaseFps:
-      case CallRecommendation.reduceResolution:
-      case CallRecommendation.increaseResolution:
-      case CallRecommendation.disableHd:
-      case CallRecommendation.enableHd:
-      case CallRecommendation.enableAdaptiveBitrate:
-      case CallRecommendation.enableAdaptiveFps:
-      case CallRecommendation.enableAdaptiveResolution:
-      case CallRecommendation.enableDataSaver:
-      case CallRecommendation.enableSuperResolution:
-        await videoEngine.optimizeVideo();
-        break;
+    switch (policy.network.quality) {
+      case NetworkQuality.excellent:
+        await _videoManager
+            .enableFaceEnhancement(
+          true,
+        );
 
-      case CallRecommendation.enableNoiseReduction:
-        await voiceEngine.optimizeAudio();
-        break;
-
-      case CallRecommendation.none:
-        if (metrics.isPoorConnection) {
-          await videoEngine.optimizeVideo();
+        if (!_isGenerationValid(
+          generation,
+        ) ||
+            !_aiEnabled) {
+          return;
         }
+
+        await _videoManager
+            .enableBeautyMode(
+          policy.superResolution,
+        );
+
+        if (!_isGenerationValid(
+          generation,
+        ) ||
+            !_aiEnabled) {
+          return;
+        }
+
+        await _videoManager
+            .enableBackgroundBlur(
+          false,
+        );
+
+        if (!_isGenerationValid(
+          generation,
+        ) ||
+            !_aiEnabled) {
+          return;
+        }
+
+        // Corrected condition:
+        //
+        // Never apply HD quality when optimizer says HD should
+        // be disabled.
+
+        if (policy.hdEnabled &&
+            _videoManager.qualityProfile !=
+                VideoQualityProfile.fullHd) {
+          await _videoManager
+              .applyHDQuality();
+        }
+
         break;
-    }
-  }
 
-  // ===========================================================
-  // Explicit In-Call Optimization
-  // ===========================================================
+      case NetworkQuality.good:
+        await _videoManager
+            .enableFaceEnhancement(
+          true,
+        );
 
-  Future<void> optimizeCall({
-    RTCRtpSender? audioSender,
-    RTCRtpSender? videoSender,
-  }) async {
-    _ensureUsable();
+        if (!_isGenerationValid(
+          generation,
+        ) ||
+            !_aiEnabled) {
+          return;
+        }
 
-    if (!_running) {
-      return;
-    }
+        await _videoManager
+            .enableBeautyMode(
+          false,
+        );
 
-    if (_optimizing) {
-      _optimizationPending = true;
-      return;
-    }
+        if (!_isGenerationValid(
+          generation,
+        ) ||
+            !_aiEnabled) {
+          return;
+        }
 
-    _optimizing = true;
-    _lastError = null;
+        await _videoManager
+            .enableBackgroundBlur(
+          false,
+        );
 
-    final generation = _generation;
+        break;
 
-    try {
-      await voiceEngine.optimizeAudio();
+      case NetworkQuality.fair:
+      case NetworkQuality.poor:
+        await _disableExpensiveEnhancements(
+          generation,
+        );
 
-      if (!_isGenerationValid(generation) || !_running) {
-        return;
-      }
+        break;
 
-      if (videoSender != null || _latestMetrics?.isPoorConnection == true) {
-        await videoEngine.optimizeVideo();
-      }
-
-      if (!_isGenerationValid(generation) || !_running) {
-        return;
-      }
-
-      // RTCRtpSender mutation intentionally remains outside
-      // AICallEngine. BitrateController/WebRTC media layer
-      // owns actual RTP sender parameter mutation.
+      case NetworkQuality.offline:
+      // Offline processing state is left untouched.
       //
-      // These reads preserve compatibility with integrations
-      // that pass sender references through this API.
-      if (audioSender != null) {
-        await optimizer.audioBitrate;
-      }
-
-      if (videoSender != null) {
-        await optimizer.videoBitrate;
-      }
-    } catch (error, stackTrace) {
-      _lastError = error;
-
-      _reportError('optimizeCall', error, stackTrace);
-    } finally {
-      _optimizing = false;
-
-      if (_optimizationPending && _running && !_disposed) {
-        _optimizationPending = false;
-
-        unawaited(_processMetricsInternal());
-      }
+      // ConnectionManager/RecoveryManager own recovery.
+        break;
     }
   }
 
-  // ===========================================================
-  // Status Snapshot
-  // ===========================================================
+  Future<void> _disableExpensiveEnhancements(
+      int generation,
+      ) async {
+    if (!_isGenerationValid(
+      generation,
+    ) ||
+        !_aiEnabled) {
+      return;
+    }
 
-  Future<Map<String, dynamic>> status() async {
-    _ensureUsable();
+    await _videoManager
+        .enableFaceEnhancement(
+      false,
+    );
 
-    final quality = await qualityMonitor.refresh();
+    if (!_isGenerationValid(
+      generation,
+    ) ||
+        !_aiEnabled) {
+      return;
+    }
 
-    final metrics = _latestMetrics;
+    await _videoManager
+        .enableBeautyMode(
+      false,
+    );
 
-    return <String, dynamic>{
-      'running': _running,
-      'starting': _starting,
-      'stopping': _stopping,
-      'optimizing': _optimizing,
-      'quality': quality.name,
-      'voice': <String, dynamic>{
-        'aiEnabled': voiceEngine.aiEnabled,
-        'initialized': voiceEngine.isInitialized,
-        'bitrate': voiceEngine.bitrate,
-        'networkQuality': voiceEngine.networkQuality.name,
-        'noiseSuppression': voiceEngine.noiseSuppression,
-        'echoCancellation': voiceEngine.echoCancellation,
-        'autoGainControl': voiceEngine.autoGainControl,
-      },
-      'video': <String, dynamic>{
-        'aiEnabled': videoEngine.aiEnabled,
-        'initialized': videoEngine.isInitialized,
-        'bitrate': videoEngine.bitrate,
-        'fps': videoEngine.fps,
-        'width': videoEngine.width,
-        'height': videoEngine.height,
-        'networkQuality': videoEngine.networkQuality.name,
-      },
-      'network': <String, dynamic>{
-        'connected': optimizer.isConnected,
-        'quality': optimizer.currentNetwork.quality.name,
-        'recommendedProfile': await optimizer.recommendedProfile,
-      },
-      'metrics': metrics == null
-          ? null
-          : <String, dynamic>{
-              'stabilityScore': metrics.stabilityScore,
-              'packetLoss': metrics.packetLoss,
-              'jitter': metrics.jitter,
-              'rtt': metrics.rtt,
-              'recommendedBitrate': metrics.recommendedBitrate,
-              'recommendedFps': metrics.recommendedFps,
-              'recommendation': metrics.recommendation.name,
-              'recovering': metrics.isRecovering,
-            },
-      'lastError': _lastError?.toString(),
-    };
+    if (!_isGenerationValid(
+      generation,
+    ) ||
+        !_aiEnabled) {
+      return;
+    }
+
+    await _videoManager
+        .enableBackgroundBlur(
+      false,
+    );
   }
 
   // ===========================================================
-  // Reset
+  // BACKWARD COMPATIBILITY
+  // ===========================================================
+
+  Future<void> optimizeAudio() async {
+    await optimizeVideo();
+  }
+
+  // ===========================================================
+  // STATE SNAPSHOT
+  // ===========================================================
+
+  Map<String, dynamic> get stateSnapshot {
+    return Map<String, dynamic>.unmodifiable(
+      <String, dynamic>{
+        'initialized':
+        _initialized,
+        'initializing':
+        _initializing,
+        'aiEnabled':
+        _aiEnabled,
+        'optimizing':
+        _optimizing,
+        'networkQuality':
+        _networkQuality.name,
+        'bitrate':
+        _bitrate,
+        'fps':
+        _fps,
+        'width':
+        _width,
+        'height':
+        _height,
+        'videoEnabled':
+        _videoManager.videoEnabled,
+        'qualityProfile':
+        _videoManager
+            .qualityProfile
+            .name,
+        'lastError':
+        _lastError?.toString(),
+      },
+    );
+  }
+
+  // ===========================================================
+  // VALUE HELPERS
+  // ===========================================================
+
+  int? _readNonNegativeInt(
+      Object? value,
+      ) {
+    int? result;
+
+    if (value is int) {
+      result =
+          value;
+    } else if (value is num &&
+        value.isFinite) {
+      result =
+          value.toInt();
+    } else if (value is String) {
+      result =
+          int.tryParse(
+            value.trim(),
+          );
+    }
+
+    if (result == null ||
+        result < 0) {
+      return null;
+    }
+
+    return result;
+  }
+
+  int? _readPositiveInt(
+      Object? value,
+      ) {
+    final int? result =
+    _readNonNegativeInt(
+      value,
+    );
+
+    if (result == null ||
+        result <= 0) {
+      return null;
+    }
+
+    return result;
+  }
+
+  // ===========================================================
+  // RESET
   // ===========================================================
 
   Future<void> reset() async {
@@ -483,91 +1004,284 @@ class AICallEngine {
 
     _generation++;
 
-    _running = false;
-    _starting = false;
-    _stopping = false;
+    _optimizationPending =
+    false;
 
-    _optimizationPending = false;
+    final Future<void>? initialization =
+        _initializationFuture;
 
-    qualityMonitor.stop();
+    final Future<void>? optimization =
+        _optimizationFuture;
 
-    try {
-      await voiceEngine.reset();
-    } catch (error, stackTrace) {
-      _reportError('voice reset', error, stackTrace);
+    if (initialization != null) {
+      try {
+        await initialization;
+      } catch (error, stackTrace) {
+        _reportError(
+          'stale initialization during reset',
+          error,
+          stackTrace,
+        );
+      }
     }
 
-    try {
-      await videoEngine.reset();
-    } catch (error, stackTrace) {
-      _reportError('video reset', error, stackTrace);
+    if (optimization != null) {
+      try {
+        await optimization;
+      } catch (error, stackTrace) {
+        _reportError(
+          'stale optimization during reset',
+          error,
+          stackTrace,
+        );
+      }
     }
 
-    bitrateController.reset();
+    if (_disposed) {
+      return;
+    }
 
-    _latestMetrics = null;
-    _lastError = null;
+    // Shared NetworkOptimizer and CALL-LAYER VideoManager are
+    // intentionally NOT reset here.
 
-    _optimizing = false;
+    _initialized =
+    false;
 
-    debugPrint('JR CALL: AICallEngine reset.');
+    _initializing =
+    false;
+
+    _activeInitializationGeneration =
+    null;
+
+    _optimizing =
+    false;
+
+    _optimizationPending =
+    false;
+
+    _aiEnabled =
+    true;
+
+    _networkQuality =
+        NetworkQuality.good;
+
+    _bitrate =
+    1500000;
+
+    _fps =
+    30;
+
+    _width =
+    1280;
+
+    _height =
+    720;
+
+    _lastError =
+    null;
+
+    _initializationFuture =
+    null;
+
+    _optimizationFuture =
+    null;
+
+    _notifySafely();
+
+    _debugPrint(
+      'reset.',
+    );
   }
 
   // ===========================================================
-  // Helpers
+  // INTERNAL HELPERS
   // ===========================================================
 
-  bool _isGenerationValid(int generation) {
-    return !_disposed && generation == _generation;
+  bool _isGenerationValid(
+      int generation,
+      ) {
+    return !_disposed &&
+        generation ==
+            _generation;
   }
 
   void _ensureUsable() {
     if (_disposed) {
-      throw StateError('AICallEngine has already been disposed.');
+      throw StateError(
+        'AIVideoEngine has already been disposed.',
+      );
     }
   }
 
-  void _reportError(String source, Object error, [StackTrace? stackTrace]) {
+  void _notifySafely() {
+    if (!_disposed) {
+      notifyListeners();
+    }
+  }
+
+  void _debugPrint(
+      String message,
+      ) {
+    if (!kDebugMode) {
+      return;
+    }
+
     debugPrint(
-      'JR CALL [AICallEngine/$source] '
-      'error: $error',
+      'JR CALL '
+          '[AIVideoEngine] '
+          '$message',
+    );
+  }
+
+  void _reportError(
+      String source,
+      Object error, [
+        StackTrace? stackTrace,
+      ]) {
+    if (!kDebugMode) {
+      return;
+    }
+
+    debugPrint(
+      'JR CALL '
+          '[AIVideoEngine/$source] '
+          'error: $error',
     );
 
     if (stackTrace != null) {
       debugPrintStack(
-        label: 'JR CALL [AICallEngine/$source]',
-        stackTrace: stackTrace,
+        label:
+        'JR CALL '
+            '[AIVideoEngine/$source]',
+        stackTrace:
+        stackTrace,
       );
     }
   }
 
   // ===========================================================
-  // Dispose
+  // DISPOSE
   // ===========================================================
 
-  Future<void> dispose() async {
+  @override
+  void dispose() {
     if (_disposed) {
       return;
     }
 
-    await stop();
-
     _generation++;
-    _disposed = true;
 
-    _running = false;
-    _starting = false;
-    _stopping = false;
-    _optimizing = false;
+    _disposed =
+    true;
 
-    _optimizationPending = false;
+    _initialized =
+    false;
 
-    _startFuture = null;
-    _stopFuture = null;
+    _initializing =
+    false;
 
-    _latestMetrics = null;
-    _lastError = null;
+    _activeInitializationGeneration =
+    null;
 
-    debugPrint('JR CALL: AICallEngine disposed.');
+    _optimizing =
+    false;
+
+    _optimizationPending =
+    false;
+
+    _initializationFuture =
+    null;
+
+    _optimizationFuture =
+    null;
+
+    _lastError =
+    null;
+
+    // CALL-LAYER VideoManager and NetworkOptimizer are shared
+    // services and are intentionally not disposed here.
+
+    super.dispose();
   }
 }
+
+// ===========================================================
+// INTERNAL VIDEO POLICY SNAPSHOT
+// ===========================================================
+
+class _VideoPolicySnapshot {
+  final NetworkModel network;
+
+  final int bitrate;
+
+  final int fps;
+
+  final int width;
+
+  final int height;
+
+  final bool videoAllowed;
+
+  final bool noiseReduction;
+
+  final bool hdEnabled;
+
+  final bool superResolution;
+
+  const _VideoPolicySnapshot({
+    required this.network,
+    required this.bitrate,
+    required this.fps,
+    required this.width,
+    required this.height,
+    required this.videoAllowed,
+    required this.noiseReduction,
+    required this.hdEnabled,
+    required this.superResolution,
+  });
+}
+
+// ===============================================================
+// END OF FILE
+//
+// FILE 25 CORRECTED FINAL GUARANTEES:
+//
+// ✓ Correct CALL-LAYER VideoManager restored.
+// ✓ manager-layer VideoManager is NOT imported.
+// ✓ Same-name architectural layers are not mixed.
+// ✓ Existing AIVideoEngine public APIs preserved.
+// ✓ Existing optimizeAudio compatibility alias preserved.
+// ✓ Existing CALL-LAYER VideoManager APIs preserved.
+// ✓ NetworkOptimizer remains policy owner.
+// ✓ All NetworkOptimizer Future APIs are awaited.
+// ✓ recommendedProfile Future<Map> handled correctly.
+// ✓ Stable NetworkModel snapshot used for policy.
+// ✓ No mixed async network policy manufactured.
+// ✓ Initialization concurrency deduplicated.
+// ✓ 10ms busy-wait initialization removed.
+// ✓ Disable/reset/dispose invalidate stale operations.
+// ✓ Optimization serialized/coalesced.
+// ✓ AI does not silently enable a user-disabled camera.
+// ✓ Temporary offline state does not silently disable camera.
+// ✓ Adaptive video settings remain CALL-LAYER VideoManager-owned.
+// ✓ Existing enhancement APIs preserved.
+// ✓ HD policy condition corrected.
+// ✓ Offline recovery remains RecoveryManager-owned.
+// ✓ No NetworkHelper polling.
+// ✓ No timer added.
+// ✓ No direct PeerConnection ownership.
+// ✓ No signaling/ICE ownership.
+// ✓ No duplicate MediaStream acquisition.
+// ✓ stateSnapshot keys preserved.
+// ✓ resolution is unmodifiable.
+// ✓ reset remains reusable.
+// ✓ dispose remains terminal.
+// ✓ No UI/design changes.
+//
+// STATUS:
+// FILE 25 — CORRECTED FINAL.
+//
+// FILE 27 SOURCE:
+// ALREADY RECEIVED.
+// DO NOT RESEND.
+// ===============================================================

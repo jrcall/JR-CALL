@@ -1,16 +1,55 @@
-// ===========================================================
+// ===============================================================
 // JR CALL
 // File: background_call_service.dart
 // Location: lib/services/call/background_call_service.dart
 //
-// Production background-call orchestration.
+// MASTER PRODUCTION BACKGROUND CALL ORCHESTRATOR
 //
-// Ownership:
-// - Native Android/iOS -> incoming call presentation
-// - SignalingService -> server/signaling truth
-// - CallService -> WebRTC call lifecycle
-// - This service -> background/native orchestration only
-// ===========================================================
+// RESPONSIBILITIES:
+//
+// - Coordinate native Android/iOS incoming-call presentation.
+// - Validate background/restore payloads against signaling truth.
+// - Coordinate native answer/reject/end actions with CallService.
+// - Restore pending incoming-call presentation after app resume.
+// - Prevent duplicate/stale native call actions.
+// - Expire incoming-call PRESENTATION safely.
+// - Bridge localized NotificationService metadata to native layer.
+// - Serialize native action ownership per call.
+// - Keep platform-channel payloads codec-safe.
+//
+// OWNERSHIP:
+//
+// Native Android/iOS:
+// - System incoming-call UI / full-screen presentation.
+// - Native notification/call integration.
+//
+// SignalingService:
+// - Server/signaling truth.
+// - Read validation from this service is allowed.
+//
+// CallService:
+// - Actual call lifecycle.
+// - Answer / reject / end.
+// - Canonical timeout/history/signaling mutation.
+//
+// NotificationService:
+// - Notification presentation state.
+// - Locale-ready title/body and localization resource metadata.
+//
+// BackgroundCallService:
+// - Background/native orchestration only.
+//
+// IMPORTANT:
+//
+// - This service does NOT create PeerConnection.
+// - This service does NOT own media.
+// - This service does NOT own ICE.
+// - This service does NOT own recovery.
+// - This service does NOT directly write call history.
+// - This service does NOT directly mutate signaling status.
+// - Native presentation timeout NEVER ends the actual call.
+// - FCM background handler registration does NOT belong here.
+// ===============================================================
 
 import 'dart:async';
 
@@ -19,7 +58,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import 'call_service.dart';
+import 'notification_service.dart';
 import 'signaling_service.dart';
+
+// ===============================================================
+// BACKGROUND EVENT TYPE
+// ===============================================================
 
 enum BackgroundCallEventType {
   incoming,
@@ -32,6 +76,10 @@ enum BackgroundCallEventType {
   error,
 }
 
+// ===============================================================
+// BACKGROUND EVENT
+// ===============================================================
+
 @immutable
 class BackgroundCallEvent {
   const BackgroundCallEvent({
@@ -42,10 +90,17 @@ class BackgroundCallEvent {
   });
 
   final BackgroundCallEventType type;
+
   final String callId;
+
   final BackgroundCallPayload? payload;
+
   final Object? error;
 }
+
+// ===============================================================
+// BACKGROUND CALL PAYLOAD
+// ===============================================================
 
 @immutable
 class BackgroundCallPayload {
@@ -61,42 +116,76 @@ class BackgroundCallPayload {
   });
 
   final String callId;
+
   final String callerId;
+
   final String receiverId;
+
   final String callerName;
+
   final String? callerAvatarUrl;
+
   final bool isVideoCall;
+
   final DateTime? createdAt;
+
   final Map<String, dynamic> extra;
 
-  factory BackgroundCallPayload.fromMap(Map<String, dynamic> map) {
-    final callId = _readRequiredString(map['callId'], fieldName: 'callId');
+  // =============================================================
+  // FROM MAP
+  // =============================================================
 
-    final callerId = _readRequiredString(
-      map['callerId'] ?? map['senderId'],
+  factory BackgroundCallPayload.fromMap(
+      Map<String, dynamic> map,
+      ) {
+    final String callId = _readRequiredString(
+      map['callId'],
+      fieldName: 'callId',
+    );
+
+    final String callerId = _readRequiredString(
+      map['callerId'] ??
+          map['callerUid'] ??
+          map['senderId'],
       fieldName: 'callerId',
     );
 
-    final receiverId = _readRequiredString(
-      map['receiverId'],
+    final String receiverId = _readRequiredString(
+      map['receiverId'] ??
+          map['receiverUid'],
       fieldName: 'receiverId',
     );
 
-    final callerName =
-        _readOptionalString(map['callerName']) ??
-        _readOptionalString(map['senderName']) ??
-        'JR CALL User';
+    final String callerName =
+        _readOptionalString(
+          map['callerName'],
+        ) ??
+            _readOptionalString(
+              map['senderName'],
+            ) ??
+            'JR CALL User';
 
-    final avatarUrl =
-        _readOptionalString(map['callerAvatarUrl']) ??
-        _readOptionalString(map['callerPhotoUrl']) ??
-        _readOptionalString(map['photoUrl']);
+    final String? avatarUrl =
+        _readOptionalString(
+          map['callerAvatarUrl'],
+        ) ??
+            _readOptionalString(
+              map['callerPhotoUrl'],
+            ) ??
+            _readOptionalString(
+              map['photoUrl'],
+            );
 
-    final callType = _readOptionalString(map['callType'])?.toLowerCase();
+    final String? callType =
+    _readOptionalString(
+      map['callType'],
+    )?.toLowerCase();
 
-    final isVideoCall = _readBoolean(
-      map['isVideoCall'],
-      fallback: callType == 'video',
+    final bool isVideoCall = _readBoolean(
+      map['isVideoCall'] ??
+          map['video'],
+      fallback:
+      callType == 'video',
     );
 
     return BackgroundCallPayload(
@@ -106,10 +195,20 @@ class BackgroundCallPayload {
       callerName: callerName,
       callerAvatarUrl: avatarUrl,
       isVideoCall: isVideoCall,
-      createdAt: _readDateTime(map['createdAt']),
-      extra: Map<String, dynamic>.unmodifiable(Map<String, dynamic>.from(map)),
+      createdAt: _readDateTime(
+        map['createdAt'],
+      ),
+      extra: Map<String, dynamic>.unmodifiable(
+        Map<String, dynamic>.from(
+          map,
+        ),
+      ),
     );
   }
+
+  // =============================================================
+  // TO MAP
+  // =============================================================
 
   Map<String, dynamic> toMap() {
     return <String, dynamic>{
@@ -118,39 +217,63 @@ class BackgroundCallPayload {
       'callerId': callerId,
       'receiverId': receiverId,
       'callerName': callerName,
-      'callerAvatarUrl': callerAvatarUrl,
-      'isVideoCall': isVideoCall,
-      'callType': isVideoCall ? 'video' : 'voice',
-      'createdAt': createdAt?.toIso8601String(),
+      'callerAvatarUrl':
+      callerAvatarUrl,
+      'isVideoCall':
+      isVideoCall,
+      'callType':
+      isVideoCall
+          ? 'video'
+          : 'voice',
+      'createdAt':
+      createdAt?.toIso8601String(),
     };
   }
 
+  // =============================================================
+  // PARSING
+  // =============================================================
+
   static String _readRequiredString(
-    Object? value, {
-    required String fieldName,
-  }) {
-    final result = _readOptionalString(value);
+      Object? value, {
+        required String fieldName,
+      }) {
+    final String? result =
+    _readOptionalString(
+      value,
+    );
 
     if (result == null) {
       throw FormatException(
-        'Background call payload field "$fieldName" is missing.',
+        'Background call payload field '
+            '"$fieldName" is missing.',
       );
     }
 
     return result;
   }
 
-  static String? _readOptionalString(Object? value) {
+  static String? _readOptionalString(
+      Object? value,
+      ) {
     if (value is! String) {
       return null;
     }
 
-    final normalized = value.trim();
+    final String normalized =
+    value.trim();
 
-    return normalized.isEmpty ? null : normalized;
+    if (normalized.isEmpty) {
+      return null;
+    }
+
+    return normalized;
   }
 
-  static bool _readBoolean(Object? value, {required bool fallback}) {
+  static bool _readBoolean(
+      Object? value, {
+        required bool fallback,
+      }) {
     if (value is bool) {
       return value;
     }
@@ -160,7 +283,9 @@ class BackgroundCallPayload {
     }
 
     if (value is String) {
-      switch (value.trim().toLowerCase()) {
+      switch (value
+          .trim()
+          .toLowerCase()) {
         case 'true':
         case '1':
         case 'yes':
@@ -178,88 +303,207 @@ class BackgroundCallPayload {
     return fallback;
   }
 
-  static DateTime? _readDateTime(Object? value) {
+  static DateTime? _readDateTime(
+      Object? value,
+      ) {
+    if (value == null) {
+      return null;
+    }
+
     if (value is DateTime) {
       return value;
     }
 
     if (value is int) {
-      return DateTime.fromMillisecondsSinceEpoch(value);
+      return DateTime
+          .fromMillisecondsSinceEpoch(
+        value,
+      );
     }
 
     if (value is num) {
-      return DateTime.fromMillisecondsSinceEpoch(value.toInt());
+      return DateTime
+          .fromMillisecondsSinceEpoch(
+        value.toInt(),
+      );
     }
 
     if (value is String) {
-      final normalized = value.trim();
+      final String normalized =
+      value.trim();
 
       if (normalized.isEmpty) {
         return null;
       }
 
-      return DateTime.tryParse(normalized);
+      final int? milliseconds =
+      int.tryParse(
+        normalized,
+      );
+
+      if (milliseconds != null &&
+          normalized.length >= 11) {
+        return DateTime
+            .fromMillisecondsSinceEpoch(
+          milliseconds,
+        );
+      }
+
+      return DateTime.tryParse(
+        normalized,
+      );
+    }
+
+    // Firestore Timestamp-style compatibility without forcing
+    // this orchestration file to own a cloud_firestore import.
+    try {
+      final dynamic dynamicValue =
+          value;
+
+      final Object? converted =
+      dynamicValue.toDate();
+
+      if (converted is DateTime) {
+        return converted;
+      }
+    } catch (_) {
+      // Unsupported date-like object.
     }
 
     return null;
   }
 }
 
-class BackgroundCallService with WidgetsBindingObserver {
+// ===============================================================
+// BACKGROUND CALL SERVICE
+// ===============================================================
+
+class BackgroundCallService
+    with WidgetsBindingObserver {
   BackgroundCallService._();
 
-  static final BackgroundCallService instance = BackgroundCallService._();
+  static final BackgroundCallService
+  instance =
+  BackgroundCallService._();
 
-  static const MethodChannel _platformChannel = MethodChannel(
+  // =============================================================
+  // PLATFORM CHANNEL
+  // =============================================================
+
+  static const MethodChannel
+  _platformChannel =
+  MethodChannel(
     'jr_call/background_call',
   );
 
-  static const Duration _defaultIncomingCallTimeout = Duration(seconds: 45);
+  // =============================================================
+  // POLICY
+  // =============================================================
 
-  final CallService _callService = CallService();
+  static const Duration
+  _defaultIncomingCallTimeout =
+  Duration(
+    seconds: 45,
+  );
 
-  final SignalingService _signalingService = SignalingService.instance;
+  static const int
+  _completedCallCacheLimit =
+  64;
 
-  final StreamController<BackgroundCallEvent> _eventController =
-      StreamController<BackgroundCallEvent>.broadcast();
+  // =============================================================
+  // DEPENDENCIES
+  // =============================================================
 
-  Future<void>? _initializationFuture;
+  final CallService _callService =
+  CallService();
+
+  final SignalingService
+  _signalingService =
+      SignalingService.instance;
+
+  final NotificationService
+  _notificationService =
+      NotificationService.instance;
+
+  // =============================================================
+  // EVENTS
+  // =============================================================
+
+  final StreamController<
+      BackgroundCallEvent>
+  _eventController =
+  StreamController<
+      BackgroundCallEvent>.broadcast();
+
+  // =============================================================
+  // INITIALIZATION
+  // =============================================================
+
+  Future<void>?
+  _initializationFuture;
 
   bool _isInitialized = false;
+
   bool _isDisposed = false;
-  bool _isShowingIncomingCall = false;
+
+  // =============================================================
+  // SESSION STATE
+  // =============================================================
+
+  bool _isShowingIncomingCall =
+  false;
 
   String? _activeActionCallId;
 
   int _sessionGeneration = 0;
 
-  BackgroundCallPayload? _pendingCall;
+  BackgroundCallPayload?
+  _pendingCall;
 
-  Timer? _incomingCallTimeoutTimer;
+  Timer?
+  _incomingCallTimeoutTimer;
 
   String? _lastPresentedCallId;
-  String? _lastCompletedCallId;
 
-  Stream<BackgroundCallEvent> get events => _eventController.stream;
+  final List<String>
+  _completedCallIds =
+  <String>[];
 
-  bool get isInitialized => _isInitialized;
+  // =============================================================
+  // PUBLIC STATE
+  // =============================================================
 
-  bool get isDisposed => _isDisposed;
+  Stream<BackgroundCallEvent>
+  get events =>
+      _eventController.stream;
 
-  bool get hasPendingCall => _pendingCall != null;
+  bool get isInitialized =>
+      _isInitialized;
 
-  BackgroundCallPayload? get pendingCall => _pendingCall;
+  bool get isDisposed =>
+      _isDisposed;
 
-  String? get pendingCallId => _pendingCall?.callId;
+  bool get hasPendingCall =>
+      _pendingCall != null;
 
-  // ===========================================================
-  // Initialization
-  // ===========================================================
+  BackgroundCallPayload?
+  get pendingCall =>
+      _pendingCall;
+
+  String? get pendingCallId =>
+      _pendingCall?.callId;
+
+  // =============================================================
+  // INITIALIZATION
+  // =============================================================
 
   Future<void> initialize() {
     if (_isDisposed) {
       return Future<void>.error(
-        StateError('BackgroundCallService has been disposed.'),
+        StateError(
+          'BackgroundCallService '
+              'has been disposed.',
+        ),
       );
     }
 
@@ -267,29 +511,52 @@ class BackgroundCallService with WidgetsBindingObserver {
       return Future<void>.value();
     }
 
-    final existing = _initializationFuture;
+    final Future<void>?
+    existing =
+        _initializationFuture;
 
     if (existing != null) {
       return existing;
     }
 
-    final future = _initializeInternal();
+    final Future<void> future =
+    _initializeInternal();
 
-    _initializationFuture = future;
+    _initializationFuture =
+        future;
 
     return future;
   }
 
-  Future<void> _initializeInternal() async {
+  Future<void>
+  _initializeInternal() async {
+    bool observerAttached =
+    false;
+
+    bool handlerAttached =
+    false;
+
     try {
-      if (_isDisposed || _isInitialized) {
+      if (_isDisposed ||
+          _isInitialized) {
         return;
       }
 
-      WidgetsBinding.instance.addObserver(this);
+      WidgetsBinding.instance
+          .addObserver(
+        this,
+      );
 
-      _platformChannel.setMethodCallHandler(_handleNativeMethodCall);
+      observerAttached = true;
 
+      _platformChannel
+          .setMethodCallHandler(
+        _handleNativeMethodCall,
+      );
+
+      handlerAttached = true;
+
+      // Existing CallService initialization contract.
       await _callService.initialize();
 
       if (_isDisposed) {
@@ -306,25 +573,49 @@ class BackgroundCallService with WidgetsBindingObserver {
 
       await restorePendingCall();
 
-      debugPrint('JR CALL: BackgroundCallService initialized.');
-    } catch (_) {
-      if (!_isInitialized) {
-        WidgetsBinding.instance.removeObserver(this);
+      debugPrint(
+        'JR CALL: '
+            'BackgroundCallService initialized.',
+      );
+    } catch (error, stackTrace) {
+      _reportError(
+        'Initialize',
+        error,
+        stackTrace,
+      );
 
-        _platformChannel.setMethodCallHandler(null);
+      if (!_isInitialized) {
+        if (observerAttached) {
+          WidgetsBinding.instance
+              .removeObserver(
+            this,
+          );
+        }
+
+        if (handlerAttached) {
+          _platformChannel
+              .setMethodCallHandler(
+            null,
+          );
+        }
       }
 
       rethrow;
     } finally {
       if (!_isInitialized) {
-        _initializationFuture = null;
+        _initializationFuture =
+        null;
       }
     }
   }
 
-  Future<void> _ensureInitialized() async {
+  Future<void>
+  _ensureInitialized() async {
     if (_isDisposed) {
-      throw StateError('BackgroundCallService has been disposed.');
+      throw StateError(
+        'BackgroundCallService '
+            'has been disposed.',
+      );
     }
 
     if (!_isInitialized) {
@@ -332,19 +623,24 @@ class BackgroundCallService with WidgetsBindingObserver {
     }
   }
 
-  // ===========================================================
-  // App Lifecycle
-  // ===========================================================
+  // =============================================================
+  // APP LIFECYCLE
+  // =============================================================
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (_isDisposed || !_isInitialized) {
+  void didChangeAppLifecycleState(
+      AppLifecycleState state,
+      ) {
+    if (_isDisposed ||
+        !_isInitialized) {
       return;
     }
 
     switch (state) {
       case AppLifecycleState.resumed:
-        unawaited(restorePendingCall());
+        unawaited(
+          restorePendingCall(),
+        );
         break;
 
       case AppLifecycleState.inactive:
@@ -355,25 +651,53 @@ class BackgroundCallService with WidgetsBindingObserver {
     }
   }
 
-  // ===========================================================
-  // Incoming Push / Background Payload
-  // ===========================================================
+  // =============================================================
+  // INCOMING PUSH / DATA PAYLOAD
+  //
+  // IMPORTANT:
+  //
+  // This is an application-runtime entry API.
+  //
+  // FirebaseMessaging.onBackgroundMessage registration must remain
+  // a top-level @pragma('vm:entry-point') function in application
+  // bootstrap according to FlutterFire requirements.
+  // =============================================================
 
-  Future<bool> handleIncomingCallData(Map<String, dynamic> data) async {
+  Future<bool>
+  handleIncomingCallData(
+      Map<String, dynamic> data,
+      ) async {
     await _ensureInitialized();
 
     try {
-      final payload = BackgroundCallPayload.fromMap(data);
+      final BackgroundCallPayload
+      payload =
+      BackgroundCallPayload
+          .fromMap(
+        data,
+      );
 
-      return presentIncomingCall(payload);
+      return presentIncomingCall(
+        payload,
+      );
     } catch (error, stackTrace) {
-      _reportError('Incoming call payload', error, stackTrace);
+      _reportError(
+        'Incoming call payload',
+        error,
+        stackTrace,
+      );
 
       _emitEvent(
         BackgroundCallEvent(
-          type: BackgroundCallEventType.error,
-          callId: _readCallIdSafely(data),
-          error: error,
+          type:
+          BackgroundCallEventType
+              .error,
+          callId:
+          _readCallIdSafely(
+            data,
+          ),
+          error:
+          error,
         ),
       );
 
@@ -381,14 +705,63 @@ class BackgroundCallService with WidgetsBindingObserver {
     }
   }
 
-  // ===========================================================
-  // Incoming Call Presentation
-  // ===========================================================
+  // =============================================================
+  // PRESENT INCOMING CALL
+  // =============================================================
 
-  Future<bool> presentIncomingCall(BackgroundCallPayload payload) async {
+  Future<bool> presentIncomingCall(
+      BackgroundCallPayload payload,
+      ) async {
     await _ensureInitialized();
 
     if (_isDisposed) {
+      return false;
+    }
+
+    final String callId =
+    payload.callId.trim();
+
+    if (callId.isEmpty) {
+      return false;
+    }
+
+    if (_isCallCompleted(
+      callId,
+    )) {
+      await _dismissNativeCall(
+        callId,
+      );
+
+      return false;
+    }
+
+    // Exact duplicate already pending.
+    if (_pendingCall?.callId ==
+        callId &&
+        _lastPresentedCallId ==
+            callId) {
+      return true;
+    }
+
+    // Call has already moved into CallService lifecycle.
+    if (_callService.isCallActive &&
+        _callService.currentCallId ==
+            callId) {
+      await _dismissNativeCall(
+        callId,
+      );
+
+      return false;
+    }
+
+    // Another real call is active.
+    if (_callService.isCallActive &&
+        _callService.currentCallId !=
+            callId) {
+      await _rejectBusyIncomingCall(
+        callId,
+      );
+
       return false;
     }
 
@@ -396,270 +769,544 @@ class BackgroundCallService with WidgetsBindingObserver {
       return false;
     }
 
-    if (_activeActionCallId != null) {
+    if (_activeActionCallId !=
+        null) {
       return false;
     }
 
-    if (_callService.isCallActive &&
-        _callService.currentCallId != payload.callId) {
-      await _rejectBusyIncomingCall(payload.callId);
+    _isShowingIncomingCall =
+    true;
 
-      return false;
-    }
-
-    if (_lastPresentedCallId == payload.callId &&
-        _pendingCall?.callId == payload.callId) {
-      return true;
-    }
-
-    _isShowingIncomingCall = true;
-
-    final sessionToken = ++_sessionGeneration;
+    final int sessionToken =
+    ++_sessionGeneration;
 
     try {
-      final active = await _validateCallIsActive(payload.callId);
+      final bool active =
+      await _validateCallIsActive(
+        callId,
+      );
 
-      if (!_isSessionCurrent(sessionToken) || !active) {
+      if (!_isSessionCurrent(
+        sessionToken,
+      ) ||
+          !active) {
         return false;
       }
 
-      final callData = await _signalingService.getCallDocument(payload.callId);
+      final Map<String, dynamic>
+      callData =
+      await _signalingService
+          .getCallDocument(
+        callId,
+      );
 
-      if (!_isSessionCurrent(sessionToken)) {
+      if (!_isSessionCurrent(
+        sessionToken,
+      )) {
         return false;
       }
 
-      final normalizedPayload = _mergePayloadWithCallDocument(
+      final BackgroundCallPayload
+      normalizedPayload =
+      _mergePayloadWithCallDocument(
         payload,
         callData,
       );
 
-      _pendingCall = normalizedPayload;
+      if (_isPayloadPresentationExpired(
+        normalizedPayload,
+      )) {
+        _markCallCompleted(
+          normalizedPayload.callId,
+        );
 
-      _lastPresentedCallId = normalizedPayload.callId;
+        await _dismissNativeCall(
+          normalizedPayload.callId,
+        );
 
-      if (_lastCompletedCallId == normalizedPayload.callId) {
-        _lastCompletedCallId = null;
+        return false;
       }
 
-      _startIncomingCallTimeout(normalizedPayload.callId, sessionToken);
+      _pendingCall =
+          normalizedPayload;
 
-      await _invokeNativeMethod('showIncomingCall', normalizedPayload.toMap());
+      _lastPresentedCallId =
+          normalizedPayload.callId;
 
-      if (!_isSessionCurrent(sessionToken)) {
+      _removeCompletedCall(
+        normalizedPayload.callId,
+      );
+
+      _startIncomingCallTimeout(
+        normalizedPayload,
+        sessionToken,
+      );
+
+      final Map<String, dynamic>
+      nativeArguments =
+      await _buildIncomingNativeArguments(
+        normalizedPayload,
+      );
+
+      if (!_isSessionCurrent(
+        sessionToken,
+      )) {
+        return false;
+      }
+
+      await _invokeNativeMethod(
+        'showIncomingCall',
+        nativeArguments,
+      );
+
+      if (!_isSessionCurrent(
+        sessionToken,
+      )) {
         return false;
       }
 
       _emitEvent(
         BackgroundCallEvent(
-          type: BackgroundCallEventType.incoming,
-          callId: normalizedPayload.callId,
-          payload: normalizedPayload,
+          type:
+          BackgroundCallEventType
+              .incoming,
+          callId:
+          normalizedPayload
+              .callId,
+          payload:
+          normalizedPayload,
         ),
       );
 
       return true;
     } catch (error, stackTrace) {
-      _reportError('Present incoming call', error, stackTrace);
+      _reportError(
+        'Present incoming call',
+        error,
+        stackTrace,
+      );
 
-      await _clearPendingCall(dismissNativeUi: true);
+      await _clearPendingCall(
+        dismissNativeUi:
+        true,
+        callIdOverride:
+        callId,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .error,
+          callId:
+          callId,
+          payload:
+          payload,
+          error:
+          error,
+        ),
+      );
 
       return false;
     } finally {
-      _isShowingIncomingCall = false;
+      _isShowingIncomingCall =
+      false;
     }
   }
 
-  Future<bool> _validateCallIsActive(String callId) async {
-    final normalizedCallId = callId.trim();
+  // =============================================================
+  // SIGNALING READ VALIDATION
+  // =============================================================
+
+  Future<bool> _validateCallIsActive(
+      String callId,
+      ) async {
+    final String normalizedCallId =
+    callId.trim();
 
     if (normalizedCallId.isEmpty) {
       return false;
     }
 
     try {
-      return await _signalingService.checkCallActiveStatus(normalizedCallId);
+      return await _signalingService
+          .checkCallActiveStatus(
+        normalizedCallId,
+      );
     } catch (error, stackTrace) {
-      _reportError('Validate active call', error, stackTrace);
+      _reportError(
+        'Validate active call',
+        error,
+        stackTrace,
+      );
 
       return false;
     }
   }
 
-  BackgroundCallPayload _mergePayloadWithCallDocument(
-    BackgroundCallPayload payload,
-    Map<String, dynamic> callData,
-  ) {
-    final merged = <String, dynamic>{
+  BackgroundCallPayload
+  _mergePayloadWithCallDocument(
+      BackgroundCallPayload payload,
+      Map<String, dynamic> callData,
+      ) {
+    final Map<String, dynamic>
+    merged =
+    <String, dynamic>{
       ...payload.toMap(),
       ...callData,
-      'callId': payload.callId,
+
+      // Never permit a malformed/stale document merge to replace
+      // the push/session identifier being validated.
+      'callId':
+      payload.callId,
     };
 
-    return BackgroundCallPayload.fromMap(merged);
+    return BackgroundCallPayload
+        .fromMap(
+      merged,
+    );
   }
 
-  // ===========================================================
-  // Accept Call
-  // ===========================================================
+  // =============================================================
+  // ACCEPT
+  // =============================================================
 
-  Future<void> acceptPendingCall({String? callId}) async {
+  Future<void> acceptPendingCall({
+    String? callId,
+  }) async {
     await _ensureInitialized();
 
-    final targetCallId = _resolveActionCallId(callId);
+    final String? targetCallId =
+    _resolveActionCallId(
+      callId,
+    );
 
-    if (targetCallId == null || !_beginAction(targetCallId)) {
+    if (targetCallId == null ||
+        !_beginAction(
+          targetCallId,
+        )) {
       return;
     }
 
-    final payload = _pendingCall;
+    final BackgroundCallPayload?
+    payload =
+    _pendingCall?.callId ==
+        targetCallId
+        ? _pendingCall
+        : null;
 
     try {
       _cancelIncomingCallTimeout();
 
-      final active = await _validateCallIsActive(targetCallId);
+      final bool active =
+      await _validateCallIsActive(
+        targetCallId,
+      );
 
       if (!active) {
-        await _clearPendingCall(dismissNativeUi: true);
+        await _clearPendingCall(
+          dismissNativeUi:
+          true,
+          callIdOverride:
+          targetCallId,
+        );
+
+        _notificationService.dismiss(
+          targetCallId,
+        );
 
         return;
       }
 
-      await _invokeNativeMethod('setCallConnecting', <String, dynamic>{
-        'callId': targetCallId,
-      });
+      await _notificationService
+          .showConnecting(
+        callId:
+        targetCallId,
+      );
 
-      await _callService.acceptCall(callId: targetCallId);
+      await _invokeNativeMethod(
+        'setCallConnecting',
+        <String, dynamic>{
+          'callId':
+          targetCallId,
+        },
+      );
 
-      if (_callService.currentCallId == targetCallId) {
-        await _invokeNativeMethod('setCallOngoing', <String, dynamic>{
-          'callId': targetCallId,
-          'isVideoCall': payload?.isVideoCall ?? false,
-        });
+      // CallService owns the real accept lifecycle.
+      await _callService.acceptCall(
+        callId:
+        targetCallId,
+      );
+
+      if (_callService.currentCallId ==
+          targetCallId) {
+        await _invokeNativeMethod(
+          'setCallOngoing',
+          <String, dynamic>{
+            'callId':
+            targetCallId,
+            'isVideoCall':
+            payload?.isVideoCall ??
+                false,
+          },
+        );
 
         _emitEvent(
           BackgroundCallEvent(
-            type: BackgroundCallEventType.accepted,
-            callId: targetCallId,
-            payload: payload,
+            type:
+            BackgroundCallEventType
+                .accepted,
+            callId:
+            targetCallId,
+            payload:
+            payload,
           ),
         );
 
         _pendingCall = null;
-        _lastPresentedCallId = null;
-      } else {
-        await _invokeNativeMethod('endNativeCall', <String, dynamic>{
-          'callId': targetCallId,
-          'reason': 'connection_failed',
-        });
 
-        await _clearPendingCall(dismissNativeUi: false);
+        _lastPresentedCallId =
+        null;
+
+        _sessionGeneration++;
+
+        _cancelIncomingCallTimeout();
+
+        // Do NOT call showConnected() here.
+        //
+        // Accept completion is not proof that the native WebRTC
+        // transport has reached connected state.
+      } else {
+        await _invokeNativeMethod(
+          'endNativeCall',
+          <String, dynamic>{
+            'callId':
+            targetCallId,
+            'reason':
+            'connection_failed',
+          },
+        );
+
+        await _notificationService
+            .showCallFailed(
+          callId:
+          targetCallId,
+        );
+
+        await _clearPendingCall(
+          dismissNativeUi:
+          false,
+          callIdOverride:
+          targetCallId,
+        );
       }
     } catch (error, stackTrace) {
-      _reportError('Accept background call', error, stackTrace);
+      _reportError(
+        'Accept background call',
+        error,
+        stackTrace,
+      );
 
-      await _invokeNativeMethod('endNativeCall', <String, dynamic>{
-        'callId': targetCallId,
-        'reason': 'accept_failed',
-      });
+      await _invokeNativeMethod(
+        'endNativeCall',
+        <String, dynamic>{
+          'callId':
+          targetCallId,
+          'reason':
+          'accept_failed',
+        },
+      );
 
-      await _clearPendingCall(dismissNativeUi: false);
+      await _notificationService
+          .showCallFailed(
+        callId:
+        targetCallId,
+      );
+
+      await _clearPendingCall(
+        dismissNativeUi:
+        false,
+        callIdOverride:
+        targetCallId,
+      );
 
       _emitEvent(
         BackgroundCallEvent(
-          type: BackgroundCallEventType.error,
-          callId: targetCallId,
-          payload: payload,
-          error: error,
+          type:
+          BackgroundCallEventType
+              .error,
+          callId:
+          targetCallId,
+          payload:
+          payload,
+          error:
+          error,
         ),
       );
     } finally {
-      _endAction(targetCallId);
+      _endAction(
+        targetCallId,
+      );
     }
   }
 
-  // ===========================================================
-  // Reject Call
-  // ===========================================================
+  // =============================================================
+  // REJECT
+  // =============================================================
 
-  Future<void> rejectPendingCall({String? callId}) async {
+  Future<void> rejectPendingCall({
+    String? callId,
+  }) async {
     await _ensureInitialized();
 
-    final targetCallId = _resolveActionCallId(callId);
+    final String? targetCallId =
+    _resolveActionCallId(
+      callId,
+    );
 
-    if (targetCallId == null || !_beginAction(targetCallId)) {
+    if (targetCallId == null ||
+        !_beginAction(
+          targetCallId,
+        )) {
       return;
     }
 
-    final payload = _pendingCall;
+    final BackgroundCallPayload?
+    payload =
+    _pendingCall?.callId ==
+        targetCallId
+        ? _pendingCall
+        : null;
 
-    var rejectedSuccessfully = false;
+    bool rejectedSuccessfully =
+    false;
 
     try {
       _cancelIncomingCallTimeout();
 
-      await _callService.rejectCall(callId: targetCallId);
+      // CallService owns rejection/status/history.
+      await _callService.rejectCall(
+        callId:
+        targetCallId,
+      );
 
-      rejectedSuccessfully = true;
+      rejectedSuccessfully =
+      true;
 
-      _markCallCompleted(targetCallId);
+      _markCallCompleted(
+        targetCallId,
+      );
+
+      await _notificationService
+          .showRejected(
+        callId:
+        targetCallId,
+      );
 
       _emitEvent(
         BackgroundCallEvent(
-          type: BackgroundCallEventType.rejected,
-          callId: targetCallId,
-          payload: payload,
+          type:
+          BackgroundCallEventType
+              .rejected,
+          callId:
+          targetCallId,
+          payload:
+          payload,
         ),
       );
     } catch (error, stackTrace) {
-      _reportError('Reject background call', error, stackTrace);
+      _reportError(
+        'Reject background call',
+        error,
+        stackTrace,
+      );
 
       _emitEvent(
         BackgroundCallEvent(
-          type: BackgroundCallEventType.error,
-          callId: targetCallId,
-          payload: payload,
-          error: error,
+          type:
+          BackgroundCallEventType
+              .error,
+          callId:
+          targetCallId,
+          payload:
+          payload,
+          error:
+          error,
         ),
       );
     } finally {
-      await _clearPendingCall(dismissNativeUi: true);
+      await _clearPendingCall(
+        dismissNativeUi:
+        true,
+        callIdOverride:
+        targetCallId,
+      );
 
-      if (!rejectedSuccessfully && _lastCompletedCallId == targetCallId) {
-        _lastCompletedCallId = null;
+      if (!rejectedSuccessfully) {
+        _removeCompletedCall(
+          targetCallId,
+        );
       }
 
-      _endAction(targetCallId);
+      _endAction(
+        targetCallId,
+      );
     }
   }
 
-  // ===========================================================
-  // Cancel Incoming Presentation
-  // ===========================================================
+  // =============================================================
+  // CANCEL INCOMING PRESENTATION
+  //
+  // This method owns PRESENTATION cancellation only.
+  // It does not mutate signaling/call lifecycle.
+  // =============================================================
 
-  Future<void> cancelIncomingPresentation({String? callId}) async {
-    final targetCallId = _resolveActionCallId(callId);
+  Future<void>
+  cancelIncomingPresentation({
+    String? callId,
+  }) async {
+    final String? targetCallId =
+    _resolveActionCallId(
+      callId,
+    );
 
     if (targetCallId == null) {
       return;
     }
 
-    _markCallCompleted(targetCallId);
+    _markCallCompleted(
+      targetCallId,
+    );
+
+    await _notificationService
+        .showCancelled(
+      callId:
+      targetCallId,
+    );
 
     _emitEvent(
       BackgroundCallEvent(
-        type: BackgroundCallEventType.cancelled,
-        callId: targetCallId,
-        payload: _pendingCall,
+        type:
+        BackgroundCallEventType
+            .cancelled,
+        callId:
+        targetCallId,
+        payload:
+        _pendingCall,
       ),
     );
 
-    await _clearPendingCall(dismissNativeUi: true);
+    await _clearPendingCall(
+      dismissNativeUi:
+      true,
+      callIdOverride:
+      targetCallId,
+    );
   }
 
-  // ===========================================================
-  // End Active Call
-  // ===========================================================
+  // =============================================================
+  // END ACTIVE CALL
+  // =============================================================
 
   Future<void> endBackgroundCall({
     required String callId,
@@ -667,384 +1314,1016 @@ class BackgroundCallService with WidgetsBindingObserver {
   }) async {
     await _ensureInitialized();
 
-    final normalizedCallId = callId.trim();
+    final String normalizedCallId =
+    callId.trim();
 
     if (normalizedCallId.isEmpty) {
       return;
     }
 
-    if (_lastCompletedCallId == normalizedCallId) {
+    if (_isCallCompleted(
+      normalizedCallId,
+    )) {
       return;
     }
 
-    if (!_beginAction(normalizedCallId)) {
+    if (!_beginAction(
+      normalizedCallId,
+    )) {
       return;
     }
 
-    var endedSuccessfully = false;
+    bool endedSuccessfully =
+    false;
 
     try {
-      await _callService.endCall(callId: normalizedCallId, status: status);
+      // CallService owns real terminal signaling/history.
+      await _callService.endCall(
+        callId:
+        normalizedCallId,
+        status:
+        status,
+      );
 
-      endedSuccessfully = true;
+      endedSuccessfully =
+      true;
 
-      _markCallCompleted(normalizedCallId);
+      _markCallCompleted(
+        normalizedCallId,
+      );
+
+      await _notificationService
+          .showCallEnded(
+        callId:
+        normalizedCallId,
+      );
 
       _emitEvent(
         BackgroundCallEvent(
-          type: BackgroundCallEventType.ended,
-          callId: normalizedCallId,
+          type:
+          BackgroundCallEventType
+              .ended,
+          callId:
+          normalizedCallId,
         ),
       );
     } catch (error, stackTrace) {
-      _reportError('End background call', error, stackTrace);
+      _reportError(
+        'End background call',
+        error,
+        stackTrace,
+      );
 
       _emitEvent(
         BackgroundCallEvent(
-          type: BackgroundCallEventType.error,
-          callId: normalizedCallId,
-          error: error,
+          type:
+          BackgroundCallEventType
+              .error,
+          callId:
+          normalizedCallId,
+          error:
+          error,
         ),
       );
 
       rethrow;
     } finally {
       if (endedSuccessfully) {
-        await _clearPendingCall(dismissNativeUi: true);
+        await _clearPendingCall(
+          dismissNativeUi:
+          true,
+          callIdOverride:
+          normalizedCallId,
+        );
       }
 
-      _endAction(normalizedCallId);
+      _endAction(
+        normalizedCallId,
+      );
     }
   }
 
-  // ===========================================================
-  // Native Method Handler
-  // ===========================================================
+  // =============================================================
+  // NATIVE METHOD HANDLER
+  // =============================================================
 
-  Future<Object?> _handleNativeMethodCall(MethodCall call) async {
+  Future<Object?>
+  _handleNativeMethodCall(
+      MethodCall call,
+      ) async {
     if (_isDisposed) {
       return null;
     }
 
-    final arguments = _normalizeArguments(call.arguments);
+    final Map<String, dynamic>
+    arguments =
+    _normalizeArguments(
+      call.arguments,
+    );
 
-    final callId = _readOptionalString(arguments['callId']);
+    final String? callId =
+    _readOptionalString(
+      arguments['callId'],
+    );
 
     switch (call.method) {
       case 'incomingCallAccepted':
-        await acceptPendingCall(callId: callId);
+        await acceptPendingCall(
+          callId:
+          callId,
+        );
+
         return true;
 
       case 'incomingCallRejected':
-        await rejectPendingCall(callId: callId);
+        await rejectPendingCall(
+          callId:
+          callId,
+        );
+
         return true;
 
       case 'incomingCallTimedOut':
-        await _handleIncomingTimeout(callId ?? pendingCallId);
+        await _handleIncomingTimeout(
+          callId ??
+              pendingCallId,
+        );
+
         return true;
 
       case 'nativeCallEnded':
-        final targetCallId =
-            callId ?? _callService.currentCallId ?? pendingCallId;
+        final String? targetCallId =
+            callId ??
+                _callService
+                    .currentCallId ??
+                pendingCallId;
 
         if (targetCallId != null) {
-          await endBackgroundCall(callId: targetCallId);
+          await endBackgroundCall(
+            callId:
+            targetCallId,
+          );
         }
 
         return true;
 
       case 'appLaunchedForCall':
       case 'restoreIncomingCall':
-        await restorePendingCall(nativeArguments: arguments);
+        await restorePendingCall(
+          nativeArguments:
+          arguments,
+        );
 
         return true;
 
       default:
         debugPrint(
-          'JR CALL: Unknown background-call native method: '
-          '${call.method}',
+          'JR CALL: Unknown '
+              'background-call native method: '
+              '${call.method}',
         );
 
         return null;
     }
   }
 
-  // ===========================================================
-  // Restore Pending Call
-  // ===========================================================
+  // =============================================================
+  // RESTORE PENDING CALL
+  // =============================================================
 
   Future<void> restorePendingCall({
-    Map<String, dynamic>? nativeArguments,
+    Map<String, dynamic>?
+    nativeArguments,
   }) async {
     if (_isDisposed) {
       return;
     }
 
     try {
-      final Map<String, dynamic> arguments =
-          nativeArguments ?? await _getNativePendingCall();
+      final Map<String, dynamic>
+      arguments =
+          nativeArguments ??
+              await _getNativePendingCall();
 
       if (arguments.isEmpty) {
         return;
       }
 
-      final payload = BackgroundCallPayload.fromMap(arguments);
+      final BackgroundCallPayload
+      rawPayload =
+      BackgroundCallPayload.fromMap(
+        arguments,
+      );
 
-      if (_lastCompletedCallId == payload.callId) {
-        await _invokeNativeMethod('dismissIncomingCall', <String, dynamic>{
-          'callId': payload.callId,
-        });
+      if (_isCallCompleted(
+        rawPayload.callId,
+      )) {
+        await _dismissNativeCall(
+          rawPayload.callId,
+        );
 
         return;
       }
 
-      if (_pendingCall?.callId == payload.callId &&
-          _lastPresentedCallId == payload.callId) {
+      if (_callService.isCallActive &&
+          _callService.currentCallId ==
+              rawPayload.callId) {
+        await _dismissNativeCall(
+          rawPayload.callId,
+        );
+
         return;
       }
 
-      final active = await _validateCallIsActive(payload.callId);
+      if (_callService.isCallActive &&
+          _callService.currentCallId !=
+              rawPayload.callId) {
+        await _rejectBusyIncomingCall(
+          rawPayload.callId,
+        );
+
+        await _dismissNativeCall(
+          rawPayload.callId,
+        );
+
+        return;
+      }
+
+      if (_pendingCall?.callId ==
+          rawPayload.callId &&
+          _lastPresentedCallId ==
+              rawPayload.callId) {
+        return;
+      }
+
+      final bool active =
+      await _validateCallIsActive(
+        rawPayload.callId,
+      );
 
       if (!active) {
-        await _invokeNativeMethod('dismissIncomingCall', <String, dynamic>{
-          'callId': payload.callId,
-        });
+        await _dismissNativeCall(
+          rawPayload.callId,
+        );
 
         return;
       }
 
-      _pendingCall = payload;
+      final Map<String, dynamic>
+      callData =
+      await _signalingService
+          .getCallDocument(
+        rawPayload.callId,
+      );
 
-      _lastPresentedCallId = payload.callId;
+      final BackgroundCallPayload
+      payload =
+      _mergePayloadWithCallDocument(
+        rawPayload,
+        callData,
+      );
 
-      final sessionToken = ++_sessionGeneration;
+      if (_isPayloadPresentationExpired(
+        payload,
+      )) {
+        _markCallCompleted(
+          payload.callId,
+        );
 
-      _startIncomingCallTimeout(payload.callId, sessionToken);
+        await _dismissNativeCall(
+          payload.callId,
+        );
+
+        _notificationService.dismiss(
+          payload.callId,
+        );
+
+        return;
+      }
+
+      _pendingCall =
+          payload;
+
+      _lastPresentedCallId =
+          payload.callId;
+
+      final int sessionToken =
+      ++_sessionGeneration;
+
+      _startIncomingCallTimeout(
+        payload,
+        sessionToken,
+      );
+
+      await _notificationService
+          .showIncomingCall(
+        callId:
+        payload.callId,
+        callerId:
+        payload.callerId,
+        callerName:
+        payload.callerName,
+        callerPhotoUrl:
+        payload.callerAvatarUrl,
+        isVideoCall:
+        payload.isVideoCall,
+        data:
+        payload.extra,
+      );
 
       _emitEvent(
         BackgroundCallEvent(
-          type: BackgroundCallEventType.restored,
-          callId: payload.callId,
-          payload: payload,
+          type:
+          BackgroundCallEventType
+              .restored,
+          callId:
+          payload.callId,
+          payload:
+          payload,
         ),
       );
     } catch (error, stackTrace) {
-      _reportError('Restore pending call', error, stackTrace);
+      _reportError(
+        'Restore pending call',
+        error,
+        stackTrace,
+      );
     }
   }
 
-  Future<Map<String, dynamic>> _getNativePendingCall() async {
-    final result = await _invokeNativeMethod('getPendingCall');
+  Future<Map<String, dynamic>>
+  _getNativePendingCall() async {
+    final Object? result =
+    await _invokeNativeMethod(
+      'getPendingCall',
+    );
 
-    return _normalizeArguments(result);
+    return _normalizeArguments(
+      result,
+    );
   }
 
-  // ===========================================================
-  // Incoming Timeout
-  // ===========================================================
+  // =============================================================
+  // PRESENTATION TIMEOUT
+  //
+  // CRITICAL:
+  //
+  // This timer only controls incoming-call presentation.
+  //
+  // It MUST NOT:
+  // - update signaling status;
+  // - write call history;
+  // - mark the call missed;
+  // - terminate PeerConnection.
+  //
+  // CallService owns canonical timeout/history behavior.
+  // =============================================================
 
-  void _startIncomingCallTimeout(String callId, int sessionToken) {
+  void _startIncomingCallTimeout(
+      BackgroundCallPayload payload,
+      int sessionToken,
+      ) {
     _cancelIncomingCallTimeout();
 
-    _incomingCallTimeoutTimer = Timer(_defaultIncomingCallTimeout, () {
-      if (!_isSessionCurrent(sessionToken) ||
-          _pendingCall?.callId != callId ||
-          _lastCompletedCallId == callId) {
-        return;
-      }
+    final Duration remaining =
+    _remainingIncomingPresentationTime(
+      payload,
+    );
 
-      unawaited(_handleIncomingTimeout(callId));
-    });
+    if (remaining <=
+        Duration.zero) {
+      unawaited(
+        _handleIncomingTimeout(
+          payload.callId,
+        ),
+      );
+
+      return;
+    }
+
+    _incomingCallTimeoutTimer =
+        Timer(
+          remaining,
+              () {
+            if (!_isSessionCurrent(
+              sessionToken,
+            ) ||
+                _pendingCall?.callId !=
+                    payload.callId ||
+                _isCallCompleted(
+                  payload.callId,
+                )) {
+              return;
+            }
+
+            unawaited(
+              _handleIncomingTimeout(
+                payload.callId,
+              ),
+            );
+          },
+        );
   }
 
-  Future<void> _handleIncomingTimeout(String? callId) async {
-    final normalizedCallId = _readOptionalString(callId);
+  Duration
+  _remainingIncomingPresentationTime(
+      BackgroundCallPayload payload,
+      ) {
+    final DateTime? createdAt =
+        payload.createdAt;
+
+    if (createdAt == null) {
+      return _defaultIncomingCallTimeout;
+    }
+
+    final DateTime expiresAt =
+    createdAt.add(
+      _defaultIncomingCallTimeout,
+    );
+
+    final Duration remaining =
+    expiresAt.difference(
+      DateTime.now(),
+    );
+
+    if (remaining <=
+        Duration.zero) {
+      return Duration.zero;
+    }
+
+    // If server/client clock skew places createdAt in the future,
+    // never grant more than the configured presentation window.
+    if (remaining >
+        _defaultIncomingCallTimeout) {
+      return _defaultIncomingCallTimeout;
+    }
+
+    return remaining;
+  }
+
+  bool _isPayloadPresentationExpired(
+      BackgroundCallPayload payload,
+      ) {
+    return _remainingIncomingPresentationTime(
+      payload,
+    ) <=
+        Duration.zero;
+  }
+
+  Future<void>
+  _handleIncomingTimeout(
+      String? callId,
+      ) async {
+    final String? normalizedCallId =
+    _readOptionalString(
+      callId,
+    );
 
     if (normalizedCallId == null) {
       return;
     }
 
-    if (_lastCompletedCallId == normalizedCallId) {
+    if (_isCallCompleted(
+      normalizedCallId,
+    )) {
       return;
     }
 
-    if (_activeActionCallId == normalizedCallId) {
+    if (_activeActionCallId ==
+        normalizedCallId) {
       return;
     }
 
-    if (!_beginAction(normalizedCallId)) {
+    if (!_beginAction(
+      normalizedCallId,
+    )) {
       return;
     }
 
-    final payload = _pendingCall;
+    final BackgroundCallPayload?
+    payload =
+    _pendingCall?.callId ==
+        normalizedCallId
+        ? _pendingCall
+        : null;
 
     try {
       _cancelIncomingCallTimeout();
 
-      final active = await _validateCallIsActive(normalizedCallId);
+      _markCallCompleted(
+        normalizedCallId,
+      );
 
-      if (active) {
-        await _signalingService.updateCallStatus(normalizedCallId, 'timeout');
-
-        await _signalingService.saveCallHistory(
-          callId: normalizedCallId,
-          duration: 0,
-          status: 'TIMEOUT',
-          callType: payload?.isVideoCall == true ? 'video' : 'voice',
-        );
-      }
-
-      _markCallCompleted(normalizedCallId);
+      // Presentation-only cleanup.
+      //
+      // CallService already owns canonical timeout/missed/history.
+      _notificationService.dismiss(
+        normalizedCallId,
+      );
 
       _emitEvent(
         BackgroundCallEvent(
-          type: BackgroundCallEventType.timeout,
-          callId: normalizedCallId,
-          payload: payload,
+          type:
+          BackgroundCallEventType
+              .timeout,
+          callId:
+          normalizedCallId,
+          payload:
+          payload,
         ),
       );
     } catch (error, stackTrace) {
-      _reportError('Incoming call timeout', error, stackTrace);
+      _reportError(
+        'Incoming presentation timeout',
+        error,
+        stackTrace,
+      );
 
       _emitEvent(
         BackgroundCallEvent(
-          type: BackgroundCallEventType.error,
-          callId: normalizedCallId,
-          payload: payload,
-          error: error,
+          type:
+          BackgroundCallEventType
+              .error,
+          callId:
+          normalizedCallId,
+          payload:
+          payload,
+          error:
+          error,
         ),
       );
     } finally {
-      await _clearPendingCall(dismissNativeUi: true);
+      await _clearPendingCall(
+        dismissNativeUi:
+        true,
+        callIdOverride:
+        normalizedCallId,
+      );
 
-      _endAction(normalizedCallId);
+      _endAction(
+        normalizedCallId,
+      );
     }
   }
 
   void _cancelIncomingCallTimeout() {
-    _incomingCallTimeoutTimer?.cancel();
+    _incomingCallTimeoutTimer
+        ?.cancel();
 
-    _incomingCallTimeoutTimer = null;
+    _incomingCallTimeoutTimer =
+    null;
   }
 
-  // ===========================================================
-  // Busy Handling
-  // ===========================================================
+  // =============================================================
+  // BUSY HANDLING
+  //
+  // CallService owns lifecycle mutation/history.
+  // =============================================================
 
-  Future<void> _rejectBusyIncomingCall(String callId) async {
-    final normalizedCallId = callId.trim();
+  Future<void>
+  _rejectBusyIncomingCall(
+      String callId,
+      ) async {
+    final String normalizedCallId =
+    callId.trim();
 
-    if (normalizedCallId.isEmpty) {
+    if (normalizedCallId.isEmpty ||
+        _isCallCompleted(
+          normalizedCallId,
+        )) {
       return;
     }
 
     try {
-      await _signalingService.updateCallStatus(normalizedCallId, 'rejected');
-
-      await _signalingService.saveCallHistory(
-        callId: normalizedCallId,
-        duration: 0,
-        status: 'BUSY',
+      await _callService.rejectCall(
+        callId:
+        normalizedCallId,
       );
 
-      _markCallCompleted(normalizedCallId);
+      _markCallCompleted(
+        normalizedCallId,
+      );
+
+      _emitEvent(
+        BackgroundCallEvent(
+          type:
+          BackgroundCallEventType
+              .rejected,
+          callId:
+          normalizedCallId,
+        ),
+      );
     } catch (error, stackTrace) {
-      _reportError('Reject busy incoming call', error, stackTrace);
+      _reportError(
+        'Reject busy incoming call',
+        error,
+        stackTrace,
+      );
     }
   }
 
-  // ===========================================================
-  // Native Calls
-  // ===========================================================
+  // =============================================================
+  // NOTIFICATION / LOCALIZATION BRIDGE
+  // =============================================================
 
-  Future<void> _notifyNativeServiceReady() async {
+  Future<Map<String, dynamic>>
+  _buildIncomingNativeArguments(
+      BackgroundCallPayload payload,
+      ) async {
+    await _notificationService
+        .showIncomingCall(
+      callId:
+      payload.callId,
+      callerId:
+      payload.callerId,
+      callerName:
+      payload.callerName,
+      callerPhotoUrl:
+      payload.callerAvatarUrl,
+      isVideoCall:
+      payload.isVideoCall,
+      data:
+      payload.extra,
+    );
+
+    final CallNotification?
+    notification =
+    _findNotification(
+      payload.callId,
+    );
+
+    final Map<String, dynamic>
+    result =
+    <String, dynamic>{
+      ...payload.toMap(),
+    };
+
+    if (notification != null) {
+      result.addAll(
+        <String, dynamic>{
+          // Current localized/fallback presentation.
+          'notificationTitle':
+          notification.title,
+          'notificationBody':
+          notification.body,
+
+          // Stable resource metadata for Android/iOS mapping.
+          'notificationTitleLocKey':
+          notification
+              .titleLocalizationKey,
+          'notificationBodyLocKey':
+          notification
+              .bodyLocalizationKey,
+          'notificationTitleLocArgs':
+          notification
+              .titleLocalizationArgs,
+          'notificationBodyLocArgs':
+          notification
+              .bodyLocalizationArgs,
+        },
+      );
+    }
+
+    return result;
+  }
+
+  CallNotification?
+  _findNotification(
+      String callId,
+      ) {
+    for (final CallNotification
+    notification
+    in _notificationService
+        .activeNotifications) {
+      if (notification.callId ==
+          callId) {
+        return notification;
+      }
+    }
+
+    return null;
+  }
+
+  // =============================================================
+  // NATIVE SERVICE READY
+  // =============================================================
+
+  Future<void>
+  _notifyNativeServiceReady() async {
     await _invokeNativeMethod(
       'initializeBackgroundCallService',
       <String, dynamic>{
-        'supportsVideo': true,
-        'incomingTimeoutSeconds': _defaultIncomingCallTimeout.inSeconds,
+        'supportsVideo':
+        true,
+        'incomingTimeoutSeconds':
+        _defaultIncomingCallTimeout
+            .inSeconds,
       },
     );
   }
 
+  // =============================================================
+  // NATIVE METHOD INVOCATION
+  // =============================================================
+
   Future<Object?> _invokeNativeMethod(
-    String method, [
-    Map<String, dynamic>? arguments,
-  ]) async {
-    if (kIsWeb || _isDisposed) {
+      String method, [
+        Map<String, dynamic>?
+        arguments,
+      ]) async {
+    if (kIsWeb ||
+        _isDisposed) {
       return null;
     }
 
+    final Map<String, dynamic>?
+    safeArguments =
+    arguments == null
+        ? null
+        : _toPlatformSafeMap(
+      arguments,
+    );
+
     try {
-      return await _platformChannel.invokeMethod<Object?>(method, arguments);
+      return await _platformChannel
+          .invokeMethod<Object?>(
+        method,
+        safeArguments,
+      );
     } on MissingPluginException {
       debugPrint(
-        'JR CALL: Native background-call implementation '
-        'is not connected for this platform.',
+        'JR CALL: Native background-call '
+            'implementation is not connected '
+            'for this platform.',
       );
 
       return null;
-    } on PlatformException catch (error, stackTrace) {
-      _reportError('Native method $method', error, stackTrace);
+    } on PlatformException
+    catch (error, stackTrace) {
+      _reportError(
+        'Native method $method',
+        error,
+        stackTrace,
+      );
 
       return null;
     }
   }
 
-  // ===========================================================
-  // Action / Concurrency Protection
-  // ===========================================================
+  Future<void> _dismissNativeCall(
+      String callId,
+      ) async {
+    final String normalized =
+    callId.trim();
 
-  bool _beginAction(String callId) {
-    final normalizedCallId = callId.trim();
+    if (normalized.isEmpty) {
+      return;
+    }
 
-    if (_isDisposed || normalizedCallId.isEmpty) {
+    await _invokeNativeMethod(
+      'dismissIncomingCall',
+      <String, dynamic>{
+        'callId':
+        normalized,
+      },
+    );
+  }
+
+  // =============================================================
+  // PLATFORM CODEC SAFETY
+  //
+  // Firestore Timestamp and arbitrary plugin objects cannot be sent
+  // directly through StandardMethodCodec.
+  // =============================================================
+
+  Map<String, dynamic>
+  _toPlatformSafeMap(
+      Map<String, dynamic> map,
+      ) {
+    final Map<String, dynamic>
+    result =
+    <String, dynamic>{};
+
+    for (final MapEntry<
+        String,
+        dynamic>
+    entry
+    in map.entries) {
+      result[entry.key] =
+          _toPlatformSafeValue(
+            entry.value,
+          );
+    }
+
+    return result;
+  }
+
+  dynamic _toPlatformSafeValue(
+      Object? value,
+      ) {
+    if (value == null ||
+        value is String ||
+        value is bool ||
+        value is int ||
+        value is double) {
+      return value;
+    }
+
+    if (value is num) {
+      return value.toDouble();
+    }
+
+    if (value is DateTime) {
+      return value
+          .toIso8601String();
+    }
+
+    if (value is Duration) {
+      return value
+          .inMilliseconds;
+    }
+
+    if (value is Map) {
+      final Map<String, dynamic>
+      normalized =
+      <String, dynamic>{};
+
+      for (final MapEntry<dynamic, dynamic>
+      entry
+      in value.entries) {
+        normalized[
+        entry.key.toString()] =
+            _toPlatformSafeValue(
+              entry.value,
+            );
+      }
+
+      return normalized;
+    }
+
+    if (value is Iterable) {
+      return value
+          .map<dynamic>(
+        _toPlatformSafeValue,
+      )
+          .toList(
+        growable: false,
+      );
+    }
+
+    // Firestore Timestamp-style object.
+    try {
+      final dynamic dynamicValue =
+          value;
+
+      final Object? converted =
+      dynamicValue.toDate();
+
+      if (converted is DateTime) {
+        return converted
+            .toIso8601String();
+      }
+    } catch (_) {
+      // Not a supported date-like object.
+    }
+
+    // Never allow an unsupported platform-channel value to crash
+    // incoming-call presentation.
+    return value.toString();
+  }
+
+  // =============================================================
+  // ACTION / CONCURRENCY PROTECTION
+  // =============================================================
+
+  bool _beginAction(
+      String callId,
+      ) {
+    final String normalizedCallId =
+    callId.trim();
+
+    if (_isDisposed ||
+        normalizedCallId.isEmpty) {
       return false;
     }
 
-    if (_activeActionCallId != null) {
+    if (_activeActionCallId !=
+        null) {
       return false;
     }
 
-    _activeActionCallId = normalizedCallId;
+    _activeActionCallId =
+        normalizedCallId;
 
     return true;
   }
 
-  void _endAction(String callId) {
-    if (_activeActionCallId == callId.trim()) {
-      _activeActionCallId = null;
+  void _endAction(
+      String callId,
+      ) {
+    if (_activeActionCallId ==
+        callId.trim()) {
+      _activeActionCallId =
+      null;
     }
   }
 
-  void _markCallCompleted(String callId) {
-    final normalizedCallId = callId.trim();
+  // =============================================================
+  // COMPLETED CALL DEDUPE
+  // =============================================================
+
+  bool _isCallCompleted(
+      String callId,
+      ) {
+    return _completedCallIds
+        .contains(
+      callId.trim(),
+    );
+  }
+
+  void _markCallCompleted(
+      String callId,
+      ) {
+    final String normalizedCallId =
+    callId.trim();
 
     if (normalizedCallId.isEmpty) {
       return;
     }
 
-    _lastCompletedCallId = normalizedCallId;
+    _completedCallIds.remove(
+      normalizedCallId,
+    );
+
+    _completedCallIds.add(
+      normalizedCallId,
+    );
+
+    while (_completedCallIds.length >
+        _completedCallCacheLimit) {
+      _completedCallIds.removeAt(
+        0,
+      );
+    }
   }
 
-  String? _resolveActionCallId(String? callId) {
-    final normalizedCallId = _readOptionalString(callId);
+  void _removeCompletedCall(
+      String callId,
+      ) {
+    _completedCallIds.remove(
+      callId.trim(),
+    );
+  }
 
-    return normalizedCallId ??
-        _pendingCall?.callId ??
+  // =============================================================
+  // ACTION CALL-ID RESOLUTION
+  // =============================================================
+
+  String? _resolveActionCallId(
+      String? callId,
+      ) {
+    final String? normalizedCallId =
+    _readOptionalString(
+      callId,
+    );
+
+    if (normalizedCallId != null) {
+      if (_pendingCall?.callId ==
+          normalizedCallId ||
+          _callService.currentCallId ==
+              normalizedCallId) {
+        return normalizedCallId;
+      }
+
+      // Ignore stale/native actions for a different call.
+      return null;
+    }
+
+    return _pendingCall?.callId ??
         _callService.currentCallId;
   }
 
-  bool _isSessionCurrent(int sessionToken) {
-    return !_isDisposed && sessionToken == _sessionGeneration;
+  bool _isSessionCurrent(
+      int sessionToken,
+      ) {
+    return !_isDisposed &&
+        sessionToken ==
+            _sessionGeneration;
   }
 
-  // ===========================================================
-  // Pending Call Cleanup
-  // ===========================================================
+  // =============================================================
+  // PENDING CALL CLEANUP
+  // =============================================================
 
-  Future<void> _clearPendingCall({required bool dismissNativeUi}) async {
-    final callId = _pendingCall?.callId;
+  Future<void> _clearPendingCall({
+    required bool dismissNativeUi,
+    String? callIdOverride,
+  }) async {
+    final String? callId =
+        _readOptionalString(
+          callIdOverride,
+        ) ??
+            _pendingCall?.callId;
 
     _sessionGeneration++;
 
@@ -1052,55 +2331,95 @@ class BackgroundCallService with WidgetsBindingObserver {
 
     _pendingCall = null;
 
-    _lastPresentedCallId = null;
+    _lastPresentedCallId =
+    null;
 
-    _isShowingIncomingCall = false;
+    _isShowingIncomingCall =
+    false;
 
-    if (dismissNativeUi && callId != null) {
-      await _invokeNativeMethod('dismissIncomingCall', <String, dynamic>{
-        'callId': callId,
-      });
+    if (dismissNativeUi &&
+        callId != null) {
+      await _dismissNativeCall(
+        callId,
+      );
     }
   }
 
+  // =============================================================
+  // RESET
+  // =============================================================
+
   void reset() {
+    final String? pendingId =
+        _pendingCall?.callId;
+
     _sessionGeneration++;
 
     _cancelIncomingCallTimeout();
 
     _pendingCall = null;
 
-    _lastPresentedCallId = null;
+    _lastPresentedCallId =
+    null;
 
-    _lastCompletedCallId = null;
+    _completedCallIds.clear();
 
-    _activeActionCallId = null;
+    _activeActionCallId =
+    null;
 
-    _isShowingIncomingCall = false;
+    _isShowingIncomingCall =
+    false;
+
+    if (pendingId != null) {
+      _notificationService.dismiss(
+        pendingId,
+      );
+    }
   }
 
-  // ===========================================================
-  // Helpers
-  // ===========================================================
+  // =============================================================
+  // EVENT EMITTER
+  // =============================================================
 
-  void _emitEvent(BackgroundCallEvent event) {
-    if (_isDisposed || _eventController.isClosed) {
+  void _emitEvent(
+      BackgroundCallEvent event,
+      ) {
+    if (_isDisposed ||
+        _eventController.isClosed) {
       return;
     }
 
-    _eventController.add(event);
+    _eventController.add(
+      event,
+    );
   }
 
-  Map<String, dynamic> _normalizeArguments(Object? arguments) {
-    if (arguments is Map<String, dynamic>) {
-      return Map<String, dynamic>.from(arguments);
+  // =============================================================
+  // ARGUMENT NORMALIZATION
+  // =============================================================
+
+  Map<String, dynamic>
+  _normalizeArguments(
+      Object? arguments,
+      ) {
+    if (arguments
+    is Map<String, dynamic>) {
+      return Map<String, dynamic>.from(
+        arguments,
+      );
     }
 
     if (arguments is Map) {
-      final normalized = <String, dynamic>{};
+      final Map<String, dynamic>
+      normalized =
+      <String, dynamic>{};
 
-      for (final entry in arguments.entries) {
-        normalized[entry.key.toString()] = entry.value;
+      for (final MapEntry<dynamic, dynamic>
+      entry
+      in arguments.entries) {
+        normalized[
+        entry.key.toString()] =
+            entry.value;
       }
 
       return normalized;
@@ -1109,37 +2428,60 @@ class BackgroundCallService with WidgetsBindingObserver {
     return <String, dynamic>{};
   }
 
-  String _readCallIdSafely(Map<String, dynamic> map) {
-    return _readOptionalString(map['callId']) ?? '';
+  String _readCallIdSafely(
+      Map<String, dynamic> map,
+      ) {
+    return _readOptionalString(
+      map['callId'],
+    ) ??
+        '';
   }
 
-  String? _readOptionalString(Object? value) {
+  String? _readOptionalString(
+      Object? value,
+      ) {
     if (value is! String) {
       return null;
     }
 
-    final normalized = value.trim();
+    final String normalized =
+    value.trim();
 
-    return normalized.isEmpty ? null : normalized;
+    if (normalized.isEmpty) {
+      return null;
+    }
+
+    return normalized;
   }
 
-  void _reportError(String source, Object error, [StackTrace? stackTrace]) {
+  // =============================================================
+  // ERROR LOGGING
+  // =============================================================
+
+  void _reportError(
+      String source,
+      Object error, [
+        StackTrace? stackTrace,
+      ]) {
     debugPrint(
       'JR CALL BackgroundCallService '
-      '[$source] error: $error',
+          '[$source] error: $error',
     );
 
     if (stackTrace != null) {
       debugPrintStack(
-        label: 'JR CALL BackgroundCallService [$source]',
-        stackTrace: stackTrace,
+        label:
+        'JR CALL BackgroundCallService '
+            '[$source]',
+        stackTrace:
+        stackTrace,
       );
     }
   }
 
-  // ===========================================================
-  // Dispose
-  // ===========================================================
+  // =============================================================
+  // DISPOSE
+  // =============================================================
 
   Future<void> dispose() async {
     if (_isDisposed) {
@@ -1148,27 +2490,98 @@ class BackgroundCallService with WidgetsBindingObserver {
 
     _isDisposed = true;
 
-    WidgetsBinding.instance.removeObserver(this);
+    WidgetsBinding.instance
+        .removeObserver(
+      this,
+    );
 
-    _platformChannel.setMethodCallHandler(null);
+    _platformChannel
+        .setMethodCallHandler(
+      null,
+    );
 
     _sessionGeneration++;
 
     _cancelIncomingCallTimeout();
 
     _pendingCall = null;
-    _lastPresentedCallId = null;
-    _lastCompletedCallId = null;
-    _activeActionCallId = null;
-    _isShowingIncomingCall = false;
+
+    _lastPresentedCallId =
+    null;
+
+    _completedCallIds.clear();
+
+    _activeActionCallId =
+    null;
+
+    _isShowingIncomingCall =
+    false;
 
     if (!_eventController.isClosed) {
       await _eventController.close();
     }
 
     _isInitialized = false;
-    _initializationFuture = null;
 
-    debugPrint('JR CALL: BackgroundCallService disposed.');
+    _initializationFuture =
+    null;
+
+    debugPrint(
+      'JR CALL: '
+          'BackgroundCallService disposed.',
+    );
   }
 }
+
+// ===============================================================
+// END OF FILE
+//
+// FILE 36 PRODUCTION CONTRACT:
+//
+// ✓ Existing BackgroundCallService.instance preserved.
+// ✓ Existing MethodChannel name preserved.
+// ✓ Existing event types preserved.
+// ✓ Existing payload public API preserved.
+// ✓ Existing events stream preserved.
+// ✓ Existing initialization API preserved.
+// ✓ Existing incoming-data API preserved.
+// ✓ Existing accept/reject/end APIs preserved.
+// ✓ Existing restore/reset/dispose APIs preserved.
+//
+// ✓ SignalingService used READ-ONLY here.
+// ✓ No direct updateCallStatus() from background service.
+// ✓ No direct saveCallHistory() from background service.
+// ✓ CallService remains lifecycle/history owner.
+//
+// ✓ Presentation timeout no longer writes TIMEOUT status.
+// ✓ Presentation timeout no longer writes history.
+// ✓ Presentation timeout never ends actual call.
+// ✓ Original createdAt controls remaining presentation time.
+// ✓ Delayed push cannot receive a fresh extra 45 seconds.
+// ✓ Restored push cannot receive a fresh extra 45 seconds.
+// ✓ Future clock skew cannot extend beyond 45 seconds.
+//
+// ✓ Busy rejection delegates to CallService.
+// ✓ Native stale action IDs are rejected.
+// ✓ Completed-call dedupe supports multiple recent calls.
+// ✓ Duplicate incoming presentation protected.
+// ✓ Accepted call is not falsely labeled WebRTC-connected.
+//
+// ✓ NotificationService FILE 35 integration added.
+// ✓ Current localized title/body bridged to native.
+// ✓ Stable native localization keys bridged.
+// ✓ Ordered localization arguments bridged.
+// ✓ No country-specific language hardcoding.
+// ✓ Native platform can map keys to Android/iOS resources.
+//
+// ✓ Firestore Timestamp-like values normalized safely.
+// ✓ Unsupported MethodChannel values cannot break codec encoding.
+// ✓ Platform payload is recursively codec-safe.
+//
+// ✓ No FCM background-handler ownership added.
+// ✓ No PeerConnection ownership added.
+// ✓ No media ownership added.
+// ✓ No ICE ownership added.
+// ✓ No RecoveryManager ownership added.
+// ✓ No UI/design ownership added.
+// ===============================================================

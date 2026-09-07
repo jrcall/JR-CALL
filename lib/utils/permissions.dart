@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -6,229 +8,394 @@ import 'package:permission_handler/permission_handler.dart';
 /// File: permissions.dart
 /// Location: lib/utils/permissions.dart
 ///
-/// Description:
-/// Central production runtime-permission coordinator.
+/// MASTER PRODUCTION RUNTIME PERMISSION COORDINATOR
 ///
-/// Responsibilities:
-/// - Camera permission
-/// - Microphone permission
-/// - Voice/video call media permission
-/// - Profile/gallery media permission
-/// - Contacts permission
-/// - Notification permission
-/// - Bluetooth connection permission
-/// - Optional Bluetooth discovery permission
-/// - Optional nearby Wi-Fi devices permission
-/// - Legacy compatibility APIs
-/// - Permanent-denial detection
-/// - Restricted-status detection
-/// - Safe application-settings access
+/// RESPONSIBILITIES:
 ///
-/// Production Rules:
-/// - Request permissions only when the relevant feature is used.
-/// - Never request every sensitive permission at app startup.
-/// - No broad Android storage permission for profile/gallery media.
-/// - Android Photo Picker / scoped picker is preferred.
-/// - Firebase Phone Auth does not use Permission.phone.
-/// - Bluetooth scanning is separated from Bluetooth connection.
-/// - Contacts permission remains optional.
-/// - No Firebase/WebRTC/media-acquisition ownership here.
+/// - Camera permission.
+/// - Microphone permission.
+/// - Voice/video call media permission.
+/// - Profile/gallery media permission.
+/// - Contacts permission.
+/// - Notification permission.
+/// - Bluetooth connection permission.
+/// - Bluetooth discovery permission.
+/// - Optional nearby Wi-Fi permission.
+/// - Legacy compatibility APIs.
+/// - Permanent-denial detection.
+/// - Restricted-status detection.
+/// - Permission rationale checks.
+/// - Application-settings access.
+/// - Serialized runtime permission requests.
 ///
-/// Native declarations remain separate:
-/// - AndroidManifest.xml
-/// - iOS Info.plist
-/// - macOS native configuration when supported
+/// PRODUCTION RULES:
+///
+/// - Request sensitive permissions only when the related feature
+///   is actually used.
+/// - Never request every permission at application startup.
+/// - Android profile/gallery selection uses system/scoped picker.
+/// - No broad Android storage permission for normal media picking.
+/// - Firebase Phone Auth never requires Permission.phone.
+/// - Bluetooth scan and Bluetooth connection remain separate.
+/// - Nearby Wi-Fi permission remains optional/feature-triggered.
+/// - Contacts permission remains optional/feature-triggered.
+/// - Recording consent is NOT owned by this utility.
+/// - Screen-capture consent is NOT owned by this utility.
+/// - WebRTC media acquisition is NOT owned by this utility.
+///
+/// NATIVE DECLARATIONS REMAIN SEPARATE:
+///
+/// - android/app/src/main/AndroidManifest.xml
+/// - ios/Runner/Info.plist
+/// - iOS permission_handler permission macros/configuration
+/// - Windows/native platform configuration where applicable
+///
+/// IMPORTANT:
+///
+/// permission_handler 12.0.1 officially provides plugin support
+/// for Android, iOS, Web and Windows.
+///
+/// On Web, the browser/media API owns the actual permission prompt.
+///
+/// On other unsupported Flutter desktop targets, this utility does
+/// not invoke permission_handler blindly. The actual platform/media
+/// API remains responsible for permission enforcement.
 /// ===========================================================
+
 class AppPermissions {
   AppPermissions._();
 
   // ===========================================================
-  // Platform Helpers
+  // PLATFORM
   // ===========================================================
 
   static bool get _isAndroid =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+      !kIsWeb &&
+          defaultTargetPlatform == TargetPlatform.android;
 
   static bool get _isIOS =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+      !kIsWeb &&
+          defaultTargetPlatform == TargetPlatform.iOS;
 
-  static bool get _isMacOS =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+  static bool get _isWindows =>
+      !kIsWeb &&
+          defaultTargetPlatform == TargetPlatform.windows;
 
-  static bool get _isMobile => _isAndroid || _isIOS;
+  /// Runtime permission_handler implementation used by this
+  /// project/version for native requests.
+  static bool get _supportsPermissionHandlerRuntime =>
+      _isAndroid || _isIOS || _isWindows;
 
-  static bool get _supportsNativeCameraAndMicrophone {
-    return _isAndroid || _isIOS || _isMacOS;
-  }
+  /// Camera/microphone runtime state can be queried through
+  /// permission_handler on these supported native targets.
+  static bool get _supportsCameraAndMicrophoneRuntime =>
+      _supportsPermissionHandlerRuntime;
+
+  /// Contacts are runtime-sensitive on mobile. Windows plugin
+  /// safely reports the platform state where supported.
+  static bool get _supportsContactsRuntime =>
+      _isAndroid || _isIOS || _isWindows;
+
+  /// Notification authorization is platform-specific.
+  static bool get _supportsNotificationRuntime =>
+      _isAndroid || _isIOS || _isWindows;
+
+  /// Bluetooth permission handling used by JR CALL.
+  static bool get _supportsBluetoothRuntime =>
+      _isAndroid || _isIOS || _isWindows;
 
   // ===========================================================
-  // Permission Status Helpers
+  // SERIALIZED PERMISSION REQUEST ENGINE
+  //
+  // Operating systems should not receive multiple overlapping
+  // permission dialogs caused by fast/concurrent UI actions.
+  // ===========================================================
+
+  static Future<void> _requestQueue = Future<void>.value();
+
+  // ===========================================================
+  // STATUS HELPERS
   // ===========================================================
 
   static bool _isUsableStatus(
-    PermissionStatus status, {
-    bool allowProvisional = false,
-  }) {
-    if (status == PermissionStatus.granted ||
+      PermissionStatus status, {
+        bool allowLimited = false,
+        bool allowProvisional = false,
+      }) {
+    if (status == PermissionStatus.granted) {
+      return true;
+    }
+
+    if (allowLimited &&
         status == PermissionStatus.limited) {
       return true;
     }
 
-    if (allowProvisional && status == PermissionStatus.provisional) {
+    if (allowProvisional &&
+        status == PermissionStatus.provisional) {
       return true;
     }
 
     return false;
   }
 
-  static Future<PermissionStatus> _safeStatus(Permission permission) async {
+  static Future<PermissionStatus> _safeStatus(
+      Permission permission,
+      ) async {
+    // Web permissions are requested by the browser API that
+    // actually accesses the resource.
     if (kIsWeb) {
+      return PermissionStatus.granted;
+    }
+
+    // Do not call a platform implementation that this pinned
+    // permission_handler version does not officially provide.
+    if (!_supportsPermissionHandlerRuntime) {
       return PermissionStatus.granted;
     }
 
     try {
       return await permission.status;
-    } catch (error) {
-      debugPrint(
-        'JR CALL [Permissions] '
-        '${permission.toString()} status failed: $error',
+    } catch (error, stackTrace) {
+      _reportError(
+        '${permission.toString()} status',
+        error,
+        stackTrace,
       );
 
       return PermissionStatus.denied;
     }
   }
 
-  static Future<bool> _request(
-    Permission permission, {
-    bool allowProvisional = false,
-  }) async {
-    if (kIsWeb) {
-      // Web permissions are controlled by the browser/API that
-      // actually accesses the camera, microphone or other data.
+  static Future<bool> _has(
+      Permission permission, {
+        bool allowLimited = false,
+        bool allowProvisional = false,
+      }) async {
+    if (kIsWeb ||
+        !_supportsPermissionHandlerRuntime) {
       return true;
     }
 
-    try {
-      final currentStatus = await permission.status;
+    final PermissionStatus status =
+    await _safeStatus(
+      permission,
+    );
 
-      if (_isUsableStatus(currentStatus, allowProvisional: allowProvisional)) {
+    return _isUsableStatus(
+      status,
+      allowLimited: allowLimited,
+      allowProvisional: allowProvisional,
+    );
+  }
+
+  // ===========================================================
+  // CENTRAL REQUEST
+  // ===========================================================
+
+  static Future<bool> _request(
+      Permission permission, {
+        bool allowLimited = false,
+        bool allowProvisional = false,
+      }) {
+    if (kIsWeb ||
+        !_supportsPermissionHandlerRuntime) {
+      return Future<bool>.value(true);
+    }
+
+    final Completer<bool> completer =
+    Completer<bool>();
+
+    _requestQueue = _requestQueue.then<void>(
+          (_) async {
+        try {
+          final bool result =
+          await _requestDirect(
+            permission,
+            allowLimited: allowLimited,
+            allowProvisional: allowProvisional,
+          );
+
+          if (!completer.isCompleted) {
+            completer.complete(
+              result,
+            );
+          }
+        } catch (error, stackTrace) {
+          _reportError(
+            '${permission.toString()} request queue',
+            error,
+            stackTrace,
+          );
+
+          if (!completer.isCompleted) {
+            completer.complete(
+              false,
+            );
+          }
+        }
+      },
+    );
+
+    return completer.future;
+  }
+
+  static Future<bool> _requestDirect(
+      Permission permission, {
+        required bool allowLimited,
+        required bool allowProvisional,
+      }) async {
+    try {
+      final PermissionStatus currentStatus =
+      await permission.status;
+
+      if (_isUsableStatus(
+        currentStatus,
+        allowLimited: allowLimited,
+        allowProvisional: allowProvisional,
+      )) {
         return true;
       }
 
-      if (currentStatus == PermissionStatus.permanentlyDenied ||
-          currentStatus == PermissionStatus.restricted) {
+      if (currentStatus ==
+          PermissionStatus.permanentlyDenied ||
+          currentStatus ==
+              PermissionStatus.restricted) {
         return false;
       }
 
-      final requestedStatus = await permission.request();
+      final PermissionStatus requestedStatus =
+      await permission.request();
 
       return _isUsableStatus(
         requestedStatus,
+        allowLimited: allowLimited,
         allowProvisional: allowProvisional,
       );
-    } catch (error) {
-      debugPrint(
-        'JR CALL [Permissions] '
-        '${permission.toString()} request failed: $error',
+    } catch (error, stackTrace) {
+      _reportError(
+        '${permission.toString()} request',
+        error,
+        stackTrace,
       );
 
       return false;
     }
   }
 
-  static Future<bool> _has(
-    Permission permission, {
-    bool allowProvisional = false,
+  static Future<bool> _isPermanentlyDenied(
+      Permission permission,
+      ) async {
+    if (kIsWeb ||
+        !_supportsPermissionHandlerRuntime) {
+      return false;
+    }
+
+    final PermissionStatus status =
+    await _safeStatus(
+      permission,
+    );
+
+    return status ==
+        PermissionStatus.permanentlyDenied;
+  }
+
+  // ===========================================================
+  // CAMERA
+  // ===========================================================
+
+  static Future<bool> requestCamera() {
+    if (!_supportsCameraAndMicrophoneRuntime) {
+      return Future<bool>.value(true);
+    }
+
+    return _request(
+      Permission.camera,
+    );
+  }
+
+  static Future<bool> hasCameraPermission() {
+    if (!_supportsCameraAndMicrophoneRuntime) {
+      return Future<bool>.value(true);
+    }
+
+    return _has(
+      Permission.camera,
+    );
+  }
+
+  static Future<bool>
+  isCameraPermanentlyDenied() {
+    if (!_supportsCameraAndMicrophoneRuntime) {
+      return Future<bool>.value(false);
+    }
+
+    return _isPermanentlyDenied(
+      Permission.camera,
+    );
+  }
+
+  // ===========================================================
+  // MICROPHONE
+  // ===========================================================
+
+  static Future<bool> requestMicrophone() {
+    if (!_supportsCameraAndMicrophoneRuntime) {
+      return Future<bool>.value(true);
+    }
+
+    return _request(
+      Permission.microphone,
+    );
+  }
+
+  static Future<bool>
+  hasMicrophonePermission() {
+    if (!_supportsCameraAndMicrophoneRuntime) {
+      return Future<bool>.value(true);
+    }
+
+    return _has(
+      Permission.microphone,
+    );
+  }
+
+  static Future<bool>
+  isMicrophonePermanentlyDenied() {
+    if (!_supportsCameraAndMicrophoneRuntime) {
+      return Future<bool>.value(false);
+    }
+
+    return _isPermanentlyDenied(
+      Permission.microphone,
+    );
+  }
+
+  // ===========================================================
+  // CALL MEDIA PERMISSIONS
+  //
+  // Voice:
+  // - Microphone only.
+  //
+  // Video:
+  // - Microphone.
+  // - Camera.
+  //
+  // Deliberately excluded:
+  // - Phone.
+  // - Contacts.
+  // - Notifications.
+  // - Bluetooth.
+  // - Storage.
+  // - Photos.
+  // - Nearby Wi-Fi.
+  // ===========================================================
+
+  static Future<bool> requestCallPermissions({
+    bool videoCall = true,
   }) async {
-    if (kIsWeb) {
-      return true;
-    }
-
-    final status = await _safeStatus(permission);
-
-    return _isUsableStatus(status, allowProvisional: allowProvisional);
-  }
-
-  static Future<bool> _isPermanentlyDenied(Permission permission) async {
-    if (kIsWeb) {
-      return false;
-    }
-
-    final status = await _safeStatus(permission);
-
-    return status == PermissionStatus.permanentlyDenied;
-  }
-
-  // ===========================================================
-  // Camera
-  // ===========================================================
-
-  static Future<bool> requestCamera() async {
-    if (!_supportsNativeCameraAndMicrophone) {
-      return true;
-    }
-
-    return _request(Permission.camera);
-  }
-
-  static Future<bool> hasCameraPermission() async {
-    if (!_supportsNativeCameraAndMicrophone) {
-      return true;
-    }
-
-    return _has(Permission.camera);
-  }
-
-  static Future<bool> isCameraPermanentlyDenied() async {
-    if (!_supportsNativeCameraAndMicrophone) {
-      return false;
-    }
-
-    return _isPermanentlyDenied(Permission.camera);
-  }
-
-  // ===========================================================
-  // Microphone
-  // ===========================================================
-
-  static Future<bool> requestMicrophone() async {
-    if (!_supportsNativeCameraAndMicrophone) {
-      return true;
-    }
-
-    return _request(Permission.microphone);
-  }
-
-  static Future<bool> hasMicrophonePermission() async {
-    if (!_supportsNativeCameraAndMicrophone) {
-      return true;
-    }
-
-    return _has(Permission.microphone);
-  }
-
-  static Future<bool> isMicrophonePermanentlyDenied() async {
-    if (!_supportsNativeCameraAndMicrophone) {
-      return false;
-    }
-
-    return _isPermanentlyDenied(Permission.microphone);
-  }
-
-  // ===========================================================
-  // Call Permissions
-  // ===========================================================
-
-  /// Voice:
-  /// microphone only.
-  ///
-  /// Video:
-  /// microphone + camera.
-  ///
-  /// Does NOT request notifications, contacts, Bluetooth,
-  /// phone-state, storage or nearby-device permissions.
-  static Future<bool> requestCallPermissions({bool videoCall = true}) async {
-    final microphoneGranted = await requestMicrophone();
+    final bool microphoneGranted =
+    await requestMicrophone();
 
     if (!microphoneGranted) {
       return false;
@@ -241,8 +408,11 @@ class AppPermissions {
     return requestCamera();
   }
 
-  static Future<bool> hasCallPermissions({bool videoCall = true}) async {
-    final microphoneGranted = await hasMicrophonePermission();
+  static Future<bool> hasCallPermissions({
+    bool videoCall = true,
+  }) async {
+    final bool microphoneGranted =
+    await hasMicrophonePermission();
 
     if (!microphoneGranted) {
       return false;
@@ -256,59 +426,68 @@ class AppPermissions {
   }
 
   // ===========================================================
-  // Photos / Gallery
+  // PHOTOS / GALLERY
+  //
+  // Android:
+  // - Use Android Photo Picker / scoped system picker.
+  // - No READ_EXTERNAL_STORAGE.
+  // - No broad READ_MEDIA_IMAGES request here.
+  //
+  // iOS:
+  // - Photo Library permission may be requested when needed.
+  // - Limited access is a usable user-selected state.
+  //
+  // Web/Desktop:
+  // - File/system picker owns access.
   // ===========================================================
 
-  /// Profile/cover media permission.
-  ///
-  /// Android:
-  /// JR CALL should use system/scoped image picker.
-  /// No READ_EXTERNAL_STORAGE / broad media permission is
-  /// requested here.
-  ///
-  /// iOS:
-  /// Photo Library authorization is coordinated here.
-  ///
-  /// Web/Desktop:
-  /// Picker/file authorization belongs to the platform picker.
-  static Future<bool> requestPhotos() async {
+  static Future<bool> requestPhotos() {
     if (kIsWeb) {
-      return true;
+      return Future<bool>.value(true);
     }
 
     if (_isAndroid) {
-      return true;
+      return Future<bool>.value(true);
     }
 
     if (_isIOS) {
-      return _request(Permission.photos);
+      return _request(
+        Permission.photos,
+        allowLimited: true,
+      );
     }
 
-    return true;
+    return Future<bool>.value(true);
   }
 
-  static Future<bool> hasPhotosPermission() async {
+  static Future<bool> hasPhotosPermission() {
     if (kIsWeb) {
-      return true;
+      return Future<bool>.value(true);
     }
 
     if (_isAndroid) {
-      return true;
+      return Future<bool>.value(true);
     }
 
     if (_isIOS) {
-      return _has(Permission.photos);
+      return _has(
+        Permission.photos,
+        allowLimited: true,
+      );
     }
 
-    return true;
+    return Future<bool>.value(true);
   }
 
-  static Future<bool> isPhotosPermanentlyDenied() async {
+  static Future<bool>
+  isPhotosPermanentlyDenied() {
     if (!_isIOS) {
-      return false;
+      return Future<bool>.value(false);
     }
 
-    return _isPermanentlyDenied(Permission.photos);
+    return _isPermanentlyDenied(
+      Permission.photos,
+    );
   }
 
   /// Existing compatibility alias.
@@ -322,11 +501,11 @@ class AppPermissions {
   }
 
   // ===========================================================
-  // Profile Media
+  // PROFILE MEDIA
   // ===========================================================
 
-  /// Requests only the permission corresponding to the source
-  /// explicitly selected by the user.
+  /// Requests only the permission for the source explicitly chosen
+  /// by the user.
   static Future<bool> requestProfileMediaPermission({
     required bool sourceCamera,
   }) {
@@ -337,14 +516,15 @@ class AppPermissions {
     return requestPhotos();
   }
 
-  /// Legacy compatibility API.
+  /// Existing compatibility API.
   ///
-  /// New profile UI should prefer:
-  /// requestProfileMediaPermission(sourceCamera: ...)
-  ///
-  /// This method is preserved for existing callers.
-  static Future<bool> requestProfileMediaPermissions() async {
-    final cameraGranted = await requestCamera();
+  /// New UI should prefer requestProfileMediaPermission() so it
+  /// does not ask for camera access when the user only selected
+  /// gallery/photo picker.
+  static Future<bool>
+  requestProfileMediaPermissions() async {
+    final bool cameraGranted =
+    await requestCamera();
 
     if (!cameraGranted) {
       return false;
@@ -354,48 +534,63 @@ class AppPermissions {
   }
 
   // ===========================================================
-  // Contacts
+  // CONTACTS
+  //
+  // Contacts remain optional and feature-triggered.
+  //
+  // Limited access can be usable on platforms that support
+  // user-selected contact access.
   // ===========================================================
 
-  /// Optional contact-sync permission.
-  ///
-  /// Never call this automatically during startup.
-  static Future<bool> requestContacts() async {
-    if (!_isMobile) {
-      return true;
+  static Future<bool> requestContacts() {
+    if (!_supportsContactsRuntime) {
+      return Future<bool>.value(true);
     }
 
-    return _request(Permission.contacts);
+    return _request(
+      Permission.contacts,
+      allowLimited: true,
+    );
   }
 
-  static Future<bool> hasContactsPermission() async {
-    if (!_isMobile) {
-      return true;
+  static Future<bool> hasContactsPermission() {
+    if (!_supportsContactsRuntime) {
+      return Future<bool>.value(true);
     }
 
-    return _has(Permission.contacts);
+    return _has(
+      Permission.contacts,
+      allowLimited: true,
+    );
   }
 
-  static Future<bool> isContactsPermanentlyDenied() async {
-    if (!_isMobile) {
-      return false;
+  static Future<bool>
+  isContactsPermanentlyDenied() {
+    if (!_supportsContactsRuntime) {
+      return Future<bool>.value(false);
     }
 
-    return _isPermanentlyDenied(Permission.contacts);
+    return _isPermanentlyDenied(
+      Permission.contacts,
+    );
   }
 
   // ===========================================================
-  // Notifications
+  // NOTIFICATIONS
+  //
+  // Provisional notification authorization is usable because the
+  // operating system has explicitly granted provisional delivery.
   // ===========================================================
 
-  /// Request when notification/incoming-call functionality
-  /// actually requires notification authorization.
-  static Future<bool> requestNotification() async {
-    if (!_isMobile) {
-      return true;
+  static Future<bool> requestNotification() {
+    if (!_supportsNotificationRuntime) {
+      return Future<bool>.value(true);
     }
 
-    return _request(Permission.notification, allowProvisional: true);
+    return _request(
+      Permission.notification,
+      allowProvisional: true,
+    );
   }
 
   /// Existing compatibility alias.
@@ -403,120 +598,163 @@ class AppPermissions {
     return requestNotification();
   }
 
-  static Future<bool> hasNotificationPermission() async {
-    if (!_isMobile) {
-      return true;
+  static Future<bool>
+  hasNotificationPermission() {
+    if (!_supportsNotificationRuntime) {
+      return Future<bool>.value(true);
     }
 
-    return _has(Permission.notification, allowProvisional: true);
+    return _has(
+      Permission.notification,
+      allowProvisional: true,
+    );
   }
 
-  static Future<bool> isNotificationPermanentlyDenied() async {
-    if (!_isMobile) {
-      return false;
+  static Future<bool>
+  isNotificationPermanentlyDenied() {
+    if (!_supportsNotificationRuntime) {
+      return Future<bool>.value(false);
     }
 
-    return _isPermanentlyDenied(Permission.notification);
+    return _isPermanentlyDenied(
+      Permission.notification,
+    );
   }
 
   // ===========================================================
-  // Bluetooth Connection
+  // BLUETOOTH CONNECTION
+  //
+  // Connection permission is separate from discovery/scan.
+  //
+  // Android:
+  // - BLUETOOTH_CONNECT runtime permission on modern Android.
+  //
+  // iOS/Windows:
+  // - General Bluetooth permission/status where supported.
   // ===========================================================
 
-  /// Permission for communicating with an already paired/
-  /// connected Bluetooth device.
-  ///
-  /// IMPORTANT:
-  /// This method deliberately does NOT request Bluetooth Scan.
-  /// Scanning is a separate user-visible operation.
-  static Future<bool> requestBluetooth() async {
-    if (kIsWeb) {
-      return true;
+  static Future<bool> requestBluetooth() {
+    if (!_supportsBluetoothRuntime) {
+      return Future<bool>.value(true);
     }
 
     if (_isAndroid) {
-      return _request(Permission.bluetoothConnect);
+      return _request(
+        Permission.bluetoothConnect,
+      );
     }
 
-    if (_isIOS) {
-      return _request(Permission.bluetooth);
-    }
-
-    return true;
+    return _request(
+      Permission.bluetooth,
+    );
   }
 
-  static Future<bool> hasBluetoothPermission() async {
-    if (kIsWeb) {
-      return true;
+  static Future<bool> hasBluetoothPermission() {
+    if (!_supportsBluetoothRuntime) {
+      return Future<bool>.value(true);
     }
 
     if (_isAndroid) {
-      return _has(Permission.bluetoothConnect);
+      return _has(
+        Permission.bluetoothConnect,
+      );
     }
 
-    if (_isIOS) {
-      return _has(Permission.bluetooth);
-    }
-
-    return true;
+    return _has(
+      Permission.bluetooth,
+    );
   }
 
-  static Future<bool> isBluetoothPermanentlyDenied() async {
-    if (kIsWeb) {
-      return false;
+  static Future<bool>
+  isBluetoothPermanentlyDenied() {
+    if (!_supportsBluetoothRuntime) {
+      return Future<bool>.value(false);
     }
 
     if (_isAndroid) {
-      return _isPermanentlyDenied(Permission.bluetoothConnect);
+      return _isPermanentlyDenied(
+        Permission.bluetoothConnect,
+      );
     }
 
-    if (_isIOS) {
-      return _isPermanentlyDenied(Permission.bluetooth);
-    }
-
-    return false;
+    return _isPermanentlyDenied(
+      Permission.bluetooth,
+    );
   }
 
   // ===========================================================
-  // Bluetooth Discovery / Scan
+  // BLUETOOTH DISCOVERY / SCAN
+  //
+  // Request only when the user explicitly starts a Bluetooth
+  // device discovery workflow.
   // ===========================================================
 
-  /// Use ONLY when JR CALL explicitly implements a Bluetooth
-  /// device discovery/pairing screen.
-  ///
-  /// Normal WebRTC calling should not call this automatically.
-  static Future<bool> requestBluetoothScan() async {
-    if (!_isAndroid) {
+  static Future<bool> requestBluetoothScan() {
+    if (!_supportsBluetoothRuntime) {
+      return Future<bool>.value(true);
+    }
+
+    if (_isAndroid) {
+      return _request(
+        Permission.bluetoothScan,
+      );
+    }
+
+    // Apple/Windows expose general Bluetooth authorization rather
+    // than Android's separate BLUETOOTH_SCAN runtime permission.
+    return _request(
+      Permission.bluetooth,
+    );
+  }
+
+  static Future<bool>
+  hasBluetoothScanPermission() {
+    if (!_supportsBluetoothRuntime) {
+      return Future<bool>.value(true);
+    }
+
+    if (_isAndroid) {
+      return _has(
+        Permission.bluetoothScan,
+      );
+    }
+
+    return _has(
+      Permission.bluetooth,
+    );
+  }
+
+  static Future<bool>
+  isBluetoothScanPermanentlyDenied() {
+    if (!_supportsBluetoothRuntime) {
+      return Future<bool>.value(false);
+    }
+
+    if (_isAndroid) {
+      return _isPermanentlyDenied(
+        Permission.bluetoothScan,
+      );
+    }
+
+    return _isPermanentlyDenied(
+      Permission.bluetooth,
+    );
+  }
+
+  /// Convenience API for an explicit Bluetooth-device discovery
+  /// workflow.
+  static Future<bool>
+  requestBluetoothDiscoveryPermissions() async {
+    if (!_supportsBluetoothRuntime) {
       return true;
     }
 
-    return _request(Permission.bluetoothScan);
-  }
-
-  static Future<bool> hasBluetoothScanPermission() async {
-    if (!_isAndroid) {
-      return true;
-    }
-
-    return _has(Permission.bluetoothScan);
-  }
-
-  static Future<bool> isBluetoothScanPermanentlyDenied() async {
-    if (!_isAndroid) {
-      return false;
-    }
-
-    return _isPermanentlyDenied(Permission.bluetoothScan);
-  }
-
-  /// Convenience method for a future explicit Bluetooth-device
-  /// discovery screen.
-  static Future<bool> requestBluetoothDiscoveryPermissions() async {
     if (!_isAndroid) {
       return requestBluetooth();
     }
 
-    final scanGranted = await requestBluetoothScan();
+    final bool scanGranted =
+    await requestBluetoothScan();
 
     if (!scanGranted) {
       return false;
@@ -526,176 +764,180 @@ class AppPermissions {
   }
 
   // ===========================================================
-  // Android Phone Permission — Legacy Only
+  // ANDROID PHONE PERMISSION — LEGACY ONLY
+  //
+  // IMPORTANT:
+  //
+  // - Firebase Phone Auth does NOT use this.
+  // - Receiving Firebase SMS OTP does NOT use this.
+  // - WebRTC voice/video calling does NOT use this.
+  //
+  // Keep only for a verified future native telephony feature.
   // ===========================================================
 
-  /// Legacy compatibility API.
-  ///
-  /// IMPORTANT:
-  /// Firebase Phone Authentication / SMS OTP does not call this.
-  ///
-  /// JR CALL Internet voice/video calling also does not require
-  /// Android phone-state permission merely to make a WebRTC call.
-  ///
-  /// Keep this API only for any verified future native telephony
-  /// feature that genuinely needs it.
-  static Future<bool> requestPhone() async {
+  static Future<bool> requestPhone() {
     if (!_isAndroid) {
-      return true;
+      return Future<bool>.value(true);
     }
 
-    return _request(Permission.phone);
+    return _request(
+      Permission.phone,
+    );
   }
 
-  static Future<bool> hasPhonePermission() async {
+  static Future<bool> hasPhonePermission() {
     if (!_isAndroid) {
-      return true;
+      return Future<bool>.value(true);
     }
 
-    return _has(Permission.phone);
+    return _has(
+      Permission.phone,
+    );
   }
 
-  static Future<bool> isPhonePermanentlyDenied() async {
+  static Future<bool>
+  isPhonePermanentlyDenied() {
     if (!_isAndroid) {
-      return false;
+      return Future<bool>.value(false);
     }
 
-    return _isPermanentlyDenied(Permission.phone);
-  }
-
-  // ===========================================================
-  // Nearby Wi-Fi Devices
-  // ===========================================================
-
-  /// Optional Android permission.
-  ///
-  /// Use only when a future JR CALL feature really discovers or
-  /// communicates with nearby Wi-Fi devices.
-  ///
-  /// Ordinary Internet access, Firebase and WebRTC calls must not
-  /// call this automatically.
-  static Future<bool> requestNearbyDevices() async {
-    if (!_isAndroid) {
-      return true;
-    }
-
-    return _request(Permission.nearbyWifiDevices);
-  }
-
-  static Future<bool> hasNearbyDevicesPermission() async {
-    if (!_isAndroid) {
-      return true;
-    }
-
-    return _has(Permission.nearbyWifiDevices);
-  }
-
-  static Future<bool> isNearbyDevicesPermanentlyDenied() async {
-    if (!_isAndroid) {
-      return false;
-    }
-
-    return _isPermanentlyDenied(Permission.nearbyWifiDevices);
+    return _isPermanentlyDenied(
+      Permission.phone,
+    );
   }
 
   // ===========================================================
-  // Storage — Legacy Compatibility
+  // NEARBY WI-FI DEVICES
+  //
+  // Optional Android feature permission only.
+  //
+  // Ordinary Wi-Fi Internet, Firebase and WebRTC traffic do NOT
+  // require this runtime permission.
+  //
+  // Do not request at application startup.
   // ===========================================================
 
-  /// Legacy compatibility API.
-  ///
-  /// JR CALL deliberately does NOT request broad Android storage
-  /// access for profile pictures, cover photos, normal document
-  /// picking or app-owned files.
-  ///
-  /// Modern code should use scoped/system pickers.
+  static Future<bool> requestNearbyDevices() {
+    if (!_isAndroid) {
+      return Future<bool>.value(true);
+    }
+
+    return _request(
+      Permission.nearbyWifiDevices,
+    );
+  }
+
+  static Future<bool>
+  hasNearbyDevicesPermission() {
+    if (!_isAndroid) {
+      return Future<bool>.value(true);
+    }
+
+    return _has(
+      Permission.nearbyWifiDevices,
+    );
+  }
+
+  static Future<bool>
+  isNearbyDevicesPermanentlyDenied() {
+    if (!_isAndroid) {
+      return Future<bool>.value(false);
+    }
+
+    return _isPermanentlyDenied(
+      Permission.nearbyWifiDevices,
+    );
+  }
+
+  // ===========================================================
+  // STORAGE — LEGACY COMPATIBILITY
+  //
+  // Broad Android storage permission is intentionally NOT
+  // requested by normal JR CALL media/file flows.
+  // ===========================================================
+
   static Future<bool> requestStorage() async {
     return true;
   }
 
-  /// Legacy compatibility counterpart.
   static Future<bool> hasStoragePermission() async {
     return true;
   }
 
   // ===========================================================
-  // Recording Permissions
+  // RECORDING PERMISSION
+  //
+  // This method coordinates only microphone authorization.
+  //
+  // Explicit recording consent, recording indicator, retention,
+  // applicable local law and call-recorder behavior belong to the
+  // dedicated recording feature.
   // ===========================================================
 
-  /// Microphone authorization only.
-  ///
-  /// Recording consent/UI/legal requirements belong to the
-  /// dedicated recording feature and are not permission-handler
-  /// responsibilities.
-  static Future<bool> requestRecordingPermissions() {
+  static Future<bool>
+  requestRecordingPermissions() {
     return requestMicrophone();
   }
 
   // ===========================================================
-  // Screen Share
+  // SCREEN SHARE
+  //
+  // Screen-capture consent is owned by the operating-system /
+  // WebRTC screen-capture flow.
+  //
+  // Microphone is requested here only when explicitly requested.
   // ===========================================================
 
-  /// Screen-capture authorization is controlled by the native
-  /// operating-system/WebRTC screen-capture flow.
-  ///
-  /// Microphone is requested separately only when requested.
-  static Future<bool> requestScreenSharePermissions({
+  static Future<bool>
+  requestScreenSharePermissions({
     bool withMicrophone = false,
-  }) async {
+  }) {
     if (!withMicrophone) {
-      return true;
+      return Future<bool>.value(true);
     }
 
     return requestMicrophone();
   }
 
   // ===========================================================
-  // Essential Foreground Communication Permissions
+  // ESSENTIAL FOREGROUND CALL PERMISSIONS
+  //
+  // Existing compatibility API.
+  //
+  // Despite its legacy name, requestAll() deliberately requests
+  // only the permissions necessary for a foreground video call:
+  //
+  // - Microphone.
+  // - Camera.
+  //
+  // It deliberately excludes all unrelated sensitive permissions.
   // ===========================================================
 
-  /// Existing public compatibility API.
-  ///
-  /// IMPORTANT:
-  /// Despite the legacy method name "requestAll", production
-  /// behavior intentionally requests ONLY the essential
-  /// foreground voice/video permissions:
-  ///
-  /// - Microphone
-  /// - Camera
-  ///
-  /// It intentionally does NOT request:
-  /// - Contacts
-  /// - Photos
-  /// - Notification
-  /// - Bluetooth
-  /// - Bluetooth Scan
-  /// - Nearby Wi-Fi
-  /// - Phone
-  /// - Storage
-  ///
-  /// Those permissions must be requested at the moment their
-  /// related feature is used.
   static Future<bool> requestAll() {
-    return requestCallPermissions(videoCall: true);
+    return requestCallPermissions(
+      videoCall: true,
+    );
   }
 
   // ===========================================================
-  // Permission Rationale
+  // PERMISSION RATIONALE
   // ===========================================================
 
-  /// Returns whether Android recommends showing an explanatory
-  /// permission rationale before requesting again.
-  static Future<bool> shouldShowRationale(Permission permission) async {
+  static Future<bool> shouldShowRationale(
+      Permission permission,
+      ) async {
     if (!_isAndroid) {
       return false;
     }
 
     try {
-      return await permission.shouldShowRequestRationale;
-    } catch (error) {
-      debugPrint(
-        'JR CALL [Permissions] '
-        '${permission.toString()} rationale check failed: $error',
+      return await permission
+          .shouldShowRequestRationale;
+    } catch (error, stackTrace) {
+      _reportError(
+        '${permission.toString()} rationale',
+        error,
+        stackTrace,
       );
 
       return false;
@@ -703,57 +945,75 @@ class AppPermissions {
   }
 
   // ===========================================================
-  // Generic Permanent Denial
+  // GENERIC PERMANENT DENIAL
   // ===========================================================
 
-  static Future<bool> isPermanentlyDenied(Permission permission) {
-    return _isPermanentlyDenied(permission);
+  static Future<bool> isPermanentlyDenied(
+      Permission permission,
+      ) {
+    return _isPermanentlyDenied(
+      permission,
+    );
   }
 
   // ===========================================================
-  // Generic Restricted Permission
+  // GENERIC RESTRICTED STATUS
   // ===========================================================
 
-  static Future<bool> isRestricted(Permission permission) async {
-    if (kIsWeb) {
+  static Future<bool> isRestricted(
+      Permission permission,
+      ) async {
+    if (kIsWeb ||
+        !_supportsPermissionHandlerRuntime) {
       return false;
     }
 
-    final status = await _safeStatus(permission);
+    final PermissionStatus status =
+    await _safeStatus(
+      permission,
+    );
 
-    return status == PermissionStatus.restricted;
+    return status ==
+        PermissionStatus.restricted;
   }
 
   // ===========================================================
-  // Generic Current Status
+  // GENERIC CURRENT STATUS
   // ===========================================================
 
-  static Future<PermissionStatus> statusOf(Permission permission) {
-    return _safeStatus(permission);
+  static Future<PermissionStatus> statusOf(
+      Permission permission,
+      ) {
+    return _safeStatus(
+      permission,
+    );
   }
 
   // ===========================================================
-  // App Settings
+  // APPLICATION SETTINGS
   // ===========================================================
 
   static Future<void> openSettings() async {
-    if (kIsWeb) {
+    if (kIsWeb ||
+        !_supportsPermissionHandlerRuntime) {
       return;
     }
 
     try {
-      final opened = await openAppSettings();
+      final bool opened =
+      await openAppSettings();
 
       if (!opened) {
         debugPrint(
           'JR CALL [Permissions] '
-          'Application settings could not be opened.',
+              'Application settings could not be opened.',
         );
       }
-    } catch (error) {
-      debugPrint(
-        'JR CALL [Permissions] '
-        'Unable to open application settings: $error',
+    } catch (error, stackTrace) {
+      _reportError(
+        'Open application settings',
+        error,
+        stackTrace,
       );
     }
   }
@@ -761,5 +1021,26 @@ class AppPermissions {
   /// Existing compatibility alias.
   static Future<void> openApplicationSettings() {
     return openSettings();
+  }
+
+  // ===========================================================
+  // ERROR REPORTING
+  // ===========================================================
+
+  static void _reportError(
+      String source,
+      Object error, [
+        StackTrace? stackTrace,
+      ]) {
+    debugPrint(
+      'JR CALL [Permissions/$source] error: $error',
+    );
+
+    if (stackTrace != null) {
+      debugPrintStack(
+        label: 'JR CALL [Permissions/$source]',
+        stackTrace: stackTrace,
+      );
+    }
   }
 }

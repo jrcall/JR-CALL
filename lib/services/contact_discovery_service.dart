@@ -1,45 +1,59 @@
+// ===============================================================
+// JR CALL
+// File: contact_discovery_service.dart
+// Location: lib/services/contact_discovery_service.dart
+//
+// PRODUCTION CONTACT DISCOVERY SERVICE
+//
+// RESPONSIBILITIES:
+// - Request Contacts permission only when contact sync is started.
+// - Never request Contacts permission during normal app startup.
+// - Accept device contacts through an injected contact loader.
+// - Normalize and deduplicate phone numbers.
+// - Match registered JR CALL users through UserDiscoveryService.
+// - Preserve Firebase UID as the canonical matched identity.
+// - Avoid storing/uploading the whole raw address book.
+// - Prevent duplicate contact-discovery runs.
+// - Bound network lookup volume.
+// - Use bounded concurrency for faster production matching.
+// - Preserve deterministic production-safe result objects.
+//
+// ARCHITECTURE:
+// - UserDiscoveryService remains the owner of JR CALL user lookup.
+// - This service does NOT query Firestore directly.
+// - This service does NOT own global Name/Username/JR ID search.
+// - This service does NOT own UI.
+// - This service does NOT own Call Engine logic.
+// - This service does NOT send SMS.
+// - This service does NOT own OTP.
+// - This service does NOT silently enable joined-user notifications.
+//
+// PHONE CONTRACT:
+// - International E.164 is the canonical matching form here.
+// - + international prefix is supported.
+// - 00 international prefix is supported.
+// - International numbers without + can be normalized when the
+//   supplied country calling code confirms the prefix.
+// - Local numbers can be normalized when country calling context
+//   is supplied.
+// - No Bangladesh-specific or country-specific hardcoding.
+// - Country-specific numbering-plan rules are NOT invented.
+//
+// IMPORTANT:
+// Device-contact reading remains injected through
+// [DeviceContactsLoader] so this service does not become coupled
+// to a specific native contacts package.
+// ===============================================================
+
 import 'dart:async';
 
 import 'package:permission_handler/permission_handler.dart';
 
 import 'user_discovery_service.dart';
 
-/// ===========================================================
-/// JR CALL
-/// File: contact_discovery_service.dart
-/// Location: lib/services/contact_discovery_service.dart
-///
-/// Description:
-/// Privacy-conscious JR CALL contact-discovery coordinator.
-///
-/// Responsibilities:
-/// - Request Contacts permission only when contact sync is started.
-/// - Never request Contacts permission during normal app startup.
-/// - Accept device contacts through an injected contact loader.
-/// - Normalize and deduplicate phone numbers.
-/// - Match registered JR CALL users through UserDiscoveryService.
-/// - Preserve Firebase UID as the canonical matched identity.
-/// - Avoid storing/uploading the whole raw address book.
-/// - Prevent duplicate contact-discovery runs.
-/// - Provide deterministic production-safe result objects.
-///
-/// Architecture:
-/// - UserDiscoveryService remains the owner of JR CALL user lookup.
-/// - This service does NOT query Firestore directly.
-/// - This service does NOT own UI.
-/// - This service does NOT own Call Engine logic.
-/// - This service does NOT send SMS.
-/// - This service does NOT silently enable joined-user notifications.
-///
-/// Important dependency rule:
-/// The current established JR CALL dependency baseline does not contain
-/// a native address-book reader package such as flutter_contacts.
-///
-/// Therefore device-contact reading is injected through
-/// [DeviceContactsLoader]. This keeps FILE 19 compile-safe now and
-/// allows a native contact reader to be connected later without
-/// rewriting discovery/matching logic.
-/// ===========================================================
+// ===============================================================
+// CONTACT ACCESS STATE
+// ===============================================================
 
 enum ContactAccessState {
   notDetermined,
@@ -51,9 +65,9 @@ enum ContactAccessState {
   unavailable,
 }
 
-/// ===========================================================
-/// Device Contact Candidate
-/// ===========================================================
+// ===============================================================
+// DEVICE CONTACT CANDIDATE
+// ===============================================================
 
 class DeviceContactCandidate {
   const DeviceContactCandidate({
@@ -64,7 +78,7 @@ class DeviceContactCandidate {
 
   /// Platform/local contact identifier when available.
   ///
-  /// This value is local-device metadata only and must not become
+  /// This value is local-device metadata only and must never become
   /// the canonical JR CALL identity.
   final String? localId;
 
@@ -85,9 +99,9 @@ class DeviceContactCandidate {
   }
 }
 
-/// ===========================================================
-/// Matched JR CALL Contact
-/// ===========================================================
+// ===============================================================
+// MATCHED JR CALL CONTACT
+// ===============================================================
 
 class ContactDiscoveryMatch {
   const ContactDiscoveryMatch({
@@ -102,10 +116,10 @@ class ContactDiscoveryMatch {
   /// Registered JR CALL profile.
   final DiscoveryUser user;
 
-  /// Normalized number that produced the match.
+  /// Canonical normalized number that produced the match.
   final String matchedPhoneNumber;
 
-  /// Canonical internal identity.
+  /// Firebase UID remains the canonical internal identity.
   String get uid => user.uid;
 
   String get displayName {
@@ -119,9 +133,9 @@ class ContactDiscoveryMatch {
   }
 }
 
-/// ===========================================================
-/// Contact Discovery Result
-/// ===========================================================
+// ===============================================================
+// CONTACT DISCOVERY RESULT
+// ===============================================================
 
 class ContactDiscoveryResult {
   const ContactDiscoveryResult({
@@ -141,27 +155,30 @@ class ContactDiscoveryResult {
   /// Number of device contacts supplied by the native loader.
   final int contactsRead;
 
-  /// Number of unique valid E.164 numbers discovered locally.
+  /// Number of unique valid canonical E.164 numbers discovered
+  /// locally for this matching run.
   final int uniquePhoneNumbers;
 
-  /// Number of numbers actually checked against JR CALL.
+  /// Number of phone numbers actually checked against JR CALL.
   final int phoneNumbersChecked;
 
-  /// Number of phone values ignored because they could not be
-  /// safely normalized into E.164 format.
+  /// Number of raw phone values ignored because they could not be
+  /// safely normalized into a canonical E.164 value.
   final int invalidPhoneNumbers;
 
-  /// True when safety limits prevented every local number
-  /// from being queried during this run.
+  /// True when safety limits prevented all unique numbers from
+  /// being queried in this discovery run.
   final bool truncated;
 
-  bool get permissionGranted =>
-      accessState == ContactAccessState.granted ||
-      accessState == ContactAccessState.limited;
+  bool get permissionGranted {
+    return accessState == ContactAccessState.granted ||
+        accessState == ContactAccessState.limited;
+  }
 
   bool get hasMatches => matches.isNotEmpty;
 
-  static const ContactDiscoveryResult permissionDenied = ContactDiscoveryResult(
+  static const ContactDiscoveryResult permissionDenied =
+  ContactDiscoveryResult(
     accessState: ContactAccessState.denied,
     matches: <ContactDiscoveryMatch>[],
     contactsRead: 0,
@@ -172,55 +189,69 @@ class ContactDiscoveryResult {
   );
 }
 
-/// ===========================================================
-/// Injected Device Contacts Loader
-/// ===========================================================
+// ===============================================================
+// INJECTED DEVICE CONTACTS LOADER
+// ===============================================================
 
-typedef DeviceContactsLoader = Future<List<DeviceContactCandidate>> Function();
+typedef DeviceContactsLoader =
+Future<List<DeviceContactCandidate>> Function();
 
-/// ===========================================================
-/// Contact Discovery Service
-/// ===========================================================
+// ===============================================================
+// CONTACT DISCOVERY SERVICE
+// ===============================================================
 
 class ContactDiscoveryService {
   ContactDiscoveryService._();
 
-  static final ContactDiscoveryService instance = ContactDiscoveryService._();
+  static final ContactDiscoveryService instance =
+  ContactDiscoveryService._();
 
   final UserDiscoveryService _userDiscoveryService =
       UserDiscoveryService.instance;
 
-  /// Prevent accidental huge client-side Firestore lookup bursts.
+  // =============================================================
+  // SAFETY / PERFORMANCE LIMITS
+  // =============================================================
+
+  /// Prevent accidental large client-side lookup bursts.
   ///
-  /// A future privacy-preserving backend batch matcher may replace
-  /// one-by-one exact lookup without changing the public result model.
+  /// A future privacy-preserving backend batch matcher can replace
+  /// this implementation without changing the public API.
   static const int defaultMaximumPhoneLookups = 250;
 
   static const int absoluteMaximumPhoneLookups = 500;
+
+  /// Small bounded concurrency improves real device-contact sync
+  /// performance without creating a large Firestore request burst.
+  static const int _maximumConcurrentPhoneLookups = 6;
 
   bool _discoveryInProgress = false;
 
   bool get discoveryInProgress => _discoveryInProgress;
 
-  // ===========================================================
-  // Permission
-  // ===========================================================
+  // =============================================================
+  // PERMISSION
+  // =============================================================
 
   Future<ContactAccessState> getContactAccessState() async {
     try {
-      final PermissionStatus status = await Permission.contacts.status;
+      final PermissionStatus status =
+      await Permission.contacts.status;
 
-      return _mapPermissionStatus(status);
+      return _mapPermissionStatus(
+        status,
+      );
     } catch (_) {
       return ContactAccessState.unavailable;
     }
   }
 
   /// Requests Contacts permission only when the user explicitly
-  /// starts a contact-sync/discovery action.
+  /// starts contact sync/discovery.
   Future<ContactAccessState> requestContactAccess() async {
     try {
-      final PermissionStatus current = await Permission.contacts.status;
+      final PermissionStatus current =
+      await Permission.contacts.status;
 
       if (current.isGranted) {
         return ContactAccessState.granted;
@@ -238,9 +269,12 @@ class ContactDiscoveryService {
         return ContactAccessState.restricted;
       }
 
-      final PermissionStatus requested = await Permission.contacts.request();
+      final PermissionStatus requested =
+      await Permission.contacts.request();
 
-      return _mapPermissionStatus(requested);
+      return _mapPermissionStatus(
+        requested,
+      );
     } catch (_) {
       return ContactAccessState.unavailable;
     }
@@ -250,9 +284,9 @@ class ContactDiscoveryService {
     return openAppSettings();
   }
 
-  // ===========================================================
-  // Main Contact Discovery
-  // ===========================================================
+  // =============================================================
+  // MAIN CONTACT DISCOVERY
+  // =============================================================
 
   Future<ContactDiscoveryResult> discoverContacts({
     required DeviceContactsLoader loadContacts,
@@ -261,16 +295,21 @@ class ContactDiscoveryService {
     bool requestPermissionIfNeeded = true,
   }) async {
     if (_discoveryInProgress) {
-      throw StateError('JR CALL contact discovery is already running.');
+      throw StateError(
+        'JR CALL contact discovery is already running.',
+      );
     }
 
     _discoveryInProgress = true;
 
     try {
-      ContactAccessState accessState = await getContactAccessState();
+      ContactAccessState accessState =
+      await getContactAccessState();
 
-      if (!_isUsablePermission(accessState) && requestPermissionIfNeeded) {
-        accessState = await requestContactAccess();
+      if (!_isUsablePermission(accessState) &&
+          requestPermissionIfNeeded) {
+        accessState =
+        await requestContactAccess();
       }
 
       if (!_isUsablePermission(accessState)) {
@@ -285,41 +324,56 @@ class ContactDiscoveryService {
         );
       }
 
-      final List<DeviceContactCandidate> contacts = await loadContacts();
+      final List<DeviceContactCandidate> contacts =
+      await loadContacts();
 
       return _matchContacts(
         contacts,
         accessState: accessState,
-        defaultCountryCallingCode: defaultCountryCallingCode,
-        maximumPhoneLookups: maximumPhoneLookups,
+        defaultCountryCallingCode:
+        defaultCountryCallingCode,
+        maximumPhoneLookups:
+        maximumPhoneLookups,
       );
     } finally {
       _discoveryInProgress = false;
     }
   }
 
-  // ===========================================================
-  // Matching
-  // ===========================================================
+  // =============================================================
+  // MATCHING
+  // =============================================================
 
   Future<ContactDiscoveryResult> _matchContacts(
-    List<DeviceContactCandidate> contacts, {
-    required ContactAccessState accessState,
-    required String? defaultCountryCallingCode,
-    required int maximumPhoneLookups,
-  }) async {
-    final int safeLookupLimit = _safeLookupLimit(maximumPhoneLookups);
+      List<DeviceContactCandidate> contacts, {
+        required ContactAccessState accessState,
+        required String? defaultCountryCallingCode,
+        required int maximumPhoneLookups,
+      }) async {
+    final int safeLookupLimit =
+    _safeLookupLimit(
+      maximumPhoneLookups,
+    );
+
+    // -----------------------------------------------------------
+    // NORMALIZE + DEDUPLICATE
+    //
+    // Dart Map preserves insertion order.
+    // First local contact owning a duplicated canonical number wins.
+    // -----------------------------------------------------------
 
     final Map<String, DeviceContactCandidate> ownerByPhone =
-        <String, DeviceContactCandidate>{};
+    <String, DeviceContactCandidate>{};
 
     int invalidPhoneNumbers = 0;
 
     for (final DeviceContactCandidate contact in contacts) {
       for (final String rawPhone in contact.phoneNumbers) {
-        final String? normalized = normalizePhoneToE164(
+        final String? normalized =
+        normalizePhoneToE164(
           rawPhone,
-          defaultCountryCallingCode: defaultCountryCallingCode,
+          defaultCountryCallingCode:
+          defaultCountryCallingCode,
         );
 
         if (normalized == null) {
@@ -327,171 +381,395 @@ class ContactDiscoveryService {
           continue;
         }
 
-        ownerByPhone.putIfAbsent(normalized, () => contact);
+        ownerByPhone.putIfAbsent(
+          normalized,
+              () => contact,
+        );
       }
     }
 
-    final List<String> uniquePhones = ownerByPhone.keys.toList(growable: false);
+    final List<String> uniquePhones =
+    ownerByPhone.keys.toList(
+      growable: false,
+    );
 
-    final bool truncated = uniquePhones.length > safeLookupLimit;
+    final bool truncated =
+        uniquePhones.length >
+            safeLookupLimit;
 
-    final Iterable<String> phonesToCheck = uniquePhones.take(safeLookupLimit);
+    final List<String> phonesToCheck =
+    uniquePhones
+        .take(
+      safeLookupLimit,
+    )
+        .toList(
+      growable: false,
+    );
+
+    // -----------------------------------------------------------
+    // MATCHED USERS
+    //
+    // UID deduplication guarantees the same JR CALL account is not
+    // returned twice when several local numbers resolve to it.
+    // -----------------------------------------------------------
 
     final Map<String, ContactDiscoveryMatch> matchByUid =
-        <String, ContactDiscoveryMatch>{};
+    <String, ContactDiscoveryMatch>{};
 
     int checked = 0;
 
-    for (final String phone in phonesToCheck) {
-      checked++;
+    // -----------------------------------------------------------
+    // BOUNDED CONCURRENCY
+    //
+    // Sequentially checking hundreds of contacts is unnecessarily
+    // slow. Sending hundreds simultaneously is also undesirable.
+    //
+    // Small deterministic batches provide a production balance.
+    // Future.wait preserves the input order of each batch.
+    // -----------------------------------------------------------
 
-      final DiscoveryUser? user = await _userDiscoveryService.searchByPhone(
-        phone,
-        excludeCurrentUser: true,
+    for (
+    int start = 0;
+    start < phonesToCheck.length;
+    start += _maximumConcurrentPhoneLookups
+    ) {
+      final int end =
+      start + _maximumConcurrentPhoneLookups <
+          phonesToCheck.length
+          ? start + _maximumConcurrentPhoneLookups
+          : phonesToCheck.length;
+
+      final List<String> batch =
+      phonesToCheck.sublist(
+        start,
+        end,
       );
 
-      if (user == null) {
-        continue;
-      }
+      final List<_PhoneLookupResult> lookupResults =
+      await Future.wait<_PhoneLookupResult>(
+        batch.map(
+              (
+              String phone,
+              ) async {
+            final DiscoveryUser? user =
+            await _userDiscoveryService.searchByPhone(
+              phone,
+              excludeCurrentUser: true,
+            );
 
-      final String uid = user.uid.trim();
-
-      if (uid.isEmpty) {
-        continue;
-      }
-
-      final DeviceContactCandidate? localContact = ownerByPhone[phone];
-
-      if (localContact == null) {
-        continue;
-      }
-
-      matchByUid.putIfAbsent(
-        uid,
-        () => ContactDiscoveryMatch(
-          localContact: localContact,
-          user: user,
-          matchedPhoneNumber: phone,
+            return _PhoneLookupResult(
+              phone: phone,
+              user: user,
+            );
+          },
         ),
       );
+
+      checked += batch.length;
+
+      for (final _PhoneLookupResult lookup
+      in lookupResults) {
+        final DiscoveryUser? user =
+            lookup.user;
+
+        if (user == null) {
+          continue;
+        }
+
+        final String uid =
+        user.uid.trim();
+
+        if (uid.isEmpty) {
+          continue;
+        }
+
+        final DeviceContactCandidate? localContact =
+        ownerByPhone[lookup.phone];
+
+        if (localContact == null) {
+          continue;
+        }
+
+        matchByUid.putIfAbsent(
+          uid,
+              () => ContactDiscoveryMatch(
+            localContact: localContact,
+            user: user,
+            matchedPhoneNumber: lookup.phone,
+          ),
+        );
+      }
     }
 
+    // -----------------------------------------------------------
+    // DETERMINISTIC PRESENTATION ORDER
+    // -----------------------------------------------------------
+
     final List<ContactDiscoveryMatch> matches =
-        matchByUid.values.toList(growable: false)
-          ..sort((ContactDiscoveryMatch a, ContactDiscoveryMatch b) {
-            final String aName = a.displayName.trim().toLowerCase();
+    matchByUid.values.toList(
+      growable: false,
+    )
+      ..sort(
+            (
+            ContactDiscoveryMatch first,
+            ContactDiscoveryMatch second,
+            ) {
+          final String firstName =
+          first.displayName
+              .trim()
+              .toLowerCase();
 
-            final String bName = b.displayName.trim().toLowerCase();
+          final String secondName =
+          second.displayName
+              .trim()
+              .toLowerCase();
 
-            return aName.compareTo(bName);
-          });
+          final int nameComparison =
+          firstName.compareTo(
+            secondName,
+          );
+
+          if (nameComparison != 0) {
+            return nameComparison;
+          }
+
+          return first.uid.compareTo(
+            second.uid,
+          );
+        },
+      );
 
     return ContactDiscoveryResult(
       accessState: accessState,
-      matches: List<ContactDiscoveryMatch>.unmodifiable(matches),
+      matches:
+      List<ContactDiscoveryMatch>.unmodifiable(
+        matches,
+      ),
       contactsRead: contacts.length,
-      uniquePhoneNumbers: uniquePhones.length,
+      uniquePhoneNumbers:
+      uniquePhones.length,
       phoneNumbersChecked: checked,
-      invalidPhoneNumbers: invalidPhoneNumbers,
+      invalidPhoneNumbers:
+      invalidPhoneNumbers,
       truncated: truncated,
     );
   }
 
-  // ===========================================================
-  // Phone Normalization
-  // ===========================================================
+  // =============================================================
+  // PHONE NORMALIZATION
+  // =============================================================
 
-  /// Converts a phone value into E.164 where enough information
-  /// is available.
+  /// Converts a phone value to canonical international E.164 form
+  /// when enough information is available.
   ///
-  /// Supported examples:
+  /// Supported:
   ///
   /// +8801712345678
   /// 008801712345678
   ///
-  /// Local numbers can also be normalized when
+  /// Local/national numbers can also be normalized when
   /// [defaultCountryCallingCode] is supplied.
   ///
-  /// Example:
+  /// IMPORTANT:
   ///
-  /// raw:
-  /// 01712345678
+  /// Country calling code alone cannot describe every country's
+  /// complete national numbering plan.
   ///
-  /// defaultCountryCallingCode:
-  /// +880
-  ///
-  /// result:
-  /// +8801712345678
-  ///
-  /// This method deliberately does not guess a country.
+  /// Therefore this method performs only deterministic,
+  /// non-country-hardcoded normalization and never invents a
+  /// country.
   String? normalizePhoneToE164(
-    String value, {
-    String? defaultCountryCallingCode,
-  }) {
+      String value, {
+        String? defaultCountryCallingCode,
+      }) {
     String raw = value.trim();
 
     if (raw.isEmpty) {
       return null;
     }
 
-    raw = raw.replaceAll(RegExp(r'[\s\-\(\)\.]'), '');
+    // -----------------------------------------------------------
+    // Do not silently absorb letters/extensions into the number.
+    //
+    // Example:
+    // 123456789 ext 22
+    //
+    // Converting that into 12345678922 would be unsafe.
+    // -----------------------------------------------------------
+
+    if (RegExp(
+      r'[A-Za-z]',
+    ).hasMatch(
+      raw,
+    )) {
+      return null;
+    }
+
+    // -----------------------------------------------------------
+    // Remove common visual separators only.
+    // -----------------------------------------------------------
+
+    raw = raw.replaceAll(
+      RegExp(r'[\s().-]'),
+      '',
+    );
+
+    if (raw.isEmpty) {
+      return null;
+    }
+
+    // -----------------------------------------------------------
+    // INTERNATIONAL ACCESS PREFIX
+    //
+    // 00xxxxxxxx -> +xxxxxxxx
+    // -----------------------------------------------------------
 
     if (raw.startsWith('00')) {
       raw = '+${raw.substring(2)}';
     }
 
+    // -----------------------------------------------------------
+    // ALREADY INTERNATIONAL
+    // -----------------------------------------------------------
+
     if (raw.startsWith('+')) {
-      final String digits = raw.substring(1).replaceAll(RegExp(r'[^0-9]'), '');
+      final String digits =
+      raw
+          .substring(1)
+          .replaceAll(
+        RegExp(r'[^0-9]'),
+        '',
+      );
 
-      final String candidate = '+$digits';
+      if (digits.isEmpty) {
+        return null;
+      }
 
-      return _isValidE164(candidate) ? candidate : null;
+      final String candidate =
+          '+$digits';
+
+      return _isValidE164(
+        candidate,
+      )
+          ? candidate
+          : null;
     }
 
-    final String digits = raw.replaceAll(RegExp(r'[^0-9]'), '');
+    // -----------------------------------------------------------
+    // NATIONAL / INTERNATIONAL-WITHOUT-PLUS
+    // -----------------------------------------------------------
+
+    final String digits =
+    raw.replaceAll(
+      RegExp(r'[^0-9]'),
+      '',
+    );
 
     if (digits.isEmpty) {
       return null;
     }
 
-    final String? callingCode = _normalizeCallingCode(
+    final String? callingCode =
+    _normalizeCallingCode(
       defaultCountryCallingCode,
     );
 
+    // Without country context, a non-international local number
+    // cannot safely be converted into a globally unique E.164 ID.
     if (callingCode == null) {
       return null;
     }
 
-    String nationalNumber = digits;
+    final String callingCodeDigits =
+    callingCode.substring(1);
 
-    while (nationalNumber.startsWith('0')) {
-      nationalNumber = nationalNumber.substring(1);
+    // -----------------------------------------------------------
+    // INTERNATIONAL NUMBER WITHOUT +
+    //
+    // Example:
+    // calling code: +880
+    // raw: 8801712345678
+    // -> +8801712345678
+    //
+    // Prevents accidental:
+    // +8808801712345678
+    // -----------------------------------------------------------
 
-      if (nationalNumber.isEmpty) {
-        return null;
+    if (digits.startsWith(
+      callingCodeDigits,
+    ) &&
+        digits.length >
+            callingCodeDigits.length) {
+      final String candidate =
+          '+$digits';
+
+      if (_isValidE164(
+        candidate,
+      )) {
+        return candidate;
       }
     }
 
-    final String candidate = '$callingCode$nationalNumber';
+    // -----------------------------------------------------------
+    // NATIONAL TRUNK PREFIX
+    //
+    // A single leading 0 is the common national trunk-prefix form.
+    //
+    // We intentionally remove at most ONE zero.
+    // Repeatedly stripping all zeroes could alter a legitimate
+    // national significant number.
+    // -----------------------------------------------------------
 
-    return _isValidE164(candidate) ? candidate : null;
+    String nationalNumber =
+        digits;
+
+    if (nationalNumber.startsWith('0') &&
+        nationalNumber.length > 1) {
+      nationalNumber =
+          nationalNumber.substring(
+            1,
+          );
+    }
+
+    if (nationalNumber.isEmpty) {
+      return null;
+    }
+
+    final String candidate =
+        '$callingCode$nationalNumber';
+
+    return _isValidE164(
+      candidate,
+    )
+        ? candidate
+        : null;
   }
 
-  /// Exposed for future contact adapters/tests.
-  bool isValidE164Phone(String value) {
-    return _isValidE164(value.trim());
+  /// Existing public API preserved for adapters/tests.
+  bool isValidE164Phone(
+      String value,
+      ) {
+    return _isValidE164(
+      value.trim(),
+    );
   }
 
-  // ===========================================================
-  // Helpers
-  // ===========================================================
+  // =============================================================
+  // PERMISSION HELPERS
+  // =============================================================
 
-  bool _isUsablePermission(ContactAccessState state) {
-    return state == ContactAccessState.granted ||
-        state == ContactAccessState.limited;
+  bool _isUsablePermission(
+      ContactAccessState state,
+      ) {
+    return state ==
+        ContactAccessState.granted ||
+        state ==
+            ContactAccessState.limited;
   }
 
-  ContactAccessState _mapPermissionStatus(PermissionStatus status) {
+  ContactAccessState _mapPermissionStatus(
+      PermissionStatus status,
+      ) {
     if (status.isGranted) {
       return ContactAccessState.granted;
     }
@@ -515,49 +793,166 @@ class ContactDiscoveryService {
     return ContactAccessState.notDetermined;
   }
 
-  String? _normalizeCallingCode(String? value) {
-    if (value == null) {
+  // =============================================================
+  // COUNTRY CALLING CODE
+  // =============================================================
+
+  String? _normalizeCallingCode(
+      String? value,
+      ) {
+    String raw =
+        value?.trim() ?? '';
+
+    if (raw.isEmpty) {
       return null;
     }
 
-    String normalized = value.trim();
-
-    if (normalized.isEmpty) {
-      return null;
+    if (raw.startsWith('00')) {
+      raw = '+${raw.substring(2)}';
     }
 
-    if (normalized.startsWith('00')) {
-      normalized = '+${normalized.substring(2)}';
-    }
-
-    final String digits = normalized.replaceAll(RegExp(r'[^0-9]'), '');
+    final String digits =
+    raw.replaceAll(
+      RegExp(r'[^0-9]'),
+      '',
+    );
 
     if (digits.isEmpty) {
       return null;
     }
 
-    final String result = '+$digits';
+    final String result =
+        '+$digits';
 
-    if (!RegExp(r'^\+[1-9]\d{0,3}$').hasMatch(result)) {
+    // E.164 geographic country codes are 1-3 digits.
+    if (!RegExp(
+      r'^\+[1-9]\d{0,2}$',
+    ).hasMatch(
+      result,
+    )) {
       return null;
     }
 
     return result;
   }
 
-  bool _isValidE164(String value) {
-    return RegExp(r'^\+[1-9]\d{7,14}$').hasMatch(value);
+  // =============================================================
+  // E.164 VALIDATION
+  // =============================================================
+
+  bool _isValidE164(
+      String value,
+      ) {
+    // JR CALL keeps the existing practical phone-number minimum
+    // while enforcing E.164's 15-digit maximum and non-zero start.
+    return RegExp(
+      r'^\+[1-9]\d{7,14}$',
+    ).hasMatch(
+      value,
+    );
   }
 
-  int _safeLookupLimit(int value) {
+  // =============================================================
+  // LOOKUP LIMIT
+  // =============================================================
+
+  int _safeLookupLimit(
+      int value,
+      ) {
     if (value < 1) {
       return 1;
     }
 
-    if (value > absoluteMaximumPhoneLookups) {
+    if (value >
+        absoluteMaximumPhoneLookups) {
       return absoluteMaximumPhoneLookups;
     }
 
     return value;
   }
 }
+
+// ===============================================================
+// PRIVATE LOOKUP RESULT
+// ===============================================================
+
+class _PhoneLookupResult {
+  const _PhoneLookupResult({
+    required this.phone,
+    required this.user,
+  });
+
+  final String phone;
+
+  final DiscoveryUser? user;
+}
+
+// ===============================================================
+// END OF FILE
+//
+// FILE 6 GUARANTEES:
+//
+// PERMISSION:
+// ✓ Contacts permission is not requested during normal startup.
+// ✓ Permission is requested only for explicit contact discovery.
+// ✓ Granted / Limited / Denied / Permanently Denied / Restricted
+//   states remain represented.
+// ✓ App-settings API preserved.
+//
+// CONTACT PRIVACY:
+// ✓ Raw address book is not persisted here.
+// ✓ Raw address book is not bulk-uploaded here.
+// ✓ Only bounded normalized phone lookups are performed.
+// ✓ Local contact ID never becomes JR CALL identity.
+//
+// PHONE:
+// ✓ E.164 canonical representation preserved.
+// ✓ + international form preserved.
+// ✓ 00 international prefix supported.
+// ✓ International number without + supported with matching context.
+// ✓ Country calling code limited to official 1-3 digit structure.
+// ✓ Local trunk-prefix handling hardened.
+// ✓ No Bangladesh-specific logic.
+// ✓ No personal number hardcoding.
+// ✓ Duplicate canonical numbers removed.
+// ✓ Unsafe alphabetic/extension values are rejected instead of
+//   silently being converted into the wrong phone number.
+//
+// PERFORMANCE:
+// ✓ Lookup ceiling preserved.
+// ✓ Absolute safety ceiling preserved.
+// ✓ Contact sync truncation reporting preserved.
+// ✓ Small bounded concurrent lookup batches added.
+// ✓ Hundreds of requests are not launched simultaneously.
+// ✓ Deterministic lookup order preserved.
+// ✓ Deterministic result sorting preserved.
+// ✓ Duplicate JR CALL accounts removed by Firebase UID.
+//
+// IDENTITY:
+// ✓ Firebase UID remains canonical matched identity.
+// ✓ Device localId never replaces Firebase UID.
+// ✓ UserDiscoveryService remains lookup owner.
+//
+// PUBLIC API PRESERVED:
+// ✓ ContactAccessState
+// ✓ DeviceContactCandidate
+// ✓ ContactDiscoveryMatch
+// ✓ ContactDiscoveryResult
+// ✓ DeviceContactsLoader
+// ✓ ContactDiscoveryService.instance
+// ✓ discoverContacts(...)
+// ✓ normalizePhoneToE164(...)
+// ✓ isValidE164Phone(...)
+// ✓ defaultMaximumPhoneLookups
+// ✓ absoluteMaximumPhoneLookups
+//
+// PROTECTED:
+// ✓ No direct Firestore ownership added.
+// ✓ Call Engine untouched.
+// ✓ Message Engine untouched.
+// ✓ WebRTC untouched.
+// ✓ OTP/Auth ownership untouched.
+//
+// NEXT:
+// FILE 7 — firestore.rules
+// ===============================================================

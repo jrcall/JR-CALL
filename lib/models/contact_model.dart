@@ -6,77 +6,44 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// JR CALL
 /// File: contact_model.dart
 /// Location: lib/models/contact_model.dart
-/// Master Step: 29
 ///
-/// PURPOSE:
-/// Central contact model for JR CALL.
-///
-/// RESPONSIBILITIES:
-/// - Preserve existing Contacts / Call / future Message APIs
-/// - Preserve legacy userId
-/// - Carry resolved Firebase UID
-/// - Carry public JR CALL ID
-/// - Carry public Username
-/// - Carry registered / non-registered state
-/// - Carry public profile photo
-/// - Safe Map / JSON / Firestore serialization
-/// - Safe legacy document parsing
-/// - Safe Timestamp / DateTime / ISO / epoch parsing
-///
-/// IDENTITY CONTRACT:
-/// - linkedUid = preferred resolved Firebase UID.
-/// - userId = preserved legacy identity field.
-/// - jrCallUserId = public discovery identity only.
-/// - username = public discovery identity only.
-/// - Call Engine must ultimately receive Firebase UID.
-///
-/// SECURITY:
-/// - No password
-/// - No OTP
-/// - No authentication credential
+/// FINAL PRODUCTION CONTRACT:
+/// - Existing Contacts / Search / Call APIs preserved.
+/// - Legacy userId preserved.
+/// - linkedUid carries resolved Firebase UID.
+/// - Public JR CALL ID / username remain discovery identities only.
+/// - Explicit notRegistered state can never become a Call target.
+/// - Strict Call Engine target getter provided.
+/// - Firestore / JSON / legacy parsing hardened.
+/// - Contact permission/query/E.164 ownership stays in services.
 /// ===============================================================
 
-enum ContactStatus { offline, online, busy, away, invisible }
+enum ContactStatus {
+  offline,
+  online,
+  busy,
+  away,
+  invisible,
+}
 
-/// ===============================================================
-/// CONTACT REGISTRATION STATE
-/// ===============================================================
-
-enum ContactRegisteredState { unknown, registered, notRegistered }
-
-/// ===============================================================
-/// CONTACT MODEL
-/// ===============================================================
+enum ContactRegisteredState {
+  unknown,
+  registered,
+  notRegistered,
+}
 
 class ContactModel {
-  /// Existing contact-record identity.
   final String id;
 
-  /// Legacy JR CALL user identity.
-  ///
-  /// Preserved because existing screens/providers/services may
-  /// already depend on this field.
+  /// Preserved legacy identity field.
   final String userId;
 
-  /// Display name.
   final String name;
-
-  /// Phone number.
   final String phoneNumber;
-
-  /// Email address.
   final String email;
-
-  /// Profile photo.
   final String photoUrl;
-
-  /// Region/country code.
   final String countryCode;
-
-  /// Country display name.
   final String country;
-
-  /// Public biography.
   final String bio;
 
   final bool isFavorite;
@@ -88,26 +55,15 @@ class ContactModel {
   final DateTime lastSeen;
   final DateTime createdAt;
 
-  // =============================================================
-  // JR CALL DISCOVERY IDENTITY
-  // =============================================================
-
-  /// Canonical resolved Firebase UID.
-  ///
-  /// This is the preferred identity to hand to Call Engine.
+  /// Preferred resolved Firebase UID.
   final String? linkedUid;
 
-  /// Public JR CALL identity.
-  ///
-  /// Example:
-  /// jrcall_8h2k9p4q
+  /// Public JR CALL discovery identity.
   final String? jrCallUserId;
 
   /// Public unique username.
   final String? username;
 
-  /// Whether this contact has been matched to an existing
-  /// JR CALL account.
   final ContactRegisteredState registeredState;
 
   const ContactModel({
@@ -136,54 +92,71 @@ class ContactModel {
   // CONVENIENCE
   // =============================================================
 
-  bool get isOnline {
-    return status == ContactStatus.online;
+  bool get isOnline => status == ContactStatus.online;
+
+  bool get isRegistered =>
+      registeredState == ContactRegisteredState.registered;
+
+  bool get isKnownNotRegistered =>
+      registeredState == ContactRegisteredState.notRegistered;
+
+  bool get registrationUnknown =>
+      registeredState == ContactRegisteredState.unknown;
+
+  bool get hasLinkedUid => _hasValue(linkedUid);
+
+  bool get hasJrCallUserId => _hasValue(jrCallUserId);
+
+  bool get hasUsername => _hasValue(username);
+
+  bool get hasPhoto => photoUrl.trim().isNotEmpty;
+
+  bool get hasPhone => phoneNumber.trim().isNotEmpty;
+
+  bool get hasEmail => email.trim().isNotEmpty;
+
+  // =============================================================
+  // DISCOVERY NORMALIZATION
+  // =============================================================
+
+  String get normalizedName {
+    return _normalizeSearchText(name);
   }
 
-  bool get isRegistered {
-    return registeredState == ContactRegisteredState.registered;
+  String? get normalizedUsername {
+    return _normalizeUsernameNullable(username);
   }
 
-  bool get isKnownNotRegistered {
-    return registeredState == ContactRegisteredState.notRegistered;
+  String? get normalizedJrCallUserId {
+    return _normalizePublicIdentityNullable(jrCallUserId);
   }
 
-  bool get registrationUnknown {
-    return registeredState == ContactRegisteredState.unknown;
+  String? get normalizedEmail {
+    return _normalizeEmailNullable(email);
   }
 
-  bool get hasLinkedUid {
-    return _hasValue(linkedUid);
-  }
-
-  bool get hasJrCallUserId {
-    return _hasValue(jrCallUserId);
-  }
-
-  bool get hasUsername {
-    return _hasValue(username);
-  }
-
-  bool get hasPhoto {
-    return photoUrl.trim().isNotEmpty;
-  }
-
-  bool get hasPhone {
-    return phoneNumber.trim().isNotEmpty;
-  }
-
-  bool get hasEmail {
-    return email.trim().isNotEmpty;
-  }
-
-  /// Preferred internal Firebase identity.
+  /// Formatting-only normalized phone value.
   ///
-  /// linkedUid always wins.
+  /// True E.164 canonicalization requiring country context is owned
+  /// by contact_discovery_service.dart.
+  String? get normalizedPhone {
+    return _normalizePhoneNullable(phoneNumber);
+  }
+
+  // =============================================================
+  // IDENTITY
+  // =============================================================
+
+  /// Backward-compatible resolved identity.
   ///
-  /// Legacy userId remains available as backward-compatible
-  /// fallback because older JR CALL contact data may have stored
-  /// Firebase UID directly in userId.
+  /// linkedUid is preferred.
+  /// Explicitly not-registered contacts never resolve.
+  /// Legacy userId remains available for old data compatibility.
   String? get resolvedUid {
+    if (registeredState == ContactRegisteredState.notRegistered) {
+      return null;
+    }
+
     final String? linked = _cleanNullableString(linkedUid);
 
     if (linked != null) {
@@ -192,59 +165,84 @@ class ContactModel {
 
     final String legacy = userId.trim();
 
-    if (legacy.isEmpty) {
+    return legacy.isEmpty ? null : legacy;
+  }
+
+  /// Strict Firebase UID target for Call Engine.
+  ///
+  /// Use this for new Call Engine integration.
+  String? get callTargetUid {
+    if (registeredState == ContactRegisteredState.notRegistered) {
       return null;
     }
 
-    return legacy;
+    final String? linked = _cleanNullableString(linkedUid);
+
+    if (linked != null) {
+      return linked;
+    }
+
+    if (registeredState != ContactRegisteredState.registered) {
+      return null;
+    }
+
+    final String legacy = userId.trim();
+
+    return legacy.isEmpty ? null : legacy;
+  }
+
+  bool get canStartJrCall {
+    return !isBlocked && callTargetUid != null;
+  }
+
+  bool get canInvite {
+    return !isBlocked && isKnownNotRegistered && hasPhone;
   }
 
   String get displayName {
-    final String normalizedName = name.trim();
+    final String cleanedName = name.trim();
 
-    if (normalizedName.isNotEmpty) {
-      return normalizedName;
+    if (cleanedName.isNotEmpty) {
+      return cleanedName;
     }
 
-    final String? normalizedUsername = _cleanNullableString(username);
+    final String? cleanedUsername =
+    _cleanNullableString(username);
 
-    if (normalizedUsername != null) {
-      return normalizedUsername.startsWith('@')
-          ? normalizedUsername.substring(1)
-          : normalizedUsername;
+    if (cleanedUsername != null) {
+      return cleanedUsername.startsWith('@')
+          ? cleanedUsername.substring(1)
+          : cleanedUsername;
     }
 
-    final String? normalizedJrCallId = _cleanNullableString(jrCallUserId);
+    final String? cleanedJrCallId =
+    _cleanNullableString(jrCallUserId);
 
-    if (normalizedJrCallId != null) {
-      return normalizedJrCallId;
+    if (cleanedJrCallId != null) {
+      return cleanedJrCallId;
     }
 
     return 'JR CALL User';
   }
 
   String? get usernameLabel {
-    final String? normalized = _cleanNullableString(username);
+    final String? normalized =
+    _cleanNullableString(username);
 
     if (normalized == null) {
       return null;
     }
 
-    if (normalized.startsWith('@')) {
-      return normalized;
-    }
-
-    return '@$normalized';
+    return normalized.startsWith('@')
+        ? normalized
+        : '@$normalized';
   }
 
   String? get publicIdentityLabel {
-    final String? jrId = _cleanNullableString(jrCallUserId);
+    final String? jrId =
+    _cleanNullableString(jrCallUserId);
 
-    if (jrId != null) {
-      return jrId;
-    }
-
-    return usernameLabel;
+    return jrId ?? usernameLabel;
   }
 
   // =============================================================
@@ -278,7 +276,7 @@ class ContactModel {
   }
 
   // =============================================================
-  // COPY WITH
+  // COPY
   // =============================================================
 
   ContactModel copyWith({
@@ -321,12 +319,15 @@ class ContactModel {
       status: status ?? this.status,
       lastSeen: lastSeen ?? this.lastSeen,
       createdAt: createdAt ?? this.createdAt,
-      linkedUid: clearLinkedUid ? null : linkedUid ?? this.linkedUid,
+      linkedUid:
+      clearLinkedUid ? null : linkedUid ?? this.linkedUid,
       jrCallUserId: clearJrCallUserId
           ? null
           : jrCallUserId ?? this.jrCallUserId,
-      username: clearUsername ? null : username ?? this.username,
-      registeredState: registeredState ?? this.registeredState,
+      username:
+      clearUsername ? null : username ?? this.username,
+      registeredState:
+      registeredState ?? this.registeredState,
     );
   }
 
@@ -349,14 +350,15 @@ class ContactModel {
       'isBlocked': isBlocked,
       'isVerified': isVerified,
       'status': status.name,
-      'lastSeen': lastSeen.toIso8601String(),
-      'createdAt': createdAt.toIso8601String(),
-      if (_hasValue(linkedUid)) 'linkedUid': linkedUid!.trim(),
-      if (_hasValue(jrCallUserId)) 'jrCallUserId': jrCallUserId!.trim(),
-      if (_hasValue(username)) 'username': username!.trim(),
+      'lastSeen': lastSeen.toUtc().toIso8601String(),
+      'createdAt': createdAt.toUtc().toIso8601String(),
+      if (_hasValue(linkedUid))
+        'linkedUid': linkedUid!.trim(),
+      if (_hasValue(jrCallUserId))
+        'jrCallUserId': jrCallUserId!.trim(),
+      if (_hasValue(username))
+        'username': username!.trim(),
       'registeredState': registeredState.name,
-
-      /// Compatibility convenience.
       'isRegistered': isRegistered,
     };
   }
@@ -382,9 +384,12 @@ class ContactModel {
       'status': status.name,
       'lastSeen': Timestamp.fromDate(lastSeen),
       'createdAt': Timestamp.fromDate(createdAt),
-      if (_hasValue(linkedUid)) 'linkedUid': linkedUid!.trim(),
-      if (_hasValue(jrCallUserId)) 'jrCallUserId': jrCallUserId!.trim(),
-      if (_hasValue(username)) 'username': username!.trim(),
+      if (_hasValue(linkedUid))
+        'linkedUid': linkedUid!.trim(),
+      if (_hasValue(jrCallUserId))
+        'jrCallUserId': jrCallUserId!.trim(),
+      if (_hasValue(username))
+        'username': username!.trim(),
       'registeredState': registeredState.name,
       'isRegistered': isRegistered,
     };
@@ -394,64 +399,124 @@ class ContactModel {
   // MAP PARSING
   // =============================================================
 
-  factory ContactModel.fromMap(Map<String, dynamic> map) {
-    final DateTime now = DateTime.now();
+  factory ContactModel.fromMap(
+      Map<String, dynamic> map,
+      ) {
+    final DateTime epoch =
+    DateTime.fromMillisecondsSinceEpoch(
+      0,
+      isUtc: true,
+    );
 
-    final String userId = _firstString(<Object?>[map['userId'], map['uid']]);
+    final String userId = _firstString(
+      <Object?>[
+        map['userId'],
+        map['uid'],
+      ],
+    );
 
-    final String? linkedUid = _firstNullableString(<Object?>[
-      map['linkedUid'],
-      map['linkedUserId'],
-      map['linkedUserUid'],
-      map['firebaseUid'],
-    ]);
+    final String? linkedUid =
+    _firstNullableString(
+      <Object?>[
+        map['linkedUid'],
+        map['linkedUserId'],
+        map['linkedUserUid'],
+        map['firebaseUid'],
+      ],
+    );
 
-    final String? jrCallUserId = _firstNullableString(<Object?>[
-      map['jrCallUserId'],
-      map['userAddress'],
-      map['jrCallId'],
-    ]);
+    final String? jrCallUserId =
+    _firstNullableString(
+      <Object?>[
+        map['jrCallUserId'],
+        map['userAddress'],
+        map['jrCallId'],
+      ],
+    );
 
-    final String? username = _firstNullableString(<Object?>[
-      map['username'],
-      map['shortName'],
-    ]);
+    final String? username =
+    _firstNullableString(
+      <Object?>[
+        map['username'],
+        map['shortName'],
+      ],
+    );
 
-    final ContactRegisteredState registeredState = _parseRegisteredState(
+    final ContactRegisteredState registeredState =
+    _parseRegisteredState(
       registeredStateValue: map['registeredState'],
-      legacyRegisteredValue: map['isRegistered'] ?? map['registered'],
+      legacyRegisteredValue:
+      map['isRegistered'] ?? map['registered'],
       linkedUid: linkedUid,
     );
 
     return ContactModel(
-      id: _firstString(<Object?>[map['id'], map['contactId']]),
+      id: _firstString(
+        <Object?>[
+          map['id'],
+          map['contactId'],
+        ],
+      ),
       userId: userId,
-      name: _firstString(<Object?>[
-        map['name'],
-        map['fullName'],
-        map['displayName'],
-      ]),
-      phoneNumber: _firstString(<Object?>[
-        map['phoneNumber'],
-        map['phone'],
-        map['phoneNormalized'],
-      ]),
-      email: _firstString(<Object?>[map['email'], map['emailNormalized']]),
-      photoUrl: _firstString(<Object?>[
-        map['photoUrl'],
-        map['profilePhotoUrl'],
-        map['photoURL'],
-      ]),
-      countryCode: _firstString(<Object?>[map['countryCode']]),
-      country: _firstString(<Object?>[map['country']]),
-      bio: _firstString(<Object?>[map['bio']]),
-      isFavorite: _parseBool(map['isFavorite']) ?? false,
-      isBlocked: _parseBool(map['isBlocked']) ?? false,
+      name: _firstString(
+        <Object?>[
+          map['name'],
+          map['fullName'],
+          map['displayName'],
+        ],
+      ),
+      phoneNumber: _firstString(
+        <Object?>[
+          map['phoneNumber'],
+          map['phone'],
+          map['phoneNormalized'],
+        ],
+      ),
+      email: _firstString(
+        <Object?>[
+          map['email'],
+          map['emailNormalized'],
+        ],
+      ),
+      photoUrl: _firstString(
+        <Object?>[
+          map['photoUrl'],
+          map['profilePhotoUrl'],
+          map['photoURL'],
+        ],
+      ),
+      countryCode: _firstString(
+        <Object?>[
+          map['countryCode'],
+        ],
+      ),
+      country: _firstString(
+        <Object?>[
+          map['country'],
+        ],
+      ),
+      bio: _firstString(
+        <Object?>[
+          map['bio'],
+        ],
+      ),
+      isFavorite:
+      _parseBool(map['isFavorite']) ?? false,
+      isBlocked:
+      _parseBool(map['isBlocked']) ?? false,
       isVerified:
-          _parseBool(map['isVerified']) ?? _parseBool(map['verified']) ?? false,
+      _parseBool(map['isVerified']) ??
+          _parseBool(map['verified']) ??
+          false,
       status: _parseStatus(map['status']),
-      lastSeen: _parseDateTime(map['lastSeen'], fallback: now),
-      createdAt: _parseDateTime(map['createdAt'], fallback: now),
+      lastSeen: _parseDateTime(
+        map['lastSeen'],
+        fallback: epoch,
+      ),
+      createdAt: _parseDateTime(
+        map['createdAt'],
+        fallback: epoch,
+      ),
       linkedUid: linkedUid,
       jrCallUserId: jrCallUserId,
       username: username,
@@ -460,18 +525,25 @@ class ContactModel {
   }
 
   // =============================================================
-  // FIRESTORE DOCUMENT
+  // FIRESTORE
   // =============================================================
 
   factory ContactModel.fromFirestore(
-    DocumentSnapshot<Map<String, dynamic>> document,
-  ) {
+      DocumentSnapshot<Map<String, dynamic>> document,
+      ) {
     final Map<String, dynamic> data =
         document.data() ?? const <String, dynamic>{};
 
-    final Map<String, dynamic> merged = <String, dynamic>{...data};
+    final Map<String, dynamic> merged =
+    <String, dynamic>{
+      ...data,
+    };
 
-    if (_firstString(<Object?>[merged['id']]).isEmpty) {
+    if (_firstString(
+      <Object?>[
+        merged['id'],
+      ],
+    ).isEmpty) {
       merged['id'] = document.id;
     }
 
@@ -487,23 +559,38 @@ class ContactModel {
   }
 
   factory ContactModel.fromJson(String source) {
-    final Object? decoded = jsonDecode(source);
+    try {
+      final Object? decoded = jsonDecode(source);
 
-    if (decoded is! Map) {
-      throw const FormatException('ContactModel JSON must contain an object.');
+      if (decoded is Map<String, dynamic>) {
+        return ContactModel.fromMap(decoded);
+      }
+
+      if (decoded is Map) {
+        final Map<String, dynamic> normalized =
+        <String, dynamic>{};
+
+        for (final MapEntry<dynamic, dynamic> entry
+        in decoded.entries) {
+          normalized[entry.key.toString()] =
+              entry.value;
+        }
+
+        return ContactModel.fromMap(normalized);
+      }
+    } on FormatException {
+      // Malformed legacy JSON falls through to safe defaults.
+    } catch (_) {
+      // Corrupted local data must not crash Contacts/Call UI.
     }
 
-    final Map<String, dynamic> data = <String, dynamic>{};
-
-    decoded.forEach((Object? key, Object? value) {
-      data[key.toString()] = value;
-    });
-
-    return ContactModel.fromMap(data);
+    return ContactModel.fromMap(
+      const <String, dynamic>{},
+    );
   }
 
   // =============================================================
-  // DEBUG
+  // DEBUG / OBJECT
   // =============================================================
 
   @override
@@ -520,10 +607,6 @@ class ContactModel {
         ')';
   }
 
-  // =============================================================
-  // EQUALITY
-  // =============================================================
-
   @override
   bool operator ==(Object other) {
     if (identical(this, other)) {
@@ -538,19 +621,25 @@ class ContactModel {
 
   @override
   int get hashCode {
-    return Object.hash(id, userId, linkedUid);
+    return Object.hash(
+      id,
+      userId,
+      linkedUid,
+    );
   }
 }
 
-/// ===============================================================
-/// PARSING HELPERS
-/// ===============================================================
+// ===============================================================
+// PARSING HELPERS
+// ===============================================================
 
 String _firstString(Iterable<Object?> values) {
   return _firstNullableString(values) ?? '';
 }
 
-String? _firstNullableString(Iterable<Object?> values) {
+String? _firstNullableString(
+    Iterable<Object?> values,
+    ) {
   for (final Object? value in values) {
     if (value == null) {
       continue;
@@ -558,11 +647,8 @@ String? _firstNullableString(Iterable<Object?> values) {
 
     final String text = value.toString().trim();
 
-    if (text.isEmpty) {
-      continue;
-    }
-
-    if (text.toLowerCase() == 'null') {
+    if (text.isEmpty ||
+        text.toLowerCase() == 'null') {
       continue;
     }
 
@@ -583,7 +669,8 @@ String? _cleanNullableString(String? value) {
 }
 
 bool _hasValue(String? value) {
-  return value != null && value.trim().isNotEmpty;
+  return value != null &&
+      value.trim().isNotEmpty;
 }
 
 bool? _parseBool(Object? value) {
@@ -601,24 +688,39 @@ bool? _parseBool(Object? value) {
     }
   }
 
-  if (value is String) {
-    switch (value.trim().toLowerCase()) {
-      case 'true':
-      case '1':
-      case 'yes':
-      case 'registered':
-        return true;
+  switch (
+  value?.toString().trim().toLowerCase()) {
+    case 'true':
+    case '1':
+    case 'yes':
+    case 'registered':
+      return true;
 
-      case 'false':
-      case '0':
-      case 'no':
-      case 'notregistered':
-      case 'not_registered':
-        return false;
-    }
+    case 'false':
+    case '0':
+    case 'no':
+    case 'notregistered':
+    case 'not_registered':
+    case 'not-registered':
+      return false;
   }
 
   return null;
+}
+
+String _enumToken(Object? value) {
+  final String raw =
+      value?.toString().trim().toLowerCase() ?? '';
+
+  if (raw.isEmpty) {
+    return '';
+  }
+
+  final int dot = raw.lastIndexOf('.');
+
+  return dot >= 0
+      ? raw.substring(dot + 1)
+      : raw;
 }
 
 ContactStatus _parseStatus(Object? value) {
@@ -626,9 +728,19 @@ ContactStatus _parseStatus(Object? value) {
     return value;
   }
 
-  final String normalized = value?.toString().trim().toLowerCase() ?? '';
+  if (value is num) {
+    final int index = value.toInt();
 
-  for (final ContactStatus status in ContactStatus.values) {
+    if (index >= 0 &&
+        index < ContactStatus.values.length) {
+      return ContactStatus.values[index];
+    }
+  }
+
+  final String normalized = _enumToken(value);
+
+  for (final ContactStatus status
+  in ContactStatus.values) {
     if (status.name.toLowerCase() == normalized) {
       return status;
     }
@@ -642,21 +754,34 @@ ContactRegisteredState _parseRegisteredState({
   required Object? legacyRegisteredValue,
   required String? linkedUid,
 }) {
-  if (registeredStateValue is ContactRegisteredState) {
+  if (registeredStateValue
+  is ContactRegisteredState) {
     return registeredStateValue;
   }
 
-  final String stateText =
-      registeredStateValue?.toString().trim().toLowerCase() ?? '';
+  if (registeredStateValue is num) {
+    final int index =
+    registeredStateValue.toInt();
 
-  for (final ContactRegisteredState state in ContactRegisteredState.values) {
-    if (state.name.toLowerCase() == stateText) {
+    if (index >= 0 &&
+        index <
+            ContactRegisteredState.values.length) {
+      return ContactRegisteredState.values[index];
+    }
+  }
+
+  final String normalized =
+  _enumToken(registeredStateValue);
+
+  for (final ContactRegisteredState state
+  in ContactRegisteredState.values) {
+    if (state.name.toLowerCase() == normalized) {
       return state;
     }
   }
 
-  /// Explicit old bool field has priority over inference.
-  final bool? explicitLegacy = _parseBool(legacyRegisteredValue);
+  final bool? explicitLegacy =
+  _parseBool(legacyRegisteredValue);
 
   if (explicitLegacy == true) {
     return ContactRegisteredState.registered;
@@ -666,21 +791,17 @@ ContactRegisteredState _parseRegisteredState({
     return ContactRegisteredState.notRegistered;
   }
 
-  /// Resolved Firebase UID is strong evidence that this contact
-  /// has already been matched to a JR CALL account.
   if (_hasValue(linkedUid)) {
     return ContactRegisteredState.registered;
   }
 
-  /// Do NOT automatically mark a contact as registered only
-  /// because legacy userId contains something.
-  ///
-  /// userId is retained for compatibility but may represent an
-  /// older/local identity rather than a verified discovery match.
   return ContactRegisteredState.unknown;
 }
 
-DateTime _parseDateTime(Object? value, {required DateTime fallback}) {
+DateTime _parseDateTime(
+    Object? value, {
+      required DateTime fallback,
+    }) {
   if (value == null) {
     return fallback;
   }
@@ -693,12 +814,9 @@ DateTime _parseDateTime(Object? value, {required DateTime fallback}) {
     return value.toDate();
   }
 
-  if (value is int) {
-    return _dateTimeFromNumber(value) ?? fallback;
-  }
-
-  if (value is double) {
-    return _dateTimeFromNumber(value.toInt()) ?? fallback;
+  if (value is num) {
+    return _dateTimeFromNumber(value) ??
+        fallback;
   }
 
   if (value is String) {
@@ -708,47 +826,180 @@ DateTime _parseDateTime(Object? value, {required DateTime fallback}) {
       return fallback;
     }
 
-    final DateTime? parsed = DateTime.tryParse(normalized);
+    final DateTime? parsed =
+    DateTime.tryParse(normalized);
 
     if (parsed != null) {
       return parsed;
     }
 
-    final int? numeric = int.tryParse(normalized);
+    final num? numeric =
+    num.tryParse(normalized);
 
     if (numeric != null) {
-      return _dateTimeFromNumber(numeric) ?? fallback;
+      return _dateTimeFromNumber(numeric) ??
+          fallback;
     }
   }
 
   if (value is Map) {
-    final Object? seconds = value['_seconds'] ?? value['seconds'];
+    final Object? seconds =
+        value['_seconds'] ?? value['seconds'];
 
     if (seconds is num) {
-      final Object? nanoseconds = value['_nanoseconds'] ?? value['nanoseconds'];
+      final Object? nanoseconds =
+          value['_nanoseconds'] ??
+              value['nanoseconds'];
 
-      final double nanos = nanoseconds is num ? nanoseconds.toDouble() : 0;
+      final double nanos = nanoseconds is num
+          ? nanoseconds.toDouble()
+          : 0;
 
-      final int milliseconds =
-          (seconds.toDouble() * 1000).round() + (nanos / 1000000).round();
+      try {
+        final int microseconds =
+            (seconds.toDouble() * 1000000).round() +
+                (nanos / 1000).round();
 
-      return DateTime.fromMillisecondsSinceEpoch(milliseconds);
+        return DateTime.fromMicrosecondsSinceEpoch(
+          microseconds,
+        );
+      } on RangeError {
+        return fallback;
+      } on ArgumentError {
+        return fallback;
+      }
     }
+  }
+
+  try {
+    final dynamic converted =
+    (value as dynamic).toDate();
+
+    if (converted is DateTime) {
+      return converted;
+    }
+  } catch (_) {
+    // Not Timestamp-compatible.
   }
 
   return fallback;
 }
 
-DateTime? _dateTimeFromNumber(int value) {
-  if (value <= 0) {
+DateTime? _dateTimeFromNumber(num value) {
+  try {
+    final int raw = value.toInt();
+    final int absolute = raw.abs();
+
+    if (absolute < 100000000000) {
+      return DateTime.fromMillisecondsSinceEpoch(
+        raw * 1000,
+      );
+    }
+
+    if (absolute >= 100000000000000) {
+      return DateTime.fromMicrosecondsSinceEpoch(
+        raw,
+      );
+    }
+
+    return DateTime.fromMillisecondsSinceEpoch(
+      raw,
+    );
+  } on RangeError {
+    return null;
+  } on ArgumentError {
+    return null;
+  }
+}
+
+// ===============================================================
+// DISCOVERY NORMALIZATION
+// ===============================================================
+
+String _normalizeSearchText(String value) {
+  return value
+      .trim()
+      .toLowerCase()
+      .replaceAll(
+    RegExp(r'\s+'),
+    ' ',
+  );
+}
+
+String? _normalizeUsernameNullable(
+    String? value,
+    ) {
+  final String? cleaned =
+  _cleanNullableString(value);
+
+  if (cleaned == null) {
     return null;
   }
 
-  /// Seconds since Unix epoch.
-  if (value < 100000000000) {
-    return DateTime.fromMillisecondsSinceEpoch(value * 1000);
+  String normalized = cleaned.toLowerCase();
+
+  if (normalized.startsWith('@')) {
+    normalized = normalized.substring(1);
   }
 
-  /// Milliseconds since Unix epoch.
-  return DateTime.fromMillisecondsSinceEpoch(value);
+  return normalized.isEmpty
+      ? null
+      : normalized;
+}
+
+String? _normalizePublicIdentityNullable(
+    String? value,
+    ) {
+  final String? cleaned =
+  _cleanNullableString(value);
+
+  if (cleaned == null) {
+    return null;
+  }
+
+  String normalized = cleaned.toLowerCase();
+
+  if (normalized.startsWith('@')) {
+    normalized = normalized.substring(1);
+  }
+
+  return normalized.isEmpty
+      ? null
+      : normalized;
+}
+
+String? _normalizeEmailNullable(
+    String? value,
+    ) {
+  final String? cleaned =
+  _cleanNullableString(value);
+
+  return cleaned?.toLowerCase();
+}
+
+String? _normalizePhoneNullable(
+    String? value,
+    ) {
+  final String? cleaned =
+  _cleanNullableString(value);
+
+  if (cleaned == null) {
+    return null;
+  }
+
+  final bool hasPlus =
+  cleaned.startsWith('+');
+
+  final String digits = cleaned.replaceAll(
+    RegExp(r'[^0-9]'),
+    '',
+  );
+
+  if (digits.isEmpty) {
+    return null;
+  }
+
+  return hasPlus
+      ? '+$digits'
+      : digits;
 }

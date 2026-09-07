@@ -1,40 +1,62 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 /// ===========================================================
 /// JR CALL
 /// File: notification_service.dart
 /// Location: lib/services/call/notification_service.dart
 ///
-/// Description:
-/// JR CALL-এর centralized Call Notification Coordinator.
+/// MASTER PRODUCTION CALL NOTIFICATION COORDINATOR
 ///
-/// এই service-এর দায়িত্ব:
-/// - Incoming call notification state
-/// - Outgoing call notification state
-/// - Connected call notification state
-/// - Missed call notification state
-/// - Rejected / Cancelled / Failed notification state
-/// - Network lost / recovered call notification state
-/// - Duplicate notification protection
-/// - Notification action handling
-/// - Automatic expiration
-/// - Safe stream lifecycle
+/// RESPONSIBILITIES:
 ///
-/// গুরুত্বপূর্ণ:
-/// এই file CallService/WebRTC/Signaling logic পরিবর্তন করে না।
-/// এটি শুধুমাত্র notification state-এর centralized owner.
+/// - Incoming-call notification state.
+/// - Outgoing-call notification state.
+/// - Connecting / connected notification state.
+/// - Missed / rejected / cancelled / ended / failed state.
+/// - Network lost / recovered notification state.
+/// - Duplicate notification protection.
+/// - Notification action events.
+/// - Incoming notification presentation expiry.
+/// - Locale-ready notification text coordination.
+/// - Safe stream lifecycle.
 ///
-/// Native Android/iOS tray notification বা background push
-/// পরবর্তীতে FCM/native notification layer-এর সাথে এই service
-/// connect করতে পারবে।
+/// OWNERSHIP:
 ///
-/// কোনো fake OTP, authentication বা Firestore ownership
-/// এই service-এর ভিতরে নেই.
+/// NotificationService:
+/// - Notification presentation state.
+/// - Notification action event emission.
+/// - Localization resource metadata.
+///
+/// CallService:
+/// - Actual call lifecycle.
+/// - Answer / reject / cancel execution.
+///
+/// WebRTCService:
+/// - Media / PeerConnection.
+///
+/// SignalingService:
+/// - Signaling / Firestore call state.
+///
+/// Localization layer:
+/// - Actual translated strings for supported locales.
+///
+/// Native FCM / platform notification layer:
+/// - Android/iOS system notification delivery.
+///
+/// IMPORTANT:
+///
+/// - This service does NOT send SMS.
+/// - This service does NOT own FCM delivery.
+/// - Notification expiry does NOT end a call.
+/// - Notification actions do NOT directly mutate call state.
+/// - No WebRTC / signaling / ICE / recovery ownership.
 /// ===========================================================
 
-/// ===========================================================
-/// Notification Type
-/// ===========================================================
+// =============================================================
+// NOTIFICATION TYPE
+// =============================================================
 
 enum CallNotificationType {
   incoming,
@@ -50,37 +72,166 @@ enum CallNotificationType {
   networkRecovered,
 }
 
-/// ===========================================================
-/// Notification Action
-/// ===========================================================
+// =============================================================
+// NOTIFICATION ACTION
+// =============================================================
 
-enum CallNotificationAction { answer, reject, cancel, open, dismiss }
+enum CallNotificationAction {
+  answer,
+  reject,
+  cancel,
+  open,
+  dismiss,
+}
 
-/// ===========================================================
-/// Immutable Notification Model
-/// ===========================================================
+// =============================================================
+// LOCALIZATION TEXT KEYS
+//
+// These values are intentionally stable.
+//
+// Flutter l10n can resolve them for in-app presentation.
+// FILE 36 / native FCM integration can map the same resource keys
+// to Android/iOS localized notification resources.
+// =============================================================
 
+enum CallNotificationTextKey {
+  incomingVideoTitle(
+    'jr_call_incoming_video_title',
+  ),
+
+  incomingVoiceTitle(
+    'jr_call_incoming_voice_title',
+  ),
+
+  incomingBody(
+    'jr_call_incoming_body',
+  ),
+
+  outgoingVideoTitle(
+    'jr_call_outgoing_video_title',
+  ),
+
+  outgoingVoiceTitle(
+    'jr_call_outgoing_voice_title',
+  ),
+
+  outgoingBody(
+    'jr_call_outgoing_body',
+  ),
+
+  connectingTitle(
+    'jr_call_connecting_title',
+  ),
+
+  connectingBody(
+    'jr_call_connecting_body',
+  ),
+
+  connectedVideoTitle(
+    'jr_call_connected_video_title',
+  ),
+
+  connectedVoiceTitle(
+    'jr_call_connected_voice_title',
+  ),
+
+  connectedBody(
+    'jr_call_connected_body',
+  ),
+
+  missedTitle(
+    'jr_call_missed_title',
+  ),
+
+  missedBody(
+    'jr_call_missed_body',
+  ),
+
+  rejectedTitle(
+    'jr_call_rejected_title',
+  ),
+
+  rejectedBody(
+    'jr_call_rejected_body',
+  ),
+
+  cancelledTitle(
+    'jr_call_cancelled_title',
+  ),
+
+  cancelledBody(
+    'jr_call_cancelled_body',
+  ),
+
+  endedTitle(
+    'jr_call_ended_title',
+  ),
+
+  endedBody(
+    'jr_call_ended_body',
+  ),
+
+  endedWithDurationBody(
+    'jr_call_ended_with_duration_body',
+  ),
+
+  failedTitle(
+    'jr_call_failed_title',
+  ),
+
+  failedBody(
+    'jr_call_failed_body',
+  ),
+
+  failedReasonBody(
+    'jr_call_failed_reason_body',
+  ),
+
+  networkLostTitle(
+    'jr_call_network_lost_title',
+  ),
+
+  networkLostBody(
+    'jr_call_network_lost_body',
+  ),
+
+  networkRecoveredTitle(
+    'jr_call_network_recovered_title',
+  ),
+
+  networkRecoveredBody(
+    'jr_call_network_recovered_body',
+  );
+
+  const CallNotificationTextKey(
+      this.resourceKey,
+      );
+
+  final String resourceKey;
+}
+
+// =============================================================
+// LOCALIZATION RESOLVER
+//
+// The application localization layer can bind one resolver.
+// The resolver must use the CURRENT selected app/user locale.
+//
+// Returning an empty string or throwing never breaks a call;
+// NotificationService falls back to English.
+// =============================================================
+
+typedef CallNotificationTextResolver =
+String Function(
+    CallNotificationTextKey key,
+    Map<String, String> arguments,
+    );
+
+// =============================================================
+// IMMUTABLE NOTIFICATION MODEL
+// =============================================================
+
+@immutable
 class CallNotification {
-  final String id;
-  final String callId;
-
-  final CallNotificationType type;
-
-  final String title;
-  final String body;
-
-  final String? peerId;
-  final String? peerName;
-  final String? peerPhotoUrl;
-
-  final bool isVideoCall;
-  final bool isIncoming;
-
-  final DateTime createdAt;
-  final DateTime? expiresAt;
-
-  final Map<String, dynamic> data;
-
   const CallNotification({
     required this.id,
     required this.callId,
@@ -94,26 +245,101 @@ class CallNotification {
     this.peerName,
     this.peerPhotoUrl,
     this.expiresAt,
-    this.data = const <String, dynamic>{},
+    this.titleTextKey,
+    this.bodyTextKey,
+    this.titleLocalizationArgs =
+    const <String>[],
+    this.bodyLocalizationArgs =
+    const <String>[],
+    this.textArguments =
+    const <String, String>{},
+    this.data =
+    const <String, dynamic>{},
   });
 
-  /// ---------------------------------------------------------
-  /// Notification expire হয়েছে কি না
-  /// ---------------------------------------------------------
+  final String id;
+
+  final String callId;
+
+  final CallNotificationType type;
+
+  final String title;
+
+  final String body;
+
+  final String? peerId;
+
+  final String? peerName;
+
+  final String? peerPhotoUrl;
+
+  final bool isVideoCall;
+
+  final bool isIncoming;
+
+  final DateTime createdAt;
+
+  final DateTime? expiresAt;
+
+  /// Flutter/in-app localization key.
+  final CallNotificationTextKey?
+  titleTextKey;
+
+  /// Flutter/in-app localization key.
+  final CallNotificationTextKey?
+  bodyTextKey;
+
+  /// Ordered arguments suitable for a future native
+  /// title_loc_args equivalent.
+  final List<String>
+  titleLocalizationArgs;
+
+  /// Ordered arguments suitable for a future native
+  /// body_loc_args equivalent.
+  final List<String>
+  bodyLocalizationArgs;
+
+  /// Named arguments used by the application localization resolver.
+  final Map<String, String>
+  textArguments;
+
+  final Map<String, dynamic> data;
+
+  // ===========================================================
+  // LOCALIZATION RESOURCE METADATA
+  // ===========================================================
+
+  String? get titleLocalizationKey =>
+      titleTextKey?.resourceKey;
+
+  String? get bodyLocalizationKey =>
+      bodyTextKey?.resourceKey;
+
+  // ===========================================================
+  // EXPIRY
+  // ===========================================================
 
   bool get isExpired {
-    final expiry = expiresAt;
+    final DateTime? expiry =
+        expiresAt;
 
     if (expiry == null) {
       return false;
     }
 
-    return DateTime.now().isAfter(expiry);
+    return !DateTime.now().isBefore(
+      expiry,
+    );
   }
 
-  /// ---------------------------------------------------------
-  /// Existing notification safely modify করার জন্য copyWith
-  /// ---------------------------------------------------------
+  // ===========================================================
+  // COPY
+  //
+  // clearExpiresAt solves an important nullable-copy problem:
+  //
+  // expiresAt: null normally means "parameter not supplied".
+  // Therefore callers need an explicit way to remove expiry.
+  // ===========================================================
 
   CallNotification copyWith({
     String? id,
@@ -128,128 +354,243 @@ class CallNotification {
     bool? isIncoming,
     DateTime? createdAt,
     DateTime? expiresAt,
+    bool clearExpiresAt = false,
+    CallNotificationTextKey?
+    titleTextKey,
+    CallNotificationTextKey?
+    bodyTextKey,
+    List<String>?
+    titleLocalizationArgs,
+    List<String>?
+    bodyLocalizationArgs,
+    Map<String, String>?
+    textArguments,
     Map<String, dynamic>? data,
   }) {
     return CallNotification(
-      id: id ?? this.id,
-      callId: callId ?? this.callId,
-      type: type ?? this.type,
-      title: title ?? this.title,
-      body: body ?? this.body,
-      peerId: peerId ?? this.peerId,
-      peerName: peerName ?? this.peerName,
-      peerPhotoUrl: peerPhotoUrl ?? this.peerPhotoUrl,
-      isVideoCall: isVideoCall ?? this.isVideoCall,
-      isIncoming: isIncoming ?? this.isIncoming,
-      createdAt: createdAt ?? this.createdAt,
-      expiresAt: expiresAt ?? this.expiresAt,
-      data: data ?? this.data,
+      id:
+      id ??
+          this.id,
+      callId:
+      callId ??
+          this.callId,
+      type:
+      type ??
+          this.type,
+      title:
+      title ??
+          this.title,
+      body:
+      body ??
+          this.body,
+      peerId:
+      peerId ??
+          this.peerId,
+      peerName:
+      peerName ??
+          this.peerName,
+      peerPhotoUrl:
+      peerPhotoUrl ??
+          this.peerPhotoUrl,
+      isVideoCall:
+      isVideoCall ??
+          this.isVideoCall,
+      isIncoming:
+      isIncoming ??
+          this.isIncoming,
+      createdAt:
+      createdAt ??
+          this.createdAt,
+      expiresAt: clearExpiresAt
+          ? null
+          : expiresAt ??
+          this.expiresAt,
+      titleTextKey:
+      titleTextKey ??
+          this.titleTextKey,
+      bodyTextKey:
+      bodyTextKey ??
+          this.bodyTextKey,
+      titleLocalizationArgs:
+      titleLocalizationArgs ??
+          this.titleLocalizationArgs,
+      bodyLocalizationArgs:
+      bodyLocalizationArgs ??
+          this.bodyLocalizationArgs,
+      textArguments:
+      textArguments ??
+          this.textArguments,
+      data:
+      data ??
+          this.data,
     );
   }
 }
 
-/// ===========================================================
-/// Notification Action Event
-/// ===========================================================
+// =============================================================
+// NOTIFICATION ACTION EVENT
+// =============================================================
 
+@immutable
 class CallNotificationActionEvent {
-  final String callId;
-  final CallNotificationAction action;
-  final DateTime timestamp;
-
   const CallNotificationActionEvent({
     required this.callId,
     required this.action,
     required this.timestamp,
   });
+
+  final String callId;
+
+  final CallNotificationAction action;
+
+  final DateTime timestamp;
 }
 
-/// ===========================================================
-/// Notification Service
-/// ===========================================================
+// =============================================================
+// NOTIFICATION SERVICE
+// =============================================================
 
 class NotificationService {
-  /// ---------------------------------------------------------
-  /// Singleton
-  /// ---------------------------------------------------------
-
   NotificationService._internal();
 
-  static final NotificationService instance = NotificationService._internal();
+  static final NotificationService instance =
+  NotificationService._internal();
 
-  /// ---------------------------------------------------------
-  /// Incoming call notification maximum waiting time
-  ///
-  /// CallService-এর 45-second timeout-এর সাথে safe alignment।
-  /// ---------------------------------------------------------
+  // ===========================================================
+  // PRESENTATION TIMEOUT
+  //
+  // IMPORTANT:
+  //
+  // This ONLY expires the incoming-notification presentation.
+  // It never ends the actual call.
+  // ===========================================================
 
-  static const Duration incomingNotificationTimeout = Duration(seconds: 45);
+  static const Duration
+  incomingNotificationTimeout =
+  Duration(
+    seconds: 45,
+  );
 
-  /// ---------------------------------------------------------
-  /// Active notification memory
-  ///
-  /// callId দিয়ে notification track করা হয়।
-  /// একই call-এর duplicate notification তৈরি হতে দেওয়া হয় না।
-  /// ---------------------------------------------------------
+  // ===========================================================
+  // ACTIVE STATE
+  // ===========================================================
 
-  final Map<String, CallNotification> _activeNotifications =
-      <String, CallNotification>{};
+  final Map<String, CallNotification>
+  _activeNotifications =
+  <String, CallNotification>{};
 
-  /// ---------------------------------------------------------
-  /// Expiry timers
-  /// ---------------------------------------------------------
+  final Map<String, Timer>
+  _expiryTimers =
+  <String, Timer>{};
 
-  final Map<String, Timer> _expiryTimers = <String, Timer>{};
+  // ===========================================================
+  // STREAMS
+  // ===========================================================
 
-  /// ---------------------------------------------------------
-  /// Notification State Stream
-  ///
-  /// UI / IncomingCallScreen / HomeScreen এই stream listen
-  /// করতে পারবে।
-  /// ---------------------------------------------------------
+  final StreamController<
+      List<CallNotification>>
+  _notificationController =
+  StreamController<
+      List<CallNotification>>.broadcast();
 
-  final StreamController<List<CallNotification>> _notificationController =
-      StreamController<List<CallNotification>>.broadcast();
+  final StreamController<
+      CallNotificationActionEvent>
+  _actionController =
+  StreamController<
+      CallNotificationActionEvent>.broadcast();
 
-  /// ---------------------------------------------------------
-  /// Notification Action Stream
-  ///
-  /// Answer / Reject / Cancel action centralizedভাবে
-  /// CallService বা UI consume করতে পারবে।
-  /// ---------------------------------------------------------
+  // ===========================================================
+  // LOCALIZATION
+  // ===========================================================
 
-  final StreamController<CallNotificationActionEvent> _actionController =
-      StreamController<CallNotificationActionEvent>.broadcast();
+  CallNotificationTextResolver?
+  _textResolver;
 
   bool _disposed = false;
 
-  /// =========================================================
-  /// Public Streams
-  /// =========================================================
+  // ===========================================================
+  // PUBLIC STREAMS
+  // ===========================================================
 
-  Stream<List<CallNotification>> get notificationStream =>
+  Stream<List<CallNotification>>
+  get notificationStream =>
       _notificationController.stream;
 
-  Stream<CallNotificationActionEvent> get actionStream =>
+  Stream<CallNotificationActionEvent>
+  get actionStream =>
       _actionController.stream;
 
-  /// =========================================================
-  /// Active Notifications
-  /// =========================================================
+  // ===========================================================
+  // PUBLIC STATE
+  // ===========================================================
 
-  List<CallNotification> get activeNotifications {
+  List<CallNotification>
+  get activeNotifications {
     _removeExpiredSilently();
 
-    final notifications = _activeNotifications.values.toList(growable: false);
+    final List<CallNotification>
+    notifications =
+    _activeNotifications.values
+        .toList(
+      growable: false,
+    );
 
-    notifications.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    notifications.sort(
+          (
+          CallNotification a,
+          CallNotification b,
+          ) =>
+          b.createdAt.compareTo(
+            a.createdAt,
+          ),
+    );
 
-    return List<CallNotification>.unmodifiable(notifications);
+    return List<CallNotification>.unmodifiable(
+      notifications,
+    );
   }
 
-  /// =========================================================
-  /// Incoming Call
-  /// =========================================================
+  // ===========================================================
+  // LOCALIZATION CONFIGURATION
+  // ===========================================================
+
+  void configureLocalization(
+      CallNotificationTextResolver resolver,
+      ) {
+    _ensureAlive();
+
+    _textResolver = resolver;
+
+    _relocalizeActiveNotifications();
+  }
+
+  void clearLocalizationResolver() {
+    if (_disposed) {
+      return;
+    }
+
+    if (_textResolver == null) {
+      return;
+    }
+
+    _textResolver = null;
+
+    _relocalizeActiveNotifications();
+  }
+
+  /// Call this after the app changes its selected language
+  /// while a call notification is already visible.
+  void refreshLocalizedText() {
+    if (_disposed) {
+      return;
+    }
+
+    _relocalizeActiveNotifications();
+  }
+
+  // ===========================================================
+  // INCOMING CALL
+  // ===========================================================
 
   Future<void> showIncomingCall({
     required String callId,
@@ -257,47 +598,239 @@ class NotificationService {
     String? callerName,
     String? callerPhotoUrl,
     bool isVideoCall = false,
-    Map<String, dynamic> data = const <String, dynamic>{},
+    Map<String, dynamic> data =
+    const <String, dynamic>{},
   }) async {
     _ensureAlive();
 
-    final normalizedCallId = _requiredValue(callId, 'callId');
-
-    final normalizedCallerId = _requiredValue(callerId, 'callerId');
-
-    final displayName = _displayName(callerName, fallback: 'JR CALL User');
-
-    final now = DateTime.now();
-
-    final notification = CallNotification(
-      id: _notificationId(normalizedCallId, CallNotificationType.incoming),
-      callId: normalizedCallId,
-      type: CallNotificationType.incoming,
-      title: isVideoCall ? 'Incoming Video Call' : 'Incoming Voice Call',
-      body: '$displayName is calling you',
-      peerId: normalizedCallerId,
-      peerName: _nullableTrim(callerName),
-      peerPhotoUrl: _nullableTrim(callerPhotoUrl),
-      isVideoCall: isVideoCall,
-      isIncoming: true,
-      createdAt: now,
-      expiresAt: now.add(incomingNotificationTimeout),
-      data: Map<String, dynamic>.unmodifiable(<String, dynamic>{
-        ...data,
-        'callId': normalizedCallId,
-        'callerId': normalizedCallerId,
-        'isVideoCall': isVideoCall,
-      }),
+    final String normalizedCallId =
+    _requiredValue(
+      callId,
+      'callId',
     );
 
-    _upsert(notification);
+    final String normalizedCallerId =
+    _requiredValue(
+      callerId,
+      'callerId',
+    );
 
-    _scheduleExpiry(normalizedCallId, incomingNotificationTimeout);
+    final CallNotification?
+    existing =
+    _activeNotifications[
+    normalizedCallId];
+
+    // An initial incoming notification must never resurrect or
+    // regress an already advanced notification for the same call.
+    if (existing != null &&
+        existing.type !=
+            CallNotificationType.incoming) {
+      return;
+    }
+
+    if (existing != null &&
+        existing.isExpired) {
+      _cancelExpiry(
+        normalizedCallId,
+      );
+
+      _activeNotifications.remove(
+        normalizedCallId,
+      );
+
+      _emitNotifications();
+
+      return;
+    }
+
+    final String displayName =
+    _displayName(
+      callerName,
+      fallback: 'JR CALL User',
+    );
+
+    final CallNotificationTextKey
+    titleKey =
+    isVideoCall
+        ? CallNotificationTextKey
+        .incomingVideoTitle
+        : CallNotificationTextKey
+        .incomingVoiceTitle;
+
+    const CallNotificationTextKey
+    bodyKey =
+        CallNotificationTextKey
+            .incomingBody;
+
+    final Map<String, String>
+    arguments =
+    Map<String, String>.unmodifiable(
+      <String, String>{
+        'peerName': displayName,
+      },
+    );
+
+    // Duplicate incoming event:
+    // preserve original creation/expiry time instead of granting
+    // the same call another 45-second presentation window.
+    if (existing != null) {
+      final CallNotification updated =
+      existing.copyWith(
+        title: _localizedText(
+          titleKey,
+          arguments,
+        ),
+        body: _localizedText(
+          bodyKey,
+          arguments,
+        ),
+        peerId:
+        normalizedCallerId,
+        peerName:
+        _nullableTrim(
+          callerName,
+        ),
+        peerPhotoUrl:
+        _nullableTrim(
+          callerPhotoUrl,
+        ),
+        isVideoCall:
+        isVideoCall,
+        isIncoming:
+        true,
+        titleTextKey:
+        titleKey,
+        bodyTextKey:
+        bodyKey,
+        titleLocalizationArgs:
+        const <String>[],
+        bodyLocalizationArgs:
+        List<String>.unmodifiable(
+          <String>[
+            displayName,
+          ],
+        ),
+        textArguments:
+        arguments,
+        data:
+        _buildData(
+          data,
+          <String, dynamic>{
+            'callId':
+            normalizedCallId,
+            'callerId':
+            normalizedCallerId,
+            'isVideoCall':
+            isVideoCall,
+          },
+        ),
+      );
+
+      _upsert(
+        updated,
+      );
+
+      final DateTime? expiry =
+          updated.expiresAt;
+
+      if (expiry != null &&
+          !_expiryTimers.containsKey(
+            normalizedCallId,
+          )) {
+        _scheduleExpiryUntil(
+          normalizedCallId,
+          expiry,
+        );
+      }
+
+      return;
+    }
+
+    final DateTime now =
+    DateTime.now();
+
+    final DateTime expiresAt =
+    now.add(
+      incomingNotificationTimeout,
+    );
+
+    final CallNotification notification =
+    CallNotification(
+      id: _notificationId(
+        normalizedCallId,
+        CallNotificationType.incoming,
+      ),
+      callId:
+      normalizedCallId,
+      type:
+      CallNotificationType.incoming,
+      title:
+      _localizedText(
+        titleKey,
+        arguments,
+      ),
+      body:
+      _localizedText(
+        bodyKey,
+        arguments,
+      ),
+      peerId:
+      normalizedCallerId,
+      peerName:
+      _nullableTrim(
+        callerName,
+      ),
+      peerPhotoUrl:
+      _nullableTrim(
+        callerPhotoUrl,
+      ),
+      isVideoCall:
+      isVideoCall,
+      isIncoming:
+      true,
+      createdAt:
+      now,
+      expiresAt:
+      expiresAt,
+      titleTextKey:
+      titleKey,
+      bodyTextKey:
+      bodyKey,
+      bodyLocalizationArgs:
+      List<String>.unmodifiable(
+        <String>[
+          displayName,
+        ],
+      ),
+      textArguments:
+      arguments,
+      data:
+      _buildData(
+        data,
+        <String, dynamic>{
+          'callId':
+          normalizedCallId,
+          'callerId':
+          normalizedCallerId,
+          'isVideoCall':
+          isVideoCall,
+        },
+      ),
+    );
+
+    _upsert(
+      notification,
+    );
+
+    _scheduleExpiryUntil(
+      normalizedCallId,
+      expiresAt,
+    );
   }
 
-  /// =========================================================
-  /// Outgoing Call
-  /// =========================================================
+  // ===========================================================
+  // OUTGOING CALL
+  // ===========================================================
 
   Future<void> showOutgoingCall({
     required String callId,
@@ -305,95 +838,316 @@ class NotificationService {
     String? receiverName,
     String? receiverPhotoUrl,
     bool isVideoCall = false,
-    Map<String, dynamic> data = const <String, dynamic>{},
+    Map<String, dynamic> data =
+    const <String, dynamic>{},
   }) async {
     _ensureAlive();
 
-    final normalizedCallId = _requiredValue(callId, 'callId');
-
-    final normalizedReceiverId = _requiredValue(receiverId, 'receiverId');
-
-    final displayName = _displayName(receiverName, fallback: 'JR CALL User');
-
-    final notification = CallNotification(
-      id: _notificationId(normalizedCallId, CallNotificationType.outgoing),
-      callId: normalizedCallId,
-      type: CallNotificationType.outgoing,
-      title: isVideoCall ? 'Video Calling' : 'Voice Calling',
-      body: 'Calling $displayName…',
-      peerId: normalizedReceiverId,
-      peerName: _nullableTrim(receiverName),
-      peerPhotoUrl: _nullableTrim(receiverPhotoUrl),
-      isVideoCall: isVideoCall,
-      isIncoming: false,
-      createdAt: DateTime.now(),
-      data: Map<String, dynamic>.unmodifiable(<String, dynamic>{
-        ...data,
-        'callId': normalizedCallId,
-        'receiverId': normalizedReceiverId,
-        'isVideoCall': isVideoCall,
-      }),
+    final String normalizedCallId =
+    _requiredValue(
+      callId,
+      'callId',
     );
 
-    _upsert(notification);
-  }
+    final String normalizedReceiverId =
+    _requiredValue(
+      receiverId,
+      'receiverId',
+    );
 
-  /// =========================================================
-  /// Connecting
-  /// =========================================================
+    final CallNotification?
+    existing =
+    _activeNotifications[
+    normalizedCallId];
 
-  Future<void> showConnecting({required String callId}) async {
-    _ensureAlive();
-
-    final existing = _find(callId);
-
-    if (existing == null) {
+    // Prevent delayed duplicate signaling from regressing
+    // connecting/connected/terminal presentation state.
+    if (existing != null &&
+        existing.type !=
+            CallNotificationType.outgoing) {
       return;
     }
 
+    final String displayName =
+    _displayName(
+      receiverName,
+      fallback: 'JR CALL User',
+    );
+
+    final CallNotificationTextKey
+    titleKey =
+    isVideoCall
+        ? CallNotificationTextKey
+        .outgoingVideoTitle
+        : CallNotificationTextKey
+        .outgoingVoiceTitle;
+
+    const CallNotificationTextKey
+    bodyKey =
+        CallNotificationTextKey
+            .outgoingBody;
+
+    final Map<String, String>
+    arguments =
+    Map<String, String>.unmodifiable(
+      <String, String>{
+        'peerName':
+        displayName,
+      },
+    );
+
+    final DateTime createdAt =
+        existing?.createdAt ??
+            DateTime.now();
+
+    final CallNotification notification =
+    CallNotification(
+      id:
+      _notificationId(
+        normalizedCallId,
+        CallNotificationType.outgoing,
+      ),
+      callId:
+      normalizedCallId,
+      type:
+      CallNotificationType.outgoing,
+      title:
+      _localizedText(
+        titleKey,
+        arguments,
+      ),
+      body:
+      _localizedText(
+        bodyKey,
+        arguments,
+      ),
+      peerId:
+      normalizedReceiverId,
+      peerName:
+      _nullableTrim(
+        receiverName,
+      ),
+      peerPhotoUrl:
+      _nullableTrim(
+        receiverPhotoUrl,
+      ),
+      isVideoCall:
+      isVideoCall,
+      isIncoming:
+      false,
+      createdAt:
+      createdAt,
+      titleTextKey:
+      titleKey,
+      bodyTextKey:
+      bodyKey,
+      bodyLocalizationArgs:
+      List<String>.unmodifiable(
+        <String>[
+          displayName,
+        ],
+      ),
+      textArguments:
+      arguments,
+      data:
+      _buildData(
+        data,
+        <String, dynamic>{
+          'callId':
+          normalizedCallId,
+          'receiverId':
+          normalizedReceiverId,
+          'isVideoCall':
+          isVideoCall,
+        },
+      ),
+    );
+
+    _upsert(
+      notification,
+    );
+  }
+
+  // ===========================================================
+  // CONNECTING
+  // ===========================================================
+
+  Future<void> showConnecting({
+    required String callId,
+  }) async {
+    _ensureAlive();
+
+    final CallNotification? existing =
+    _find(
+      callId,
+    );
+
+    if (existing == null ||
+        _isTerminalType(
+          existing.type,
+        )) {
+      return;
+    }
+
+    // A delayed connecting event must not regress an already
+    // connected/recovering call presentation.
+    if (existing.type ==
+        CallNotificationType.connected ||
+        existing.type ==
+            CallNotificationType.networkLost ||
+        existing.type ==
+            CallNotificationType.networkRecovered) {
+      return;
+    }
+
+    _cancelExpiry(
+      existing.callId,
+    );
+
+    const CallNotificationTextKey
+    titleKey =
+        CallNotificationTextKey
+            .connectingTitle;
+
+    const CallNotificationTextKey
+    bodyKey =
+        CallNotificationTextKey
+            .connectingBody;
+
+    const Map<String, String>
+    arguments =
+    <String, String>{};
+
     _upsert(
       existing.copyWith(
-        id: _notificationId(existing.callId, CallNotificationType.connecting),
-        type: CallNotificationType.connecting,
-        title: 'Connecting',
-        body: 'Securing your JR CALL connection…',
+        id:
+        _notificationId(
+          existing.callId,
+          CallNotificationType.connecting,
+        ),
+        type:
+        CallNotificationType.connecting,
+        title:
+        _localizedText(
+          titleKey,
+          arguments,
+        ),
+        body:
+        _localizedText(
+          bodyKey,
+          arguments,
+        ),
+        clearExpiresAt:
+        true,
+        titleTextKey:
+        titleKey,
+        bodyTextKey:
+        bodyKey,
+        titleLocalizationArgs:
+        const <String>[],
+        bodyLocalizationArgs:
+        const <String>[],
+        textArguments:
+        arguments,
       ),
     );
   }
 
-  /// =========================================================
-  /// Connected
-  /// =========================================================
+  // ===========================================================
+  // CONNECTED
+  // ===========================================================
 
-  Future<void> showConnected({required String callId}) async {
+  Future<void> showConnected({
+    required String callId,
+  }) async {
     _ensureAlive();
 
-    final existing = _find(callId);
+    final CallNotification? existing =
+    _find(
+      callId,
+    );
 
-    if (existing == null) {
+    if (existing == null ||
+        _isTerminalType(
+          existing.type,
+        )) {
       return;
     }
 
-    _cancelExpiry(callId);
+    _cancelExpiry(
+      existing.callId,
+    );
 
-    final peerName = _displayName(existing.peerName, fallback: 'JR CALL User');
+    final String peerName =
+    _displayName(
+      existing.peerName,
+      fallback: 'JR CALL User',
+    );
+
+    final CallNotificationTextKey
+    titleKey =
+    existing.isVideoCall
+        ? CallNotificationTextKey
+        .connectedVideoTitle
+        : CallNotificationTextKey
+        .connectedVoiceTitle;
+
+    const CallNotificationTextKey
+    bodyKey =
+        CallNotificationTextKey
+            .connectedBody;
+
+    final Map<String, String>
+    arguments =
+    Map<String, String>.unmodifiable(
+      <String, String>{
+        'peerName':
+        peerName,
+      },
+    );
 
     _upsert(
       existing.copyWith(
-        id: _notificationId(existing.callId, CallNotificationType.connected),
-        type: CallNotificationType.connected,
-        title: existing.isVideoCall
-            ? 'Video Call Connected'
-            : 'Voice Call Connected',
-        body: 'Connected with $peerName',
-        expiresAt: null,
+        id:
+        _notificationId(
+          existing.callId,
+          CallNotificationType.connected,
+        ),
+        type:
+        CallNotificationType.connected,
+        title:
+        _localizedText(
+          titleKey,
+          arguments,
+        ),
+        body:
+        _localizedText(
+          bodyKey,
+          arguments,
+        ),
+        clearExpiresAt:
+        true,
+        titleTextKey:
+        titleKey,
+        bodyTextKey:
+        bodyKey,
+        titleLocalizationArgs:
+        const <String>[],
+        bodyLocalizationArgs:
+        List<String>.unmodifiable(
+          <String>[
+            peerName,
+          ],
+        ),
+        textArguments:
+        arguments,
       ),
     );
   }
 
-  /// =========================================================
-  /// Missed Call
-  /// =========================================================
+  // ===========================================================
+  // MISSED CALL
+  // ===========================================================
 
   Future<void> showMissedCall({
     required String callId,
@@ -404,231 +1158,475 @@ class NotificationService {
   }) async {
     _ensureAlive();
 
-    final normalizedCallId = _requiredValue(callId, 'callId');
-
-    _cancelExpiry(normalizedCallId);
-
-    final displayName = _displayName(callerName, fallback: 'JR CALL User');
-
-    final notification = CallNotification(
-      id: _notificationId(normalizedCallId, CallNotificationType.missed),
-      callId: normalizedCallId,
-      type: CallNotificationType.missed,
-      title: 'Missed Call',
-      body: 'Missed call from $displayName',
-      peerId: _nullableTrim(callerId),
-      peerName: _nullableTrim(callerName),
-      peerPhotoUrl: _nullableTrim(callerPhotoUrl),
-      isVideoCall: isVideoCall,
-      isIncoming: true,
-      createdAt: DateTime.now(),
+    final String normalizedCallId =
+    _requiredValue(
+      callId,
+      'callId',
     );
 
-    _upsert(notification);
-  }
+    final CallNotification?
+    existing =
+    _activeNotifications[
+    normalizedCallId];
 
-  /// =========================================================
-  /// Rejected
-  /// =========================================================
+    if (existing != null &&
+        _isTerminalType(
+          existing.type,
+        ) &&
+        existing.type !=
+            CallNotificationType.missed) {
+      return;
+    }
 
-  Future<void> showRejected({required String callId}) async {
-    await _replaceCallStatus(
-      callId: callId,
-      type: CallNotificationType.rejected,
-      title: 'Call Rejected',
-      body: 'The call was rejected.',
+    _cancelExpiry(
+      normalizedCallId,
+    );
+
+    final String displayName =
+    _displayName(
+      callerName ??
+          existing?.peerName,
+      fallback: 'JR CALL User',
+    );
+
+    const CallNotificationTextKey
+    titleKey =
+        CallNotificationTextKey
+            .missedTitle;
+
+    const CallNotificationTextKey
+    bodyKey =
+        CallNotificationTextKey
+            .missedBody;
+
+    final Map<String, String>
+    arguments =
+    Map<String, String>.unmodifiable(
+      <String, String>{
+        'peerName':
+        displayName,
+      },
+    );
+
+    final CallNotification notification =
+    CallNotification(
+      id:
+      _notificationId(
+        normalizedCallId,
+        CallNotificationType.missed,
+      ),
+      callId:
+      normalizedCallId,
+      type:
+      CallNotificationType.missed,
+      title:
+      _localizedText(
+        titleKey,
+        arguments,
+      ),
+      body:
+      _localizedText(
+        bodyKey,
+        arguments,
+      ),
+      peerId:
+      _nullableTrim(
+        callerId,
+      ) ??
+          existing?.peerId,
+      peerName:
+      _nullableTrim(
+        callerName,
+      ) ??
+          existing?.peerName,
+      peerPhotoUrl:
+      _nullableTrim(
+        callerPhotoUrl,
+      ) ??
+          existing?.peerPhotoUrl,
+      isVideoCall:
+      existing?.isVideoCall ??
+          isVideoCall,
+      isIncoming:
+      true,
+      createdAt:
+      DateTime.now(),
+      titleTextKey:
+      titleKey,
+      bodyTextKey:
+      bodyKey,
+      bodyLocalizationArgs:
+      List<String>.unmodifiable(
+        <String>[
+          displayName,
+        ],
+      ),
+      textArguments:
+      arguments,
+      data:
+      existing?.data ??
+          const <String, dynamic>{},
+    );
+
+    _upsert(
+      notification,
     );
   }
 
-  /// =========================================================
-  /// Cancelled
-  /// =========================================================
+  // ===========================================================
+  // REJECTED
+  // ===========================================================
 
-  Future<void> showCancelled({required String callId}) async {
-    await _replaceCallStatus(
-      callId: callId,
-      type: CallNotificationType.cancelled,
-      title: 'Call Cancelled',
-      body: 'The call was cancelled.',
+  Future<void> showRejected({
+    required String callId,
+  }) {
+    return _replaceCallStatus(
+      callId:
+      callId,
+      type:
+      CallNotificationType.rejected,
+      titleKey:
+      CallNotificationTextKey
+          .rejectedTitle,
+      bodyKey:
+      CallNotificationTextKey
+          .rejectedBody,
     );
   }
 
-  /// =========================================================
-  /// Call Ended
-  /// =========================================================
+  // ===========================================================
+  // CANCELLED
+  // ===========================================================
+
+  Future<void> showCancelled({
+    required String callId,
+  }) {
+    return _replaceCallStatus(
+      callId:
+      callId,
+      type:
+      CallNotificationType.cancelled,
+      titleKey:
+      CallNotificationTextKey
+          .cancelledTitle,
+      bodyKey:
+      CallNotificationTextKey
+          .cancelledBody,
+    );
+  }
+
+  // ===========================================================
+  // CALL ENDED
+  // ===========================================================
 
   Future<void> showCallEnded({
     required String callId,
     Duration? duration,
-  }) async {
-    final durationText = duration == null
-        ? 'Call ended.'
-        : 'Call ended • ${_formatDuration(duration)}';
+  }) {
+    if (duration == null) {
+      return _replaceCallStatus(
+        callId:
+        callId,
+        type:
+        CallNotificationType.ended,
+        titleKey:
+        CallNotificationTextKey
+            .endedTitle,
+        bodyKey:
+        CallNotificationTextKey
+            .endedBody,
+      );
+    }
 
-    await _replaceCallStatus(
-      callId: callId,
-      type: CallNotificationType.ended,
-      title: 'Call Ended',
-      body: durationText,
+    final String formattedDuration =
+    _formatDuration(
+      duration,
+    );
+
+    return _replaceCallStatus(
+      callId:
+      callId,
+      type:
+      CallNotificationType.ended,
+      titleKey:
+      CallNotificationTextKey
+          .endedTitle,
+      bodyKey:
+      CallNotificationTextKey
+          .endedWithDurationBody,
+      arguments:
+      <String, String>{
+        'duration':
+        formattedDuration,
+      },
+      bodyLocalizationArgs:
+      <String>[
+        formattedDuration,
+      ],
     );
   }
 
-  /// =========================================================
-  /// Call Failed
-  /// =========================================================
+  // ===========================================================
+  // CALL FAILED
+  // ===========================================================
 
-  Future<void> showCallFailed({required String callId, String? reason}) async {
-    await _replaceCallStatus(
-      callId: callId,
-      type: CallNotificationType.failed,
-      title: 'Call Failed',
-      body:
-          _nullableTrim(reason) ??
-          'JR CALL could not establish the connection.',
+  Future<void> showCallFailed({
+    required String callId,
+    String? reason,
+  }) {
+    final String? normalizedReason =
+    _nullableTrim(
+      reason,
+    );
+
+    if (normalizedReason == null) {
+      return _replaceCallStatus(
+        callId:
+        callId,
+        type:
+        CallNotificationType.failed,
+        titleKey:
+        CallNotificationTextKey
+            .failedTitle,
+        bodyKey:
+        CallNotificationTextKey
+            .failedBody,
+      );
+    }
+
+    return _replaceCallStatus(
+      callId:
+      callId,
+      type:
+      CallNotificationType.failed,
+      titleKey:
+      CallNotificationTextKey
+          .failedTitle,
+      bodyKey:
+      CallNotificationTextKey
+          .failedReasonBody,
+      arguments:
+      <String, String>{
+        'reason':
+        normalizedReason,
+      },
+      bodyLocalizationArgs:
+      <String>[
+        normalizedReason,
+      ],
     );
   }
 
-  /// =========================================================
-  /// Network Lost
-  /// =========================================================
+  // ===========================================================
+  // NETWORK LOST
+  // ===========================================================
 
-  Future<void> showNetworkLost({required String callId}) async {
-    await _replaceCallStatus(
-      callId: callId,
-      type: CallNotificationType.networkLost,
-      title: 'Connection Interrupted',
-      body: 'Network lost. JR CALL is trying to reconnect…',
-      cancelExpiry: false,
+  Future<void> showNetworkLost({
+    required String callId,
+  }) {
+    return _replaceCallStatus(
+      callId:
+      callId,
+      type:
+      CallNotificationType.networkLost,
+      titleKey:
+      CallNotificationTextKey
+          .networkLostTitle,
+      bodyKey:
+      CallNotificationTextKey
+          .networkLostBody,
     );
   }
 
-  /// =========================================================
-  /// Network Recovered
-  /// =========================================================
+  // ===========================================================
+  // NETWORK RECOVERED
+  // ===========================================================
 
-  Future<void> showNetworkRecovered({required String callId}) async {
-    await _replaceCallStatus(
-      callId: callId,
-      type: CallNotificationType.networkRecovered,
-      title: 'Connection Restored',
-      body: 'JR CALL connection has been restored.',
-      cancelExpiry: false,
+  Future<void> showNetworkRecovered({
+    required String callId,
+  }) {
+    return _replaceCallStatus(
+      callId:
+      callId,
+      type:
+      CallNotificationType.networkRecovered,
+      titleKey:
+      CallNotificationTextKey
+          .networkRecoveredTitle,
+      bodyKey:
+      CallNotificationTextKey
+          .networkRecoveredBody,
     );
   }
 
-  /// =========================================================
-  /// Notification Actions
-  /// =========================================================
+  // ===========================================================
+  // ACTION EVENTS
+  //
+  // These events are INTENT only.
+  // CallService/UI must execute the real call action.
+  // ===========================================================
 
-  void answer(String callId) {
-    _emitAction(callId, CallNotificationAction.answer);
+  void answer(
+      String callId,
+      ) {
+    _emitAction(
+      callId,
+      CallNotificationAction.answer,
+    );
   }
 
-  void reject(String callId) {
-    _emitAction(callId, CallNotificationAction.reject);
+  void reject(
+      String callId,
+      ) {
+    _emitAction(
+      callId,
+      CallNotificationAction.reject,
+    );
   }
 
-  void cancel(String callId) {
-    _emitAction(callId, CallNotificationAction.cancel);
+  void cancel(
+      String callId,
+      ) {
+    _emitAction(
+      callId,
+      CallNotificationAction.cancel,
+    );
   }
 
-  void open(String callId) {
-    _emitAction(callId, CallNotificationAction.open);
+  void open(
+      String callId,
+      ) {
+    _emitAction(
+      callId,
+      CallNotificationAction.open,
+    );
   }
 
-  void dismissAction(String callId) {
-    _emitAction(callId, CallNotificationAction.dismiss);
+  void dismissAction(
+      String callId,
+      ) {
+    _emitAction(
+      callId,
+      CallNotificationAction.dismiss,
+    );
 
-    dismiss(callId);
+    dismiss(
+      callId,
+    );
   }
 
-  /// =========================================================
-  /// Dismiss One Notification
-  /// =========================================================
+  // ===========================================================
+  // DISMISS ONE
+  // ===========================================================
 
-  void dismiss(String callId) {
+  void dismiss(
+      String callId,
+      ) {
     if (_disposed) {
       return;
     }
 
-    final normalized = callId.trim();
+    final String normalized =
+    callId.trim();
 
     if (normalized.isEmpty) {
       return;
     }
 
-    _cancelExpiry(normalized);
+    _cancelExpiry(
+      normalized,
+    );
 
-    final removed = _activeNotifications.remove(normalized);
+    final CallNotification?
+    removed =
+    _activeNotifications.remove(
+      normalized,
+    );
 
     if (removed != null) {
       _emitNotifications();
     }
   }
 
-  /// =========================================================
-  /// Clear All
-  /// =========================================================
+  // ===========================================================
+  // CLEAR ALL
+  // ===========================================================
 
   void clearAll() {
     if (_disposed) {
       return;
     }
 
-    for (final timer in _expiryTimers.values) {
+    for (final Timer timer
+    in _expiryTimers.values) {
       timer.cancel();
     }
 
     _expiryTimers.clear();
+
     _activeNotifications.clear();
 
     _emitNotifications();
   }
 
-  /// =========================================================
-  /// Compatibility Aliases
-  ///
-  /// অন্য file যদি "Notification" suffix method expect করে,
-  /// future integration সহজ করার জন্য wrapper রাখা হয়েছে।
-  /// =========================================================
+  // ===========================================================
+  // COMPATIBILITY ALIASES
+  // ===========================================================
 
-  Future<void> showIncomingCallNotification({
+  Future<void>
+  showIncomingCallNotification({
     required String callId,
     required String callerId,
     String? callerName,
     String? callerPhotoUrl,
     bool isVideoCall = false,
-    Map<String, dynamic> data = const <String, dynamic>{},
+    Map<String, dynamic> data =
+    const <String, dynamic>{},
   }) {
     return showIncomingCall(
-      callId: callId,
-      callerId: callerId,
-      callerName: callerName,
-      callerPhotoUrl: callerPhotoUrl,
-      isVideoCall: isVideoCall,
-      data: data,
+      callId:
+      callId,
+      callerId:
+      callerId,
+      callerName:
+      callerName,
+      callerPhotoUrl:
+      callerPhotoUrl,
+      isVideoCall:
+      isVideoCall,
+      data:
+      data,
     );
   }
 
-  Future<void> showOutgoingCallNotification({
+  Future<void>
+  showOutgoingCallNotification({
     required String callId,
     required String receiverId,
     String? receiverName,
     String? receiverPhotoUrl,
     bool isVideoCall = false,
-    Map<String, dynamic> data = const <String, dynamic>{},
+    Map<String, dynamic> data =
+    const <String, dynamic>{},
   }) {
     return showOutgoingCall(
-      callId: callId,
-      receiverId: receiverId,
-      receiverName: receiverName,
-      receiverPhotoUrl: receiverPhotoUrl,
-      isVideoCall: isVideoCall,
-      data: data,
+      callId:
+      callId,
+      receiverId:
+      receiverId,
+      receiverName:
+      receiverName,
+      receiverPhotoUrl:
+      receiverPhotoUrl,
+      isVideoCall:
+      isVideoCall,
+      data:
+      data,
     );
   }
 
-  Future<void> showMissedCallNotification({
+  Future<void>
+  showMissedCallNotification({
     required String callId,
     String? callerId,
     String? callerName,
@@ -636,51 +1634,127 @@ class NotificationService {
     bool isVideoCall = false,
   }) {
     return showMissedCall(
-      callId: callId,
-      callerId: callerId,
-      callerName: callerName,
-      callerPhotoUrl: callerPhotoUrl,
-      isVideoCall: isVideoCall,
+      callId:
+      callId,
+      callerId:
+      callerId,
+      callerName:
+      callerName,
+      callerPhotoUrl:
+      callerPhotoUrl,
+      isVideoCall:
+      isVideoCall,
     );
   }
 
-  Future<void> cancelNotification(String callId) async {
-    dismiss(callId);
+  Future<void> cancelNotification(
+      String callId,
+      ) async {
+    dismiss(
+      callId,
+    );
   }
 
-  Future<void> cancelAllNotifications() async {
+  Future<void>
+  cancelAllNotifications() async {
     clearAll();
   }
 
-  /// =========================================================
-  /// Internal Status Update
-  /// =========================================================
+  // ===========================================================
+  // INTERNAL STATUS REPLACEMENT
+  // ===========================================================
 
   Future<void> _replaceCallStatus({
     required String callId,
     required CallNotificationType type,
-    required String title,
-    required String body,
-    bool cancelExpiry = true,
+    required CallNotificationTextKey
+    titleKey,
+    required CallNotificationTextKey
+    bodyKey,
+    Map<String, String> arguments =
+    const <String, String>{},
+    List<String>
+    titleLocalizationArgs =
+    const <String>[],
+    List<String>
+    bodyLocalizationArgs =
+    const <String>[],
   }) async {
     _ensureAlive();
 
-    final normalizedCallId = _requiredValue(callId, 'callId');
+    final String normalizedCallId =
+    _requiredValue(
+      callId,
+      'callId',
+    );
 
-    if (cancelExpiry) {
-      _cancelExpiry(normalizedCallId);
+    final CallNotification?
+    existing =
+    _activeNotifications[
+    normalizedCallId];
+
+    // Once a terminal presentation state is reached, a delayed
+    // event must not resurrect the same call into another state.
+    if (existing != null &&
+        _isTerminalType(
+          existing.type,
+        ) &&
+        existing.type != type) {
+      return;
     }
 
-    final existing = _activeNotifications[normalizedCallId];
+    _cancelExpiry(
+      normalizedCallId,
+    );
+
+    final Map<String, String>
+    immutableArguments =
+    Map<String, String>.unmodifiable(
+      arguments,
+    );
+
+    final String title =
+    _localizedText(
+      titleKey,
+      immutableArguments,
+    );
+
+    final String body =
+    _localizedText(
+      bodyKey,
+      immutableArguments,
+    );
 
     if (existing != null) {
       _upsert(
         existing.copyWith(
-          id: _notificationId(normalizedCallId, type),
-          type: type,
-          title: title,
-          body: body,
-          expiresAt: null,
+          id:
+          _notificationId(
+            normalizedCallId,
+            type,
+          ),
+          type:
+          type,
+          title:
+          title,
+          body:
+          body,
+          clearExpiresAt:
+          true,
+          titleTextKey:
+          titleKey,
+          bodyTextKey:
+          bodyKey,
+          titleLocalizationArgs:
+          List<String>.unmodifiable(
+            titleLocalizationArgs,
+          ),
+          bodyLocalizationArgs:
+          List<String>.unmodifiable(
+            bodyLocalizationArgs,
+          ),
+          textArguments:
+          immutableArguments,
         ),
       );
 
@@ -689,28 +1763,82 @@ class NotificationService {
 
     _upsert(
       CallNotification(
-        id: _notificationId(normalizedCallId, type),
-        callId: normalizedCallId,
-        type: type,
-        title: title,
-        body: body,
-        isVideoCall: false,
-        isIncoming: false,
-        createdAt: DateTime.now(),
+        id:
+        _notificationId(
+          normalizedCallId,
+          type,
+        ),
+        callId:
+        normalizedCallId,
+        type:
+        type,
+        title:
+        title,
+        body:
+        body,
+        isVideoCall:
+        false,
+        isIncoming:
+        false,
+        createdAt:
+        DateTime.now(),
+        titleTextKey:
+        titleKey,
+        bodyTextKey:
+        bodyKey,
+        titleLocalizationArgs:
+        List<String>.unmodifiable(
+          titleLocalizationArgs,
+        ),
+        bodyLocalizationArgs:
+        List<String>.unmodifiable(
+          bodyLocalizationArgs,
+        ),
+        textArguments:
+        immutableArguments,
       ),
     );
   }
 
-  /// =========================================================
-  /// Internal Action Emitter
-  /// =========================================================
+  // ===========================================================
+  // TERMINAL PRESENTATION TYPES
+  // ===========================================================
 
-  void _emitAction(String callId, CallNotificationAction action) {
+  bool _isTerminalType(
+      CallNotificationType type,
+      ) {
+    switch (type) {
+      case CallNotificationType.missed:
+      case CallNotificationType.rejected:
+      case CallNotificationType.cancelled:
+      case CallNotificationType.ended:
+      case CallNotificationType.failed:
+        return true;
+
+      case CallNotificationType.incoming:
+      case CallNotificationType.outgoing:
+      case CallNotificationType.connecting:
+      case CallNotificationType.connected:
+      case CallNotificationType.networkLost:
+      case CallNotificationType.networkRecovered:
+        return false;
+    }
+  }
+
+  // ===========================================================
+  // ACTION EMITTER
+  // ===========================================================
+
+  void _emitAction(
+      String callId,
+      CallNotificationAction action,
+      ) {
     if (_disposed) {
       return;
     }
 
-    final normalized = callId.trim();
+    final String normalized =
+    callId.trim();
 
     if (normalized.isEmpty) {
       return;
@@ -718,89 +1846,170 @@ class NotificationService {
 
     _actionController.add(
       CallNotificationActionEvent(
-        callId: normalized,
-        action: action,
-        timestamp: DateTime.now(),
+        callId:
+        normalized,
+        action:
+        action,
+        timestamp:
+        DateTime.now(),
       ),
     );
   }
 
-  /// =========================================================
-  /// Insert / Replace
-  /// =========================================================
+  // ===========================================================
+  // INSERT / REPLACE
+  // ===========================================================
 
-  void _upsert(CallNotification notification) {
+  void _upsert(
+      CallNotification notification,
+      ) {
     if (_disposed) {
       return;
     }
 
-    _activeNotifications[notification.callId] = notification;
+    _activeNotifications[
+    notification.callId] =
+        notification;
 
     _emitNotifications();
   }
 
-  /// =========================================================
-  /// Find
-  /// =========================================================
+  // ===========================================================
+  // FIND
+  // ===========================================================
 
-  CallNotification? _find(String callId) {
-    final normalized = callId.trim();
+  CallNotification? _find(
+      String callId,
+      ) {
+    final String normalized =
+    callId.trim();
 
     if (normalized.isEmpty) {
       return null;
     }
 
-    return _activeNotifications[normalized];
+    return _activeNotifications[
+    normalized];
   }
 
-  /// =========================================================
-  /// Expiry
-  /// =========================================================
+  // ===========================================================
+  // EXPIRY
+  // ===========================================================
 
-  void _scheduleExpiry(String callId, Duration duration) {
-    _cancelExpiry(callId);
+  void _scheduleExpiryUntil(
+      String callId,
+      DateTime expiresAt,
+      ) {
+    _cancelExpiry(
+      callId,
+    );
 
-    _expiryTimers[callId] = Timer(duration, () {
-      _expiryTimers.remove(callId);
+    final Duration remaining =
+    expiresAt.difference(
+      DateTime.now(),
+    );
 
-      final notification = _activeNotifications[callId];
+    if (remaining <= Duration.zero) {
+      _expireIncomingNotification(
+        callId,
+      );
 
-      if (notification == null) {
-        return;
-      }
+      return;
+    }
 
-      if (notification.type == CallNotificationType.incoming) {
-        _activeNotifications.remove(callId);
+    _expiryTimers[callId] =
+        Timer(
+          remaining,
+              () {
+            _expiryTimers.remove(
+              callId,
+            );
 
-        _emitNotifications();
-      }
-    });
+            if (_disposed) {
+              return;
+            }
+
+            _expireIncomingNotification(
+              callId,
+            );
+          },
+        );
   }
 
-  void _cancelExpiry(String callId) {
-    final timer = _expiryTimers.remove(callId.trim());
+  void _expireIncomingNotification(
+      String callId,
+      ) {
+    if (_disposed) {
+      return;
+    }
+
+    final CallNotification?
+    notification =
+    _activeNotifications[
+    callId];
+
+    if (notification == null ||
+        notification.type !=
+            CallNotificationType.incoming) {
+      return;
+    }
+
+    _activeNotifications.remove(
+      callId,
+    );
+
+    _emitNotifications();
+
+    // IMPORTANT:
+    // Notification expiry intentionally does NOT mark the call
+    // missed and does NOT mutate signaling.
+    //
+    // CallService owns the actual timeout/missed-call lifecycle.
+  }
+
+  void _cancelExpiry(
+      String callId,
+      ) {
+    final Timer? timer =
+    _expiryTimers.remove(
+      callId.trim(),
+    );
 
     timer?.cancel();
   }
 
   void _removeExpiredSilently() {
-    final expiredCallIds = <String>[];
+    final List<String>
+    expiredCallIds =
+    <String>[];
 
-    for (final entry in _activeNotifications.entries) {
+    for (final MapEntry<
+        String,
+        CallNotification>
+    entry
+    in _activeNotifications.entries) {
       if (entry.value.isExpired) {
-        expiredCallIds.add(entry.key);
+        expiredCallIds.add(
+          entry.key,
+        );
       }
     }
 
-    for (final callId in expiredCallIds) {
-      _activeNotifications.remove(callId);
-      _cancelExpiry(callId);
+    for (final String callId
+    in expiredCallIds) {
+      _activeNotifications.remove(
+        callId,
+      );
+
+      _cancelExpiry(
+        callId,
+      );
     }
   }
 
-  /// =========================================================
-  /// State Broadcast
-  /// =========================================================
+  // ===========================================================
+  // STATE BROADCAST
+  // ===========================================================
 
   void _emitNotifications() {
     if (_disposed) {
@@ -809,23 +2018,332 @@ class NotificationService {
 
     _removeExpiredSilently();
 
-    final current = _activeNotifications.values.toList();
+    final List<CallNotification>
+    current =
+    _activeNotifications.values
+        .toList(
+      growable: false,
+    );
 
-    current.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    current.sort(
+          (
+          CallNotification a,
+          CallNotification b,
+          ) =>
+          b.createdAt.compareTo(
+            a.createdAt,
+          ),
+    );
 
-    _notificationController.add(List<CallNotification>.unmodifiable(current));
+    _notificationController.add(
+      List<CallNotification>.unmodifiable(
+        current,
+      ),
+    );
   }
 
-  /// =========================================================
-  /// Helpers
-  /// =========================================================
+  // ===========================================================
+  // LOCALIZATION REFRESH
+  // ===========================================================
 
-  String _notificationId(String callId, CallNotificationType type) {
-    return 'jr_call_${type.name}_$callId';
+  void _relocalizeActiveNotifications() {
+    if (_disposed ||
+        _activeNotifications.isEmpty) {
+      return;
+    }
+
+    final List<String> callIds =
+    _activeNotifications.keys
+        .toList(
+      growable: false,
+    );
+
+    bool changed = false;
+
+    for (final String callId
+    in callIds) {
+      final CallNotification?
+      notification =
+      _activeNotifications[
+      callId];
+
+      if (notification == null) {
+        continue;
+      }
+
+      final CallNotificationTextKey?
+      titleKey =
+          notification.titleTextKey;
+
+      final CallNotificationTextKey?
+      bodyKey =
+          notification.bodyTextKey;
+
+      if (titleKey == null &&
+          bodyKey == null) {
+        continue;
+      }
+
+      final String nextTitle =
+      titleKey == null
+          ? notification.title
+          : _localizedText(
+        titleKey,
+        notification
+            .textArguments,
+      );
+
+      final String nextBody =
+      bodyKey == null
+          ? notification.body
+          : _localizedText(
+        bodyKey,
+        notification
+            .textArguments,
+      );
+
+      if (nextTitle ==
+          notification.title &&
+          nextBody ==
+              notification.body) {
+        continue;
+      }
+
+      _activeNotifications[
+      callId] =
+          notification.copyWith(
+            title:
+            nextTitle,
+            body:
+            nextBody,
+          );
+
+      changed = true;
+    }
+
+    if (changed) {
+      _emitNotifications();
+    }
   }
 
-  String _requiredValue(String value, String fieldName) {
-    final normalized = value.trim();
+  // ===========================================================
+  // LOCALIZED TEXT RESOLUTION
+  // ===========================================================
+
+  String _localizedText(
+      CallNotificationTextKey key,
+      Map<String, String> arguments,
+      ) {
+    final String fallback =
+    _englishFallback(
+      key,
+      arguments,
+    );
+
+    final CallNotificationTextResolver?
+    resolver =
+        _textResolver;
+
+    if (resolver == null) {
+      return fallback;
+    }
+
+    try {
+      final String resolved =
+      resolver(
+        key,
+        Map<String, String>.unmodifiable(
+          arguments,
+        ),
+      ).trim();
+
+      if (resolved.isEmpty) {
+        return fallback;
+      }
+
+      return resolved;
+    } catch (error, stackTrace) {
+      _reportError(
+        'localization/${key.resourceKey}',
+        error,
+        stackTrace,
+      );
+
+      return fallback;
+    }
+  }
+
+  // ===========================================================
+  // ENGLISH SAFE FALLBACK
+  //
+  // This is NOT the global-language implementation.
+  // Actual locale translations belong to Flutter l10n / native
+  // localized resources. These strings prevent blank notifications
+  // if a locale resource is temporarily unavailable.
+  // ===========================================================
+
+  String _englishFallback(
+      CallNotificationTextKey key,
+      Map<String, String> arguments,
+      ) {
+    final String peerName =
+        arguments['peerName'] ??
+            'JR CALL User';
+
+    final String duration =
+        arguments['duration'] ??
+            '00:00';
+
+    final String reason =
+        arguments['reason'] ??
+            'JR CALL could not establish the connection.';
+
+    switch (key) {
+      case CallNotificationTextKey
+          .incomingVideoTitle:
+        return 'Incoming Video Call';
+
+      case CallNotificationTextKey
+          .incomingVoiceTitle:
+        return 'Incoming Voice Call';
+
+      case CallNotificationTextKey
+          .incomingBody:
+        return '$peerName is calling you';
+
+      case CallNotificationTextKey
+          .outgoingVideoTitle:
+        return 'Video Calling';
+
+      case CallNotificationTextKey
+          .outgoingVoiceTitle:
+        return 'Voice Calling';
+
+      case CallNotificationTextKey
+          .outgoingBody:
+        return 'Calling $peerName…';
+
+      case CallNotificationTextKey
+          .connectingTitle:
+        return 'Connecting';
+
+      case CallNotificationTextKey
+          .connectingBody:
+        return 'Securing your JR CALL connection…';
+
+      case CallNotificationTextKey
+          .connectedVideoTitle:
+        return 'Video Call Connected';
+
+      case CallNotificationTextKey
+          .connectedVoiceTitle:
+        return 'Voice Call Connected';
+
+      case CallNotificationTextKey
+          .connectedBody:
+        return 'Connected with $peerName';
+
+      case CallNotificationTextKey
+          .missedTitle:
+        return 'Missed Call';
+
+      case CallNotificationTextKey
+          .missedBody:
+        return 'Missed call from $peerName';
+
+      case CallNotificationTextKey
+          .rejectedTitle:
+        return 'Call Rejected';
+
+      case CallNotificationTextKey
+          .rejectedBody:
+        return 'The call was rejected.';
+
+      case CallNotificationTextKey
+          .cancelledTitle:
+        return 'Call Cancelled';
+
+      case CallNotificationTextKey
+          .cancelledBody:
+        return 'The call was cancelled.';
+
+      case CallNotificationTextKey
+          .endedTitle:
+        return 'Call Ended';
+
+      case CallNotificationTextKey
+          .endedBody:
+        return 'Call ended.';
+
+      case CallNotificationTextKey
+          .endedWithDurationBody:
+        return 'Call ended • $duration';
+
+      case CallNotificationTextKey
+          .failedTitle:
+        return 'Call Failed';
+
+      case CallNotificationTextKey
+          .failedBody:
+        return 'JR CALL could not establish the connection.';
+
+      case CallNotificationTextKey
+          .failedReasonBody:
+        return reason;
+
+      case CallNotificationTextKey
+          .networkLostTitle:
+        return 'Connection Interrupted';
+
+      case CallNotificationTextKey
+          .networkLostBody:
+        return 'Network lost. JR CALL is trying to reconnect…';
+
+      case CallNotificationTextKey
+          .networkRecoveredTitle:
+        return 'Connection Restored';
+
+      case CallNotificationTextKey
+          .networkRecoveredBody:
+        return 'JR CALL connection has been restored.';
+    }
+  }
+
+  // ===========================================================
+  // DATA
+  // ===========================================================
+
+  Map<String, dynamic> _buildData(
+      Map<String, dynamic> original,
+      Map<String, dynamic> requiredData,
+      ) {
+    return Map<String, dynamic>.unmodifiable(
+      <String, dynamic>{
+        ...original,
+        ...requiredData,
+      },
+    );
+  }
+
+  // ===========================================================
+  // HELPERS
+  // ===========================================================
+
+  String _notificationId(
+      String callId,
+      CallNotificationType type,
+      ) {
+    return 'jr_call_'
+        '${type.name}_'
+        '$callId';
+  }
+
+  String _requiredValue(
+      String value,
+      String fieldName,
+      ) {
+    final String normalized =
+    value.trim();
 
     if (normalized.isEmpty) {
       throw ArgumentError.value(
@@ -838,28 +2356,50 @@ class NotificationService {
     return normalized;
   }
 
-  String? _nullableTrim(String? value) {
+  String? _nullableTrim(
+      String? value,
+      ) {
     if (value == null) {
       return null;
     }
 
-    final normalized = value.trim();
+    final String normalized =
+    value.trim();
 
-    return normalized.isEmpty ? null : normalized;
+    if (normalized.isEmpty) {
+      return null;
+    }
+
+    return normalized;
   }
 
-  String _displayName(String? value, {required String fallback}) {
-    return _nullableTrim(value) ?? fallback;
+  String _displayName(
+      String? value, {
+        required String fallback,
+      }) {
+    return _nullableTrim(
+      value,
+    ) ??
+        fallback;
   }
 
-  String _formatDuration(Duration duration) {
-    final totalSeconds = duration.inSeconds < 0 ? 0 : duration.inSeconds;
+  String _formatDuration(
+      Duration duration,
+      ) {
+    final int totalSeconds =
+    duration.inSeconds < 0
+        ? 0
+        : duration.inSeconds;
 
-    final hours = totalSeconds ~/ 3600;
+    final int hours =
+        totalSeconds ~/ 3600;
 
-    final minutes = (totalSeconds % 3600) ~/ 60;
+    final int minutes =
+        (totalSeconds % 3600) ~/
+            60;
 
-    final seconds = totalSeconds % 60;
+    final int seconds =
+        totalSeconds % 60;
 
     if (hours > 0) {
       return '${hours.toString().padLeft(2, '0')}:'
@@ -873,16 +2413,40 @@ class NotificationService {
 
   void _ensureAlive() {
     if (_disposed) {
-      throw StateError('NotificationService has already been disposed.');
+      throw StateError(
+        'NotificationService has already been disposed.',
+      );
     }
   }
 
-  /// =========================================================
-  /// Dispose
-  ///
-  /// সাধারণ application runtime-এ singleton dispose করার
-  /// প্রয়োজন নেই। Test/app final shutdown-এর জন্য রাখা হয়েছে।
-  /// =========================================================
+  void _reportError(
+      String source,
+      Object error, [
+        StackTrace? stackTrace,
+      ]) {
+    debugPrint(
+      'JR CALL '
+          '[NotificationService/$source] '
+          'error: $error',
+    );
+
+    if (stackTrace != null) {
+      debugPrintStack(
+        label:
+        'JR CALL '
+            '[NotificationService/$source]',
+        stackTrace:
+        stackTrace,
+      );
+    }
+  }
+
+  // ===========================================================
+  // DISPOSE
+  //
+  // Singleton disposal is application/test shutdown only.
+  // Normal per-call cleanup uses dismiss()/clearAll().
+  // ===========================================================
 
   Future<void> dispose() async {
     if (_disposed) {
@@ -891,14 +2455,74 @@ class NotificationService {
 
     _disposed = true;
 
-    for (final timer in _expiryTimers.values) {
+    for (final Timer timer
+    in _expiryTimers.values) {
       timer.cancel();
     }
 
     _expiryTimers.clear();
+
     _activeNotifications.clear();
 
+    _textResolver = null;
+
     await _notificationController.close();
+
     await _actionController.close();
   }
 }
+
+// ===============================================================
+// END OF FILE
+//
+// FILE 35 PRODUCTION CONTRACT:
+//
+// ✓ Existing singleton preserved.
+// ✓ Existing notification enums preserved.
+// ✓ Existing action enums preserved.
+// ✓ Existing CallNotification APIs preserved.
+// ✓ Existing CallNotificationActionEvent preserved.
+//
+// ✓ showIncomingCall preserved.
+// ✓ showOutgoingCall preserved.
+// ✓ showConnecting preserved.
+// ✓ showConnected preserved.
+// ✓ showMissedCall preserved.
+// ✓ showRejected preserved.
+// ✓ showCancelled preserved.
+// ✓ showCallEnded preserved.
+// ✓ showCallFailed preserved.
+// ✓ showNetworkLost preserved.
+// ✓ showNetworkRecovered preserved.
+//
+// ✓ answer/reject/cancel/open/dismiss actions preserved.
+// ✓ Compatibility notification aliases preserved.
+//
+// ✓ Localization no longer belongs to hardcoded country logic.
+// ✓ Stable localization resource keys added.
+// ✓ Application locale resolver supported.
+// ✓ Native localization argument metadata supported.
+// ✓ English is fallback only.
+// ✓ Runtime language refresh supported.
+//
+// ✓ Incoming duplicate does not restart 45-second expiry.
+// ✓ Incoming duplicate does not reset createdAt.
+// ✓ Outgoing duplicate does not regress advanced state.
+// ✓ Stale incoming/outgoing events cannot resurrect call UI.
+// ✓ Incoming expiry cleared on connecting/connected transitions.
+// ✓ Nullable expiresAt copy bug fixed.
+// ✓ Terminal notification resurrection blocked.
+// ✓ Expiry remains notification-presentation-only.
+// ✓ Expiry never marks call missed.
+// ✓ Expiry never ends signaling call.
+//
+// ✓ Notification actions remain intent events.
+// ✓ No CallService ownership duplicated.
+// ✓ No WebRTC ownership duplicated.
+// ✓ No signaling ownership duplicated.
+// ✓ No ICE ownership duplicated.
+// ✓ No recovery ownership duplicated.
+// ✓ No Firestore ownership added.
+// ✓ No authentication ownership added.
+// ✓ No SMS ownership added.
+// ===============================================================

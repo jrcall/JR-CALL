@@ -3,24 +3,53 @@
 // File: call_screen_provider.dart
 // Location: lib/providers/call_screen_provider.dart
 //
-// Description:
-// Presentation-layer provider for the active call screens.
+// MASTER PRODUCTION CALL SCREEN PROVIDER
 //
-// Responsibilities:
-// - Bridge CallService state/streams to call UI
-// - Expose local/remote WebRTC media streams
-// - Start, accept, reject, cancel, and end calls through CallService
-// - Maintain UI-only loading/error/status state
-// - Prevent duplicate UI actions
+// RESPONSIBILITIES:
 //
-// Architecture Rules:
-// - No Firestore access
-// - No direct signaling
-// - No direct ICE upload/listener
-// - No recovery implementation
-// - No duplicate call timer
-// - No duplicate WebRTC peer connection
-// - CallService remains the single call-lifecycle owner
+// - Bridge CallService lifecycle state to active-call UI.
+// - Bridge CallService duration to active-call UI.
+// - Expose CallService-owned local/remote WebRTC streams.
+// - Recover already-existing WebRTC media for late UI binding.
+// - Start / accept / reject / cancel / end through CallService.
+// - Maintain UI-only identity/status/loading/error state.
+// - Prevent duplicate/conflicting UI actions.
+// - Protect UI from stale asynchronous completions.
+// - Protect UI from stale/disposed media references.
+//
+// OWNERSHIP:
+//
+// CallService:
+// - Call lifecycle.
+// - Call duration.
+// - Start / accept / reject / cancel / end.
+//
+// WebRTCService:
+// - Local / remote MediaStream ownership.
+// - PeerConnection ownership.
+//
+// SignalingService:
+// - Firestore signaling/history.
+//
+// IceManager:
+// - ICE.
+//
+// RecoveryManager:
+// - Recovery.
+//
+// CallScreenProvider:
+// - Presentation bridge only.
+//
+// IMPORTANT:
+//
+// - No Firestore access.
+// - No direct signaling.
+// - No ICE ownership.
+// - No recovery implementation.
+// - No duplicate call timer.
+// - No PeerConnection creation.
+// - No MediaStream creation/disposal.
+// - Never mark connected only because start/accept completed.
 // ===========================================================
 
 import 'dart:async';
@@ -31,11 +60,12 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import '../services/call/call_service.dart';
 
 class CallScreenProvider extends ChangeNotifier {
-  CallScreenProvider({CallService? callService})
-    : _callService = callService ?? CallService();
+  CallScreenProvider({
+    CallService? callService,
+  }) : _callService = callService ?? CallService();
 
   // ===========================================================
-  // Dependencies
+  // DEPENDENCY
   // ===========================================================
 
   final CallService _callService;
@@ -43,7 +73,7 @@ class CallScreenProvider extends ChangeNotifier {
   CallService get callService => _callService;
 
   // ===========================================================
-  // Subscriptions
+  // SUBSCRIPTIONS
   // ===========================================================
 
   StreamSubscription<String>? _statusSubscription;
@@ -52,11 +82,10 @@ class CallScreenProvider extends ChangeNotifier {
   StreamSubscription<MediaStream?>? _remoteStreamSubscription;
 
   // ===========================================================
-  // Lifecycle State
+  // LIFECYCLE
   // ===========================================================
 
   bool _isInitialized = false;
-  bool _isInitializing = false;
   bool _isDisposed = false;
 
   Future<void>? _initializationFuture;
@@ -65,7 +94,7 @@ class CallScreenProvider extends ChangeNotifier {
   bool get isDisposed => _isDisposed;
 
   // ===========================================================
-  // Operation Guards
+  // OPERATION GUARDS
   // ===========================================================
 
   bool _isStarting = false;
@@ -74,6 +103,8 @@ class CallScreenProvider extends ChangeNotifier {
   bool _isCancelling = false;
   bool _isEnding = false;
 
+  int _operationGeneration = 0;
+
   bool get isStarting => _isStarting;
   bool get isAccepting => _isAccepting;
   bool get isRejecting => _isRejecting;
@@ -81,13 +112,18 @@ class CallScreenProvider extends ChangeNotifier {
   bool get isEnding => _isEnding;
 
   bool get isBusy =>
-      _isStarting || _isAccepting || _isRejecting || _isCancelling || _isEnding;
+      _isStarting ||
+          _isAccepting ||
+          _isRejecting ||
+          _isCancelling ||
+          _isEnding;
 
   // ===========================================================
-  // Call State
+  // CALL PRESENTATION STATE
   // ===========================================================
 
   String _status = CallServiceStatus.idle;
+
   int _durationSeconds = 0;
 
   String? _callId;
@@ -102,14 +138,17 @@ class CallScreenProvider extends ChangeNotifier {
   String? _errorMessage;
 
   // ===========================================================
-  // Media State
+  // MEDIA REFERENCES
+  //
+  // Non-owning references only.
+  // WebRTCService owns these streams.
   // ===========================================================
 
   MediaStream? _localStream;
   MediaStream? _remoteStream;
 
   // ===========================================================
-  // Public Getters
+  // PUBLIC GETTERS
   // ===========================================================
 
   String get status => _status;
@@ -140,59 +179,75 @@ class CallScreenProvider extends ChangeNotifier {
 
   bool get isReceiver => role == CallRole.receiver;
 
-  bool get hasActiveCall => _callService.isCallActive || _callId != null;
+  bool get hasActiveCall {
+    if (_callService.isCallActive) {
+      return true;
+    }
+
+    final String? currentId = _normalizedOptionalString(
+      _callId,
+    );
+
+    if (currentId == null) {
+      return false;
+    }
+
+    return !_isTerminalStatus(
+      _status,
+    );
+  }
 
   bool get isConnected =>
       _status == CallServiceStatus.connected ||
-      _status == CallServiceStatus.reconnected;
+          _status == CallServiceStatus.reconnected;
 
   bool get isConnecting =>
       _status == CallServiceStatus.preparing ||
-      _status == CallServiceStatus.calling ||
-      _status == CallServiceStatus.ringing ||
-      _status == CallServiceStatus.connecting ||
-      _status == CallServiceStatus.reconnecting;
+          _status == CallServiceStatus.calling ||
+          _status == CallServiceStatus.ringing ||
+          _status == CallServiceStatus.connecting ||
+          _status == CallServiceStatus.reconnecting;
 
-  bool get hasRemoteVideo => _remoteStream?.getVideoTracks().isNotEmpty == true;
+  bool get hasRemoteVideo => _hasVideoTrack(
+    _remoteStream,
+  );
 
-  bool get hasLocalVideo => _localStream?.getVideoTracks().isNotEmpty == true;
+  bool get hasLocalVideo => _hasVideoTrack(
+    _localStream,
+  );
 
-  bool get hasRemoteAudio => _remoteStream?.getAudioTracks().isNotEmpty == true;
+  bool get hasRemoteAudio => _hasAudioTrack(
+    _remoteStream,
+  );
 
-  bool get hasLocalAudio => _localStream?.getAudioTracks().isNotEmpty == true;
+  bool get hasLocalAudio => _hasAudioTrack(
+    _localStream,
+  );
 
   // ===========================================================
-  // Initialization
+  // INITIALIZATION
   // ===========================================================
 
-  Future<void> initialize() async {
+  Future<void> initialize() {
     _ensureUsable();
 
     if (_isInitialized) {
-      return;
+      return Future<void>.value();
     }
 
-    if (_isInitializing) {
-      final Future<void>? pendingInitialization = _initializationFuture;
+    final Future<void>? existing =
+        _initializationFuture;
 
-      if (pendingInitialization != null) {
-        await pendingInitialization;
-      }
-
-      return;
+    if (existing != null) {
+      return existing;
     }
 
-    _isInitializing = true;
+    final Future<void> future =
+    _performInitialization();
 
-    final Future<void> initialization = _performInitialization();
-    _initializationFuture = initialization;
+    _initializationFuture = future;
 
-    try {
-      await initialization;
-    } finally {
-      _isInitializing = false;
-      _initializationFuture = null;
-    }
+    return future;
   }
 
   Future<void> _performInitialization() async {
@@ -209,54 +264,116 @@ class CallScreenProvider extends ChangeNotifier {
         return;
       }
 
-      _statusSubscription = _callService.callStatusStream.listen(
-        _handleStatus,
-        onError: (Object error, StackTrace stackTrace) {
-          _handleError('Call status stream', error, stackTrace);
-        },
-      );
+      _statusSubscription =
+          _callService.callStatusStream.listen(
+            _handleStatus,
+            onError: (
+                Object error,
+                StackTrace stackTrace,
+                ) {
+              _handleError(
+                'Call status stream',
+                error,
+                stackTrace,
+              );
+            },
+          );
 
-      _durationSubscription = _callService.callDurationStream.listen(
-        _handleDuration,
-        onError: (Object error, StackTrace stackTrace) {
-          _handleError('Call duration stream', error, stackTrace);
-        },
-      );
+      _durationSubscription =
+          _callService.callDurationStream.listen(
+            _handleDuration,
+            onError: (
+                Object error,
+                StackTrace stackTrace,
+                ) {
+              _handleError(
+                'Call duration stream',
+                error,
+                stackTrace,
+              );
+            },
+          );
 
-      _localStreamSubscription = _callService.webrtc.localStream$.listen(
-        _handleLocalStream,
-        onError: (Object error, StackTrace stackTrace) {
-          _handleError('Local media stream', error, stackTrace);
-        },
-      );
+      _localStreamSubscription =
+          _callService.webrtc.localStream$.listen(
+            _handleLocalStream,
+            onError: (
+                Object error,
+                StackTrace stackTrace,
+                ) {
+              _handleError(
+                'Local media stream',
+                error,
+                stackTrace,
+              );
+            },
+          );
 
-      _remoteStreamSubscription = _callService.webrtc.remoteStream$.listen(
-        _handleRemoteStream,
-        onError: (Object error, StackTrace stackTrace) {
-          _handleError('Remote media stream', error, stackTrace);
-        },
-      );
+      _remoteStreamSubscription =
+          _callService.webrtc.remoteStream$.listen(
+            _handleRemoteStream,
+            onError: (
+                Object error,
+                StackTrace stackTrace,
+                ) {
+              _handleError(
+                'Remote media stream',
+                error,
+                stackTrace,
+              );
+            },
+          );
 
       if (_isDisposed) {
         await _cancelSubscriptions();
         return;
       }
 
+      // -------------------------------------------------------
+      // CRITICAL LATE-BINDING SYNCHRONIZATION
+      //
+      // localStream$ / remoteStream$ are event streams.
+      // The active WebRTC session may already have created media
+      // before this presentation provider subscribes.
+      //
+      // Therefore initialization must also recover the currently
+      // owned WebRTCService media references synchronously.
+      // -------------------------------------------------------
+
       _syncFromCallService();
 
       _isInitialized = true;
+
       _notifySafely();
     } catch (error, stackTrace) {
       if (!_isDisposed) {
-        _handleError('CallScreenProvider initialization', error, stackTrace);
+        _handleError(
+          'Call screen provider initialization',
+          error,
+          stackTrace,
+        );
       }
 
+      await _cancelSubscriptions();
+
+      _isInitialized = false;
+
       rethrow;
+    } finally {
+      _initializationFuture = null;
     }
   }
 
+  Future<void> _ensureInitialized() async {
+    if (_isDisposed || _isInitialized) {
+      return;
+    }
+
+    await initialize();
+  }
+
   // ===========================================================
-  // Outgoing Call
+  // START OUTGOING CALL
   // ===========================================================
 
   Future<String?> startCall({
@@ -267,69 +384,114 @@ class CallScreenProvider extends ChangeNotifier {
     bool isVideoCall = true,
   }) async {
     _ensureUsable();
+
     await _ensureInitialized();
 
-    if (_isDisposed || isBusy || hasActiveCall) {
+    if (_isDisposed ||
+        isBusy ||
+        hasActiveCall) {
       return null;
     }
 
     final String localId = callerId.trim();
+
     final String remoteId = receiverId.trim();
 
-    if (localId.isEmpty || remoteId.isEmpty || localId == remoteId) {
-      _setError('Invalid caller or receiver information.');
+    if (localId.isEmpty ||
+        remoteId.isEmpty ||
+        localId == remoteId) {
+      _setError(
+        'Invalid caller or receiver information.',
+      );
+
       return null;
     }
 
+    final int operationToken = _beginOperation();
+
     _isStarting = true;
+
     _errorMessage = null;
 
+    _callId = null;
     _localUserId = localId;
     _remoteUserId = remoteId;
+
     _remoteName = remoteName.trim();
     _remotePhoto = remotePhoto.trim();
+
     _isVideoCall = isVideoCall;
+
     _durationSeconds = 0;
+
+    _localStream = null;
+    _remoteStream = null;
 
     _notifySafely();
 
     try {
-      final String? createdCallId = await _callService.startCall(
+      final String? createdCallId =
+      await _callService.startCall(
         callerId: localId,
         receiverId: remoteId,
         isVideoCall: isVideoCall,
       );
 
-      if (_isDisposed) {
+      if (!_isOperationCurrent(
+        operationToken,
+      )) {
         return null;
       }
 
-      if (createdCallId == null || createdCallId.trim().isEmpty) {
-        if (_status != CallServiceStatus.userBusy) {
-          _setError('Unable to start the call.');
+      final String? normalizedCallId =
+      _normalizedOptionalString(
+        createdCallId,
+      );
+
+      if (normalizedCallId == null) {
+        if (_status !=
+            CallServiceStatus.userBusy) {
+          _setError(
+            'Unable to start the call.',
+          );
         }
 
         return null;
       }
 
-      _callId = createdCallId.trim();
+      _callId = normalizedCallId;
 
       _syncFromCallService();
+
       _notifySafely();
 
-      return _callId;
+      // startCall completion is NOT proof of WebRTC connection.
+      return normalizedCallId;
     } catch (error, stackTrace) {
-      _handleError('Start call', error, stackTrace);
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _handleError(
+          'Start call',
+          error,
+          stackTrace,
+        );
+      }
 
       return null;
     } finally {
-      _isStarting = false;
-      _notifySafely();
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _isStarting = false;
+
+        _notifySafely();
+      }
     }
   }
 
   // ===========================================================
-  // Prepare Incoming Call UI
+  // PREPARE INCOMING CALL UI
   // ===========================================================
 
   void prepareIncomingCall({
@@ -342,9 +504,14 @@ class CallScreenProvider extends ChangeNotifier {
   }) {
     _ensureUsable();
 
-    final String normalizedCallId = callId.trim();
-    final String normalizedLocalUserId = localUserId.trim();
-    final String normalizedRemoteUserId = remoteUserId.trim();
+    final String normalizedCallId =
+    callId.trim();
+
+    final String normalizedLocalUserId =
+    localUserId.trim();
+
+    final String normalizedRemoteUserId =
+    remoteUserId.trim();
 
     if (normalizedCallId.isEmpty ||
         normalizedLocalUserId.isEmpty ||
@@ -352,164 +519,280 @@ class CallScreenProvider extends ChangeNotifier {
       return;
     }
 
+    _invalidateOperations();
+
     _callId = normalizedCallId;
     _localUserId = normalizedLocalUserId;
     _remoteUserId = normalizedRemoteUserId;
+
     _remoteName = remoteName.trim();
     _remotePhoto = remotePhoto.trim();
+
     _isVideoCall = isVideoCall;
+
     _durationSeconds = 0;
+
+    _localStream = null;
+    _remoteStream = null;
+
     _errorMessage = null;
 
-    _setStatus(CallServiceStatus.ringing);
+    _status = CallServiceStatus.ringing;
+
+    _notifySafely();
   }
 
   // ===========================================================
-  // Accept Incoming Call
+  // ACCEPT INCOMING CALL
   // ===========================================================
 
-  Future<bool> acceptCall({String? callId}) async {
+  Future<bool> acceptCall({
+    String? callId,
+  }) async {
     _ensureUsable();
+
     await _ensureInitialized();
 
     if (_isDisposed || isBusy) {
       return false;
     }
 
-    final String targetCallId = (callId ?? _callId ?? '').trim();
+    final String? targetCallId =
+    _resolveCallId(
+      callId,
+    );
 
-    if (targetCallId.isEmpty) {
-      _setError('Call ID is missing.');
+    if (targetCallId == null) {
+      _setError(
+        'Call ID is missing.',
+      );
+
       return false;
     }
 
+    final int operationToken = _beginOperation();
+
     _isAccepting = true;
+
     _errorMessage = null;
+
     _callId = targetCallId;
 
     _notifySafely();
 
     try {
-      await _callService.acceptCall(callId: targetCallId);
+      await _callService.acceptCall(
+        callId: targetCallId,
+      );
 
-      if (_isDisposed) {
+      if (!_isOperationCurrent(
+        operationToken,
+      )) {
         return false;
       }
 
       _syncFromCallService();
 
-      return _status != CallServiceStatus.failed;
+      // Successful acceptance request does not mean WebRTC connected.
+      return !_isTerminalStatus(
+        _status,
+      );
     } catch (error, stackTrace) {
-      _handleError('Accept call', error, stackTrace);
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _handleError(
+          'Accept call',
+          error,
+          stackTrace,
+        );
+      }
 
       return false;
     } finally {
-      _isAccepting = false;
-      _notifySafely();
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _isAccepting = false;
+
+        _notifySafely();
+      }
     }
   }
 
   // ===========================================================
-  // Reject Incoming Call
+  // REJECT INCOMING CALL
   // ===========================================================
 
-  Future<void> rejectCall({String? callId}) async {
+  Future<void> rejectCall({
+    String? callId,
+  }) async {
     _ensureUsable();
+
     await _ensureInitialized();
 
     if (_isDisposed || isBusy) {
       return;
     }
 
-    final String targetCallId = (callId ?? _callId ?? '').trim();
+    final String? targetCallId =
+    _resolveCallId(
+      callId,
+    );
 
-    if (targetCallId.isEmpty) {
+    if (targetCallId == null) {
       return;
     }
+
+    final int operationToken = _beginOperation();
 
     _isRejecting = true;
+
     _errorMessage = null;
 
     _notifySafely();
 
     try {
-      await _callService.rejectCall(callId: targetCallId);
-    } catch (error, stackTrace) {
-      _handleError('Reject call', error, stackTrace);
-    } finally {
-      _isRejecting = false;
+      await _callService.rejectCall(
+        callId: targetCallId,
+      );
 
-      if (!_isDisposed) {
-        _syncFromCallService();
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _syncFromCallService(
+          preserveDuration:
+          _isTerminalStatus(
+            _status,
+          ),
+        );
       }
+    } catch (error, stackTrace) {
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _handleError(
+          'Reject call',
+          error,
+          stackTrace,
+        );
+      }
+    } finally {
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _isRejecting = false;
 
-      _notifySafely();
+        _notifySafely();
+      }
     }
   }
 
   // ===========================================================
-  // Cancel Outgoing Call
+  // CANCEL OUTGOING CALL
   // ===========================================================
 
-  Future<void> cancelCall({String? callId}) async {
+  Future<void> cancelCall({
+    String? callId,
+  }) async {
     _ensureUsable();
+
     await _ensureInitialized();
 
     if (_isDisposed || isBusy) {
       return;
     }
 
-    final String targetCallId = (callId ?? _callId ?? '').trim();
+    final String? targetCallId =
+    _resolveCallId(
+      callId,
+    );
 
-    if (targetCallId.isEmpty) {
+    if (targetCallId == null) {
       return;
     }
+
+    final int operationToken = _beginOperation();
 
     _isCancelling = true;
+
     _errorMessage = null;
 
     _notifySafely();
 
     try {
-      await _callService.cancelCall(callId: targetCallId);
-    } catch (error, stackTrace) {
-      _handleError('Cancel call', error, stackTrace);
-    } finally {
-      _isCancelling = false;
+      await _callService.cancelCall(
+        callId: targetCallId,
+      );
 
-      if (!_isDisposed) {
-        _syncFromCallService();
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _syncFromCallService(
+          preserveDuration:
+          _isTerminalStatus(
+            _status,
+          ),
+        );
       }
+    } catch (error, stackTrace) {
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _handleError(
+          'Cancel call',
+          error,
+          stackTrace,
+        );
+      }
+    } finally {
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _isCancelling = false;
 
-      _notifySafely();
+        _notifySafely();
+      }
     }
   }
 
   // ===========================================================
-  // End Active Call
+  // END ACTIVE CALL
   // ===========================================================
 
-  Future<void> endCall({String status = 'COMPLETED'}) async {
+  Future<void> endCall({
+    String status = 'COMPLETED',
+  }) async {
     _ensureUsable();
+
     await _ensureInitialized();
 
     if (_isDisposed || isBusy) {
       return;
     }
 
-    final String targetCallId = (_callService.currentCallId ?? _callId ?? '')
-        .trim();
+    final String? targetCallId =
+    _resolveCallId(
+      _callService.currentCallId,
+    );
 
-    if (targetCallId.isEmpty) {
-      _resetUiSession(preserveStatus: false);
+    if (targetCallId == null) {
+      _resetUiSession(
+        preserveStatus: false,
+      );
+
       return;
     }
 
-    final String normalizedStatus = status.trim().isEmpty
+    final int operationToken = _beginOperation();
+
+    final String normalizedStatus =
+    status.trim().isEmpty
         ? 'COMPLETED'
         : status.trim();
 
     _isEnding = true;
+
     _errorMessage = null;
 
     _notifySafely();
@@ -519,122 +802,276 @@ class CallScreenProvider extends ChangeNotifier {
         callId: targetCallId,
         status: normalizedStatus,
       );
-    } catch (error, stackTrace) {
-      _handleError('End call', error, stackTrace);
-    } finally {
-      _isEnding = false;
 
-      if (!_isDisposed) {
-        _syncFromCallService();
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _syncFromCallService(
+          preserveDuration: true,
+        );
       }
+    } catch (error, stackTrace) {
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _handleError(
+          'End call',
+          error,
+          stackTrace,
+        );
+      }
+    } finally {
+      if (_isOperationCurrent(
+        operationToken,
+      )) {
+        _isEnding = false;
 
-      _notifySafely();
+        _notifySafely();
+      }
     }
   }
 
   // ===========================================================
-  // Stream Handlers
+  // STATUS STREAM
   // ===========================================================
 
-  void _handleStatus(String status) {
+  void _handleStatus(
+      String status,
+      ) {
     if (_isDisposed) {
       return;
     }
 
-    final String normalized = status.trim().toUpperCase();
+    final String normalized =
+    status.trim().toUpperCase();
 
     if (normalized.isEmpty) {
       return;
     }
 
+    final bool statusChanged =
+        _status != normalized;
+
     _status = normalized;
 
-    _syncFromCallService();
+    final bool terminal =
+    _isTerminalStatus(
+      normalized,
+    );
 
-    if (_isTerminalStatus(normalized)) {
-      _durationSeconds = 0;
+    _syncFromCallService(
+      preserveDuration: terminal,
+    );
+
+    bool mediaChanged = false;
+
+    if (terminal) {
+      mediaChanged =
+          _localStream != null ||
+              _remoteStream != null;
+
+      // Presentation references only.
+      // Never stop or dispose WebRTCService-owned media here.
       _localStream = null;
       _remoteStream = null;
+
+      // Final duration is intentionally preserved until reset().
     }
 
-    _notifySafely();
+    if (statusChanged || mediaChanged) {
+      _notifySafely();
+    }
   }
 
-  void _handleDuration(int duration) {
+  // ===========================================================
+  // DURATION STREAM
+  // ===========================================================
+
+  void _handleDuration(
+      int duration,
+      ) {
     if (_isDisposed) {
       return;
     }
 
-    final int safeDuration = duration < 0 ? 0 : duration;
+    final int safeDuration =
+    duration < 0 ? 0 : duration;
 
-    if (_durationSeconds == safeDuration) {
+    if (_durationSeconds ==
+        safeDuration) {
+      return;
+    }
+
+    // Ignore a late zero after terminal cleanup if we already have
+    // a meaningful final duration.
+    if (_isTerminalStatus(
+      _status,
+    ) &&
+        safeDuration == 0 &&
+        _durationSeconds > 0) {
       return;
     }
 
     _durationSeconds = safeDuration;
+
     _notifySafely();
   }
 
-  void _handleLocalStream(MediaStream? stream) {
-    if (_isDisposed || identical(_localStream, stream)) {
+  // ===========================================================
+  // LOCAL MEDIA STREAM
+  // ===========================================================
+
+  void _handleLocalStream(
+      MediaStream? stream,
+      ) {
+    if (_isDisposed) {
+      return;
+    }
+
+    // A terminal call must not regain stale media references.
+    if (_isTerminalStatus(
+      _status,
+    ) &&
+        stream != null) {
+      return;
+    }
+
+    if (identical(
+      _localStream,
+      stream,
+    )) {
       return;
     }
 
     _localStream = stream;
+
     _notifySafely();
   }
 
-  void _handleRemoteStream(MediaStream? stream) {
-    if (_isDisposed || identical(_remoteStream, stream)) {
+  // ===========================================================
+  // REMOTE MEDIA STREAM
+  // ===========================================================
+
+  void _handleRemoteStream(
+      MediaStream? stream,
+      ) {
+    if (_isDisposed) {
+      return;
+    }
+
+    // A terminal call must not regain stale media references.
+    if (_isTerminalStatus(
+      _status,
+    ) &&
+        stream != null) {
+      return;
+    }
+
+    if (identical(
+      _remoteStream,
+      stream,
+    )) {
       return;
     }
 
     _remoteStream = stream;
+
     _notifySafely();
   }
 
   // ===========================================================
-  // State Synchronization
+  // CALL SERVICE SYNCHRONIZATION
+  //
+  // IMPORTANT:
+  //
+  // CallService/WebRTCService may already own a live media
+  // session before this provider is initialized.
+  //
+  // The event streams are not treated as replay storage here.
+  // Existing WebRTCService media references must therefore also
+  // be synchronized directly.
   // ===========================================================
 
-  void _syncFromCallService() {
+  void _syncFromCallService({
+    bool preserveDuration = false,
+  }) {
     if (_isDisposed) {
       return;
     }
 
-    _callId = _callService.currentCallId ?? _callId;
+    final String? serviceCallId =
+    _normalizedOptionalString(
+      _callService.currentCallId,
+    );
 
-    _localUserId = _callService.currentUserId ?? _localUserId;
+    final String? serviceLocalUserId =
+    _normalizedOptionalString(
+      _callService.currentUserId,
+    );
 
-    _remoteUserId = _callService.currentPeerId ?? _remoteUserId;
+    final String? serviceRemoteUserId =
+    _normalizedOptionalString(
+      _callService.currentPeerId,
+    );
 
-    _isVideoCall = _callService.isVideoCall;
+    if (serviceCallId != null) {
+      _callId = serviceCallId;
+    }
 
-    final int serviceDuration = _callService.callDurationSeconds;
-    _durationSeconds = serviceDuration < 0 ? 0 : serviceDuration;
+    if (serviceLocalUserId != null) {
+      _localUserId = serviceLocalUserId;
+    }
+
+    if (serviceRemoteUserId != null) {
+      _remoteUserId =
+          serviceRemoteUserId;
+    }
+
+    // -------------------------------------------------------
+    // MEDIA LATE-BINDING FIX
+    //
+    // These are non-owning references.
+    // Never stop/dispose them from this provider.
+    // -------------------------------------------------------
+
+    if (!_isTerminalStatus(
+      _status,
+    )) {
+      _localStream =
+          _callService.webrtc.localStream;
+
+      _remoteStream =
+          _callService.webrtc.remoteStream;
+    }
+
+    // Do not overwrite prepared incoming-call metadata using an
+    // unowned/default CallService session.
+    if (serviceCallId != null ||
+        _callService.isCallActive) {
+      _isVideoCall =
+          _callService.isVideoCall;
+
+      if (!preserveDuration) {
+        final int serviceDuration =
+            _callService.callDurationSeconds;
+
+        _durationSeconds =
+        serviceDuration < 0
+            ? 0
+            : serviceDuration;
+      }
+    }
   }
 
   // ===========================================================
-  // Status Helpers
+  // TERMINAL STATUS
   // ===========================================================
 
-  void _setStatus(String value) {
-    if (_isDisposed) {
-      return;
-    }
-
-    final String normalized = value.trim().toUpperCase();
-
-    if (normalized.isEmpty || normalized == _status) {
-      return;
-    }
-
-    _status = normalized;
-    _notifySafely();
-  }
-
-  bool _isTerminalStatus(String status) {
+  bool _isTerminalStatus(
+      String status,
+      ) {
     switch (status) {
+      case CallServiceStatus.userBusy:
       case CallServiceStatus.rejected:
       case CallServiceStatus.declined:
       case CallServiceStatus.cancelled:
@@ -649,73 +1086,193 @@ class CallScreenProvider extends ChangeNotifier {
   }
 
   // ===========================================================
-  // Error Handling
+  // MEDIA TRACK SAFETY
+  // ===========================================================
+
+  bool _hasVideoTrack(
+      MediaStream? stream,
+      ) {
+    if (stream == null) {
+      return false;
+    }
+
+    try {
+      return stream
+          .getVideoTracks()
+          .isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _hasAudioTrack(
+      MediaStream? stream,
+      ) {
+    if (stream == null) {
+      return false;
+    }
+
+    try {
+      return stream
+          .getAudioTracks()
+          .isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ===========================================================
+  // ERROR STATE
   // ===========================================================
 
   void clearError() {
-    if (_isDisposed || _errorMessage == null) {
+    if (_isDisposed ||
+        _errorMessage == null) {
       return;
     }
 
     _errorMessage = null;
+
     _notifySafely();
   }
 
-  void _setError(String message) {
+  void _setError(
+      String message,
+      ) {
     if (_isDisposed) {
       return;
     }
 
-    _errorMessage = message.trim().isEmpty ? 'Unknown call error.' : message;
+    final String normalized =
+    message.trim();
+
+    _errorMessage =
+    normalized.isEmpty
+        ? 'Unknown call error.'
+        : normalized;
+
     _notifySafely();
   }
 
-  void _handleError(String source, Object error, [StackTrace? stackTrace]) {
+  void _handleError(
+      String source,
+      Object error, [
+        StackTrace? stackTrace,
+      ]) {
     if (_isDisposed) {
       return;
     }
 
-    _errorMessage = error.toString();
+    final String normalizedError =
+    error.toString().trim();
 
-    debugPrint('JR CALL [$source] error: $error');
+    _errorMessage =
+    normalizedError.isEmpty
+        ? 'Unknown call error.'
+        : normalizedError;
+
+    debugPrint(
+      'JR CALL [$source] error: $error',
+    );
 
     if (stackTrace != null) {
-      debugPrintStack(label: 'JR CALL [$source]', stackTrace: stackTrace);
+      debugPrintStack(
+        label: 'JR CALL [$source]',
+        stackTrace: stackTrace,
+      );
     }
 
     _notifySafely();
   }
 
   // ===========================================================
-  // Initialization Guard
+  // OPERATION GENERATION
   // ===========================================================
 
-  Future<void> _ensureInitialized() async {
-    if (_isDisposed) {
-      return;
+  int _beginOperation() {
+    _operationGeneration++;
+
+    return _operationGeneration;
+  }
+
+  bool _isOperationCurrent(
+      int token,
+      ) {
+    return !_isDisposed &&
+        token == _operationGeneration;
+  }
+
+  void _invalidateOperations() {
+    _operationGeneration++;
+
+    _isStarting = false;
+    _isAccepting = false;
+    _isRejecting = false;
+    _isCancelling = false;
+    _isEnding = false;
+  }
+
+  // ===========================================================
+  // CALL ID
+  // ===========================================================
+
+  String? _resolveCallId(
+      String? explicitCallId,
+      ) {
+    return _normalizedOptionalString(
+      explicitCallId,
+    ) ??
+        _normalizedOptionalString(
+          _callId,
+        ) ??
+        _normalizedOptionalString(
+          _callService.currentCallId,
+        );
+  }
+
+  String? _normalizedOptionalString(
+      String? value,
+      ) {
+    if (value == null) {
+      return null;
     }
 
-    if (!_isInitialized) {
-      await initialize();
-    }
+    final String normalized =
+    value.trim();
+
+    return normalized.isEmpty
+        ? null
+        : normalized;
   }
+
+  // ===========================================================
+  // USABILITY
+  // ===========================================================
 
   void _ensureUsable() {
     if (_isDisposed) {
-      throw StateError('CallScreenProvider has already been disposed.');
+      throw StateError(
+        'CallScreenProvider has already been disposed.',
+      );
     }
   }
 
   // ===========================================================
-  // UI Reset
+  // UI RESET
+  //
+  // Presentation reset only.
+  // Does NOT end CallService.
   // ===========================================================
 
-  void reset({bool preserveRemoteIdentity = false}) {
+  void reset({
+    bool preserveRemoteIdentity = false,
+  }) {
     _ensureUsable();
 
     _resetUiSession(
       preserveStatus: false,
-      preserveRemoteIdentity: preserveRemoteIdentity,
+      preserveRemoteIdentity:
+      preserveRemoteIdentity,
     );
   }
 
@@ -727,8 +1284,11 @@ class CallScreenProvider extends ChangeNotifier {
       return;
     }
 
+    _invalidateOperations();
+
     if (!preserveStatus) {
-      _status = CallServiceStatus.idle;
+      _status =
+          CallServiceStatus.idle;
     }
 
     _durationSeconds = 0;
@@ -749,25 +1309,28 @@ class CallScreenProvider extends ChangeNotifier {
 
     _errorMessage = null;
 
-    _isStarting = false;
-    _isAccepting = false;
-    _isRejecting = false;
-    _isCancelling = false;
-    _isEnding = false;
-
     _notifySafely();
   }
 
   // ===========================================================
-  // Subscription Cleanup
+  // SUBSCRIPTION CLEANUP
   // ===========================================================
 
   Future<void> _cancelSubscriptions() async {
-    final StreamSubscription<String>? statusSubscription = _statusSubscription;
-    final StreamSubscription<int>? durationSubscription = _durationSubscription;
-    final StreamSubscription<MediaStream?>? localStreamSubscription =
+    final StreamSubscription<String>?
+    statusSubscription =
+        _statusSubscription;
+
+    final StreamSubscription<int>?
+    durationSubscription =
+        _durationSubscription;
+
+    final StreamSubscription<MediaStream?>?
+    localStreamSubscription =
         _localStreamSubscription;
-    final StreamSubscription<MediaStream?>? remoteStreamSubscription =
+
+    final StreamSubscription<MediaStream?>?
+    remoteStreamSubscription =
         _remoteStreamSubscription;
 
     _statusSubscription = null;
@@ -775,26 +1338,66 @@ class CallScreenProvider extends ChangeNotifier {
     _localStreamSubscription = null;
     _remoteStreamSubscription = null;
 
-    await Future.wait<void>([
-      if (statusSubscription != null) statusSubscription.cancel(),
-      if (durationSubscription != null) durationSubscription.cancel(),
-      if (localStreamSubscription != null) localStreamSubscription.cancel(),
-      if (remoteStreamSubscription != null) remoteStreamSubscription.cancel(),
-    ]);
+    await _cancelSubscription(
+      statusSubscription,
+      'status subscription',
+    );
+
+    await _cancelSubscription(
+      durationSubscription,
+      'duration subscription',
+    );
+
+    await _cancelSubscription(
+      localStreamSubscription,
+      'local stream subscription',
+    );
+
+    await _cancelSubscription(
+      remoteStreamSubscription,
+      'remote stream subscription',
+    );
   }
 
-  // ===========================================================
-  // Safe Notification
-  // ===========================================================
+  Future<void> _cancelSubscription<T>(
+      StreamSubscription<T>? subscription,
+      String source,
+      ) async {
+    if (subscription == null) {
+      return;
+    }
 
-  void _notifySafely() {
-    if (!_isDisposed) {
-      notifyListeners();
+    try {
+      await subscription.cancel();
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [CallScreenProvider/$source] error: $error',
+      );
+
+      debugPrintStack(
+        label:
+        'JR CALL [CallScreenProvider/$source]',
+        stackTrace: stackTrace,
+      );
     }
   }
 
   // ===========================================================
-  // Dispose
+  // SAFE NOTIFICATION
+  // ===========================================================
+
+  void _notifySafely() {
+    if (_isDisposed) {
+      return;
+    }
+
+    notifyListeners();
+  }
+
+  // ===========================================================
+  // DISPOSE
+  //
+  // Provider does NOT dispose CallService or WebRTC media.
   // ===========================================================
 
   @override
@@ -806,8 +1409,74 @@ class CallScreenProvider extends ChangeNotifier {
     _isDisposed = true;
     _isInitialized = false;
 
-    unawaited(_cancelSubscriptions());
+    _operationGeneration++;
 
+    _isStarting = false;
+    _isAccepting = false;
+    _isRejecting = false;
+    _isCancelling = false;
+    _isEnding = false;
+
+    _initializationFuture = null;
+
+    final StreamSubscription<String>?
+    statusSubscription =
+        _statusSubscription;
+
+    final StreamSubscription<int>?
+    durationSubscription =
+        _durationSubscription;
+
+    final StreamSubscription<MediaStream?>?
+    localStreamSubscription =
+        _localStreamSubscription;
+
+    final StreamSubscription<MediaStream?>?
+    remoteStreamSubscription =
+        _remoteStreamSubscription;
+
+    _statusSubscription = null;
+    _durationSubscription = null;
+    _localStreamSubscription = null;
+    _remoteStreamSubscription = null;
+
+    if (statusSubscription != null) {
+      unawaited(
+        _cancelSubscription(
+          statusSubscription,
+          'status subscription',
+        ),
+      );
+    }
+
+    if (durationSubscription != null) {
+      unawaited(
+        _cancelSubscription(
+          durationSubscription,
+          'duration subscription',
+        ),
+      );
+    }
+
+    if (localStreamSubscription != null) {
+      unawaited(
+        _cancelSubscription(
+          localStreamSubscription,
+          'local stream subscription',
+        ),
+      );
+    }
+
+    if (remoteStreamSubscription != null) {
+      unawaited(
+        _cancelSubscription(
+          remoteStreamSubscription,
+          'remote stream subscription',
+        ),
+      );
+    }
+
+    // Non-owning references only.
     _localStream = null;
     _remoteStream = null;
 
@@ -818,3 +1487,56 @@ class CallScreenProvider extends ChangeNotifier {
     super.dispose();
   }
 }
+
+// ===========================================================
+// END OF FILE
+//
+// PRODUCTION CONTRACT:
+//
+// ✓ Existing constructor preserved.
+// ✓ Existing CallService getter preserved.
+// ✓ Existing public state getters preserved.
+// ✓ Existing role/isCaller/isReceiver preserved.
+// ✓ Existing media getters preserved.
+//
+// ✓ initialize() preserved.
+// ✓ startCall() preserved.
+// ✓ prepareIncomingCall() preserved.
+// ✓ acceptCall() preserved.
+// ✓ rejectCall() preserved.
+// ✓ cancelCall() preserved.
+// ✓ endCall() preserved.
+// ✓ clearError() preserved.
+// ✓ reset() preserved.
+//
+// ✓ CallService remains lifecycle authority.
+// ✓ CallService remains duration authority.
+// ✓ No fake connected state.
+//
+// ✓ Single-flight initialization.
+// ✓ Duplicate stream subscriptions prevented.
+// ✓ Conflicting UI actions blocked.
+// ✓ Stale async operation protection.
+// ✓ Terminal stale call ID cannot keep active-call UI alive.
+// ✓ userBusy is terminal presentation state.
+// ✓ Final duration survives terminal CallService cleanup.
+// ✓ Late terminal zero-duration event cannot erase final duration.
+// ✓ Terminal media references cannot resurrect from stale events.
+//
+// ✓ Existing WebRTC media is synchronized during late UI binding.
+// ✓ Late active-screen creation can recover current local stream.
+// ✓ Late active-screen creation can recover current remote stream.
+// ✓ Media streams are never disposed by this provider.
+// ✓ Media-track inspection fails closed safely.
+// ✓ Subscription cancellation errors are contained.
+//
+// ✓ No Firestore ownership.
+// ✓ No signaling ownership.
+// ✓ No history ownership.
+// ✓ No timer ownership.
+// ✓ No ICE ownership.
+// ✓ No recovery ownership.
+// ✓ No PeerConnection ownership.
+// ✓ No MediaStream creation.
+// ✓ No MediaStream disposal.
+// ===========================================================

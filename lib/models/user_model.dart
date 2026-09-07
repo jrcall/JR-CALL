@@ -16,6 +16,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// - Password/OTP/auth secrets are NEVER stored here.
 /// - Legacy Firestore documents remain readable.
 /// - Current FirestoreService APIs remain compatible.
+/// - Global Search/Discovery uses bounded searchable fragments.
 /// ===========================================================
 class UserModel {
   // ===========================================================
@@ -106,6 +107,29 @@ class UserModel {
   final bool isDiscoverableByEmail;
 
   final bool isDiscoverableByPhone;
+
+  // ===========================================================
+  // SEARCH INDEX CONFIGURATION
+  // ===========================================================
+
+  /// Increment only when the persisted discovery-index format changes.
+  static const int searchIndexVersion = 1;
+
+  /// Search fragments are intentionally bounded.
+  ///
+  /// Queries longer than this are resolved by the discovery service
+  /// through a bounded lookup fragment followed by full local matching.
+  static const int searchFragmentMaxRunes = 24;
+
+  static const int _maximumFullNameSearchRunes = 128;
+
+  static const int _maximumUsernameSearchRunes = 64;
+
+  static const int _maximumJrCallIdSearchRunes = 96;
+
+  static const int _maximumEmailSearchRunes = 254;
+
+  static const int _maximumPhoneSearchRunes = 32;
 
   // ===========================================================
   // PRESENCE / RUNTIME
@@ -234,6 +258,65 @@ class UserModel {
   }
 
   // ===========================================================
+  // GLOBAL DISCOVERY SEARCH FRAGMENTS
+  // ===========================================================
+
+  /// Production Firestore discovery index.
+  ///
+  /// Supports contains-style discovery for:
+  /// - Full Name
+  /// - Username
+  /// - JR CALL User ID
+  /// - Email, only when email discovery is enabled
+  /// - Phone, only when phone discovery is enabled
+  ///
+  /// Blocked, deleted, or globally non-discoverable users expose
+  /// no discovery fragments.
+  List<String> get searchFragments {
+    if (!isDiscoverable || !isActive) {
+      return const <String>[];
+    }
+
+    final Set<String> fragments = <String>{};
+
+    _addSearchFragments(
+      fragments,
+      fullNameLowercase,
+      maximumSourceRunes: _maximumFullNameSearchRunes,
+    );
+
+    _addSearchFragments(
+      fragments,
+      usernameLowercase,
+      maximumSourceRunes: _maximumUsernameSearchRunes,
+    );
+
+    _addSearchFragments(
+      fragments,
+      jrCallUserIdLowercase,
+      maximumSourceRunes: _maximumJrCallIdSearchRunes,
+    );
+
+    if (isDiscoverableByEmail) {
+      _addSearchFragments(
+        fragments,
+        emailNormalized,
+        maximumSourceRunes: _maximumEmailSearchRunes,
+      );
+    }
+
+    if (isDiscoverableByPhone) {
+      _addSearchFragments(
+        fragments,
+        phoneNormalized,
+        maximumSourceRunes: _maximumPhoneSearchRunes,
+      );
+    }
+
+    return List<String>.unmodifiable(fragments);
+  }
+
+  // ===========================================================
   // PROVIDER HELPERS
   // ===========================================================
 
@@ -343,9 +426,11 @@ class UserModel {
 
     final String? legacyProvider =
         _cleanNullableString(provider) ??
-        (providers.isEmpty ? null : providers.first);
+            (providers.isEmpty ? null : providers.first);
 
     final String normalizedPhoneSearch = _normalizePhone(normalizedPhone);
+
+    final List<String> discoverySearchFragments = searchFragments;
 
     final Map<String, dynamic> map = <String, dynamic>{
       // -------------------------------------------------------
@@ -455,6 +540,10 @@ class UserModel {
 
       'isDiscoverableByPhone': isDiscoverableByPhone,
 
+      'searchIndexVersion': searchIndexVersion,
+
+      'searchFragments': discoverySearchFragments,
+
       // -------------------------------------------------------
       // PRESENCE
       // -------------------------------------------------------
@@ -495,9 +584,9 @@ class UserModel {
 
     final String name =
         _readString(map['name']) ??
-        _readString(map['fullName']) ??
-        _readString(map['displayName']) ??
-        '';
+            _readString(map['fullName']) ??
+            _readString(map['displayName']) ??
+            '';
 
     final String phone =
         _readString(map['phone']) ?? _readString(map['phoneNumber']) ?? '';
@@ -514,8 +603,8 @@ class UserModel {
 
     final String? coverPhoto =
         _readString(map['coverPhoto']) ??
-        _readString(map['coverPhotoUrl']) ??
-        _readString(map['backgroundPhotoUrl']);
+            _readString(map['coverPhotoUrl']) ??
+            _readString(map['backgroundPhotoUrl']);
 
     final List<String> storedProviders = _readStringList(
       map['signInProviders'],
@@ -530,12 +619,12 @@ class UserModel {
 
     final String? effectiveProvider =
         storedProvider ??
-        (effectiveProviders.isEmpty ? null : effectiveProviders.first);
+            (effectiveProviders.isEmpty ? null : effectiveProviders.first);
 
     final DateTime createdAt =
         _readDateTime(map['createdAt']) ??
-        _readDateTime(map['creationTime']) ??
-        DateTime.now();
+            _readDateTime(map['creationTime']) ??
+            DateTime.now();
 
     final bool explicitEmailVerified = map.containsKey('emailVerified')
         ? _readBool(map['emailVerified'])
@@ -605,8 +694,8 @@ class UserModel {
   // ===========================================================
 
   factory UserModel.fromFirestore(
-    DocumentSnapshot<Map<String, dynamic>> snapshot,
-  ) {
+      DocumentSnapshot<Map<String, dynamic>> snapshot,
+      ) {
     final Map<String, dynamic> data = Map<String, dynamic>.from(
       snapshot.data() ?? const <String, dynamic>{},
     );
@@ -700,10 +789,10 @@ class UserModel {
       isDiscoverable: isDiscoverable ?? this.isDiscoverable,
 
       isDiscoverableByEmail:
-          isDiscoverableByEmail ?? this.isDiscoverableByEmail,
+      isDiscoverableByEmail ?? this.isDiscoverableByEmail,
 
       isDiscoverableByPhone:
-          isDiscoverableByPhone ?? this.isDiscoverableByPhone,
+      isDiscoverableByPhone ?? this.isDiscoverableByPhone,
 
       createdAt: createdAt ?? this.createdAt,
 
@@ -1102,6 +1191,52 @@ class UserModel {
     }
 
     return hasPlus ? '+$digits' : digits;
+  }
+
+  // ===========================================================
+  // SEARCH FRAGMENT BUILDER
+  // ===========================================================
+
+  static void _addSearchFragments(
+      Set<String> target,
+      String? value, {
+        required int maximumSourceRunes,
+      }) {
+    final String? cleaned = _cleanNullableString(value);
+
+    if (cleaned == null) {
+      return;
+    }
+
+    final List<int> runes = cleaned.runes
+        .take(maximumSourceRunes)
+        .toList(growable: false);
+
+    if (runes.isEmpty) {
+      return;
+    }
+
+    for (int start = 0; start < runes.length; start++) {
+      final int remaining = runes.length - start;
+
+      final int maximumLength = remaining < searchFragmentMaxRunes
+          ? remaining
+          : searchFragmentMaxRunes;
+
+      final StringBuffer buffer = StringBuffer();
+
+      for (int offset = 0; offset < maximumLength; offset++) {
+        buffer.write(String.fromCharCode(runes[start + offset]));
+
+        final String fragment = buffer.toString();
+
+        if (fragment.trim().isEmpty) {
+          continue;
+        }
+
+        target.add(fragment);
+      }
+    }
   }
 
   static DateTime _dateOnly(DateTime value) {

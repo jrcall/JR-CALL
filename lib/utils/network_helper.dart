@@ -11,35 +11,32 @@ import '../models/network_model.dart';
 // File: network_helper.dart
 // Location: lib/utils/network_helper.dart
 //
-// Description:
-// Production cross-platform network utility for JR CALL.
+// Production cross-platform network utility.
 //
 // Responsibilities:
-// - Detect available network transport
-// - Observe connectivity changes
-// - Perform lightweight Internet reachability checks
-// - Measure approximate HTTP round-trip latency
-// - Provide advisory network-quality classification
-// - Provide compatibility bitrate/FPS recommendations
-// - Preserve existing NetworkHelper public APIs
+// - Detect available network transport.
+// - Observe connectivity changes.
+// - Perform lightweight Internet reachability checks.
+// - Measure approximate HTTP round-trip latency.
+// - Provide advisory network-quality classification.
+// - Provide compatibility bitrate/FPS recommendations.
 //
-// Architecture:
-// - ConnectionManager owns live Call Engine connectivity state
-// - RecoveryManager owns call reconnection/recovery
-// - StatsManager/WebRTC owns real RTP packet-loss measurements
-// - BitrateController owns real WebRTC bitrate adaptation
-// - NetworkOptimizer owns call-specific network optimization
-// - NetworkHelper remains a lightweight shared utility
+// Ownership:
+// - ConnectionManager owns live call connectivity state.
+// - RecoveryManager owns call recovery.
+// - StatsManager/WebRTC owns real RTP statistics.
+// - BitrateController owns real sender bitrate mutation.
+// - NetworkOptimizer owns call-specific optimization.
+// - NetworkHelper remains a lightweight shared utility.
 //
 // Important:
-// - Connectivity type alone does NOT guarantee Internet access
-// - HTTP latency is NOT ICMP ping
-// - Helper packet-loss value is only an advisory reachability sample
-// - Real call packet loss must come from WebRTC statistics
-// - This file does NOT manipulate WebRTC
-// - This file does NOT duplicate ConnectionManager
-// - This file does NOT duplicate BitrateController
-// - This file does NOT contain UI/design logic
+// - Connectivity type is not proof of Internet access.
+// - HTTP latency is not ICMP ping.
+// - HTTP request failures are not RTP packet loss.
+// - No WebRTC manipulation.
+// - No recovery ownership.
+// - No polling/timer ownership.
+// - No UI/design ownership.
 // ===========================================================
 
 class NetworkHelper {
@@ -55,42 +52,72 @@ class NetworkHelper {
   // Probe Configuration
   // ===========================================================
 
-  static const Duration _probeTimeout = Duration(seconds: 3);
+  static const Duration _probeTimeout = Duration(
+    seconds: 3,
+  );
 
   static const int _packetLossProbeCount = 5;
 
-  /// Multiple geographically independent HTTPS endpoints are used
-  /// so one blocked/unavailable provider does not automatically
-  /// classify the device as offline.
+  static const int _offlineLatency = 999;
+
+  static const int _webFallbackLatency = 100;
+
+  /// Each target has an expected response.
   ///
-  /// No user/account data is sent by NetworkHelper.
-  static final List<Uri> _probeEndpoints = <Uri>[
-    Uri.parse('https://www.gstatic.com/generate_204'),
-    Uri.parse('https://www.msftconnecttest.com/connecttest.txt'),
-    Uri.parse('https://www.apple.com/library/test/success.html'),
+  /// This prevents a captive portal or intercepted request that
+  /// simply returns an unrelated HTTP 200 page from being treated
+  /// as confirmed Internet reachability.
+  static final List<_NetworkProbeTarget> _probeTargets =
+  <_NetworkProbeTarget>[
+    _NetworkProbeTarget(
+      uri: Uri.parse(
+        'https://www.gstatic.com/generate_204',
+      ),
+      expectedStatusCode: 204,
+    ),
+    _NetworkProbeTarget(
+      uri: Uri.parse(
+        'https://www.apple.com/library/test/success.html',
+      ),
+      expectedStatusCode: 200,
+      requiredBodyText: 'Success',
+    ),
   ];
 
   // ===========================================================
   // Current Connectivity Results
   // ===========================================================
 
-  /// Returns every active connectivity type reported by
+  /// Returns every connectivity type currently reported by
   /// connectivity_plus.
   ///
-  /// The returned collection is immutable.
-  static Future<List<ConnectivityResult>> getConnectivityResults() async {
+  /// Transport availability must not be interpreted as guaranteed
+  /// Internet reachability.
+  static Future<List<ConnectivityResult>>
+  getConnectivityResults() async {
     try {
-      final results = await _connectivity.checkConnectivity();
+      final List<ConnectivityResult> results =
+      await _connectivity.checkConnectivity();
 
       if (results.isEmpty) {
-        return const <ConnectivityResult>[ConnectivityResult.none];
+        return const <ConnectivityResult>[
+          ConnectivityResult.none,
+        ];
       }
 
-      return List<ConnectivityResult>.unmodifiable(results);
+      return List<ConnectivityResult>.unmodifiable(
+        results,
+      );
     } catch (error, stackTrace) {
-      _debugError('getConnectivityResults', error, stackTrace);
+      _debugError(
+        'getConnectivityResults',
+        error,
+        stackTrace,
+      );
 
-      return const <ConnectivityResult>[ConnectivityResult.none];
+      return const <ConnectivityResult>[
+        ConnectivityResult.none,
+      ];
     }
   }
 
@@ -99,39 +126,51 @@ class NetworkHelper {
   // ===========================================================
 
   static Future<NetworkType> getNetworkType() async {
-    final results = await getConnectivityResults();
+    final List<ConnectivityResult> results =
+    await getConnectivityResults();
 
     if (_isOfflineResult(results)) {
       return NetworkType.unknown;
     }
 
     // Prefer the underlying physical/high-bandwidth transport
-    // when several connectivity types are reported together.
+    // when more than one type is reported.
     //
-    // Example:
-    // Wi-Fi + VPN should continue to classify as Wi-Fi rather
-    // than arbitrarily depending on List ordering.
-
-    if (results.contains(ConnectivityResult.ethernet)) {
+    // For example, Wi-Fi + VPN remains classified as Wi-Fi for
+    // the existing NetworkModel contract.
+    if (results.contains(
+      ConnectivityResult.ethernet,
+    )) {
       return NetworkType.ethernet;
     }
 
-    if (results.contains(ConnectivityResult.wifi)) {
+    if (results.contains(
+      ConnectivityResult.wifi,
+    )) {
       return NetworkType.wifi;
     }
 
-    if (results.contains(ConnectivityResult.mobile)) {
+    if (results.contains(
+      ConnectivityResult.mobile,
+    )) {
       return NetworkType.mobile;
     }
 
-    if (results.contains(ConnectivityResult.vpn)) {
+    if (results.contains(
+      ConnectivityResult.vpn,
+    )) {
       return NetworkType.vpn;
     }
 
-    if (results.contains(ConnectivityResult.bluetooth)) {
+    if (results.contains(
+      ConnectivityResult.bluetooth,
+    )) {
       return NetworkType.bluetooth;
     }
 
+    // connectivity_plus can report "other".
+    // The current JR CALL NetworkType contract has no separate
+    // value for it, so preserve NetworkType.unknown.
     return NetworkType.unknown;
   }
 
@@ -139,106 +178,46 @@ class NetworkHelper {
   // Network Transport Availability
   // ===========================================================
 
-  /// Returns whether the operating system currently reports at
-  /// least one usable network transport.
-  ///
-  /// This is NOT the same as confirmed Internet reachability.
   static Future<bool> hasNetworkTransport() async {
-    final results = await getConnectivityResults();
+    final List<ConnectivityResult> results =
+    await getConnectivityResults();
 
-    return !_isOfflineResult(results);
+    return !_isOfflineResult(
+      results,
+    );
   }
 
   // ===========================================================
   // Internet Availability
   // ===========================================================
 
-  /// Checks whether Internet access appears usable.
+  /// Returns whether general Internet reachability appears usable.
   ///
-  /// Native/desktop:
-  /// - verifies network transport first
-  /// - then performs lightweight HTTPS probes
-  ///
-  /// Web:
-  /// Browser CORS/security policy may prevent generic external
-  /// reachability probes even while the browser is online.
-  /// Therefore connectivity_plus remains the safe browser-level
-  /// fallback.
-  ///
-  /// Call Engine operations must still handle their own network
-  /// timeouts/errors. This method must never be treated as an
-  /// absolute guarantee that Firebase/WebRTC/TURN is reachable.
+  /// This remains advisory. Firebase, WebRTC and TURN requests must
+  /// still handle their own errors and timeouts.
   static Future<bool> hasInternet() async {
-    final hasTransport = await hasNetworkTransport();
+    final _ReachabilityMeasurement measurement =
+    await _measureReachability();
 
-    if (!hasTransport) {
-      return false;
-    }
-
-    if (kIsWeb) {
-      return true;
-    }
-
-    for (final endpoint in _probeEndpoints) {
-      final result = await _probe(endpoint);
-
-      if (result.success) {
-        return true;
-      }
-    }
-
-    return false;
+    return measurement.reachable;
   }
 
   // ===========================================================
   // Latency / Ping Compatibility
   // ===========================================================
 
-  /// Returns approximate HTTP round-trip latency in milliseconds.
+  /// Approximate HTTP round-trip latency in milliseconds.
   ///
-  /// Compatibility name:
-  /// getPing()
+  /// This is not an ICMP ping.
   ///
-  /// This is intentionally NOT represented as ICMP ping.
-  ///
-  /// Returns 999 when no probe succeeds.
+  /// Returns 999 when reachability cannot be confirmed.
   static Future<int> getPing() async {
-    final hasTransport = await hasNetworkTransport();
+    final _ReachabilityMeasurement measurement =
+    await _measureReachability();
 
-    if (!hasTransport) {
-      return 999;
-    }
-
-    // Browser security/CORS rules prevent a reliable generic
-    // HTTP reachability benchmark to arbitrary domains.
-    //
-    // Preserve a conservative usable value when the browser
-    // reports online rather than falsely classifying Web as
-    // offline.
-    if (kIsWeb) {
-      return 100;
-    }
-
-    int? fastestLatency;
-
-    for (final endpoint in _probeEndpoints) {
-      final result = await _probe(endpoint);
-
-      if (!result.success) {
-        continue;
-      }
-
-      final latency = result.latencyMilliseconds;
-
-      if (fastestLatency == null || latency < fastestLatency) {
-        fastestLatency = latency;
-      }
-    }
-
-    return fastestLatency ?? 999;
+    return measurement.latencyMilliseconds;
   }
 
-  /// Backward-compatible alias.
   static Future<int> getLatency() {
     return getPing();
   }
@@ -247,18 +226,19 @@ class NetworkHelper {
   // Network Quality
   // ===========================================================
 
-  /// Returns advisory pre-call/general network quality.
+  /// Advisory general/pre-call quality only.
   ///
-  /// Actual active-call quality must be determined from WebRTC
-  /// statistics by the Call Engine quality/statistics layer.
+  /// Active-call quality remains WebRTC statistics owned.
   static Future<NetworkQuality> getNetworkQuality() async {
-    final connected = await hasInternet();
+    final _ReachabilityMeasurement measurement =
+    await _measureReachability();
 
-    if (!connected) {
+    if (!measurement.reachable) {
       return NetworkQuality.offline;
     }
 
-    final latency = await getLatency();
+    final int latency =
+        measurement.latencyMilliseconds;
 
     if (latency <= 50) {
       return NetworkQuality.excellent;
@@ -279,77 +259,96 @@ class NetworkHelper {
   // Advisory Reachability Loss
   // ===========================================================
 
-  /// Returns an advisory failed-request percentage.
+  /// Returns failed HTTPS probe percentage.
   ///
-  /// IMPORTANT:
-  /// This is NOT RTP/WebRTC packet loss.
-  ///
-  /// Real voice/video packet loss must be read from WebRTC stats.
-  ///
-  /// Existing public API is preserved because finalized JR CALL
-  /// files may already depend on getPacketLoss().
+  /// This value is NOT RTP/WebRTC packet loss.
+  /// Real call packet loss must come from WebRTC statistics.
   static Future<double> getPacketLoss() async {
-    final hasTransport = await hasNetworkTransport();
+    final bool hasTransport =
+    await hasNetworkTransport();
 
     if (!hasTransport) {
       return 100.0;
     }
 
     if (kIsWeb) {
-      // Generic external probes are not reliable in browsers
-      // because CORS can block the request independently of
-      // Internet availability.
+      // Cross-origin probe failure in a browser may be caused by
+      // browser security policy rather than network packet loss.
       return 0.0;
     }
 
-    final probes = <Future<_NetworkProbeResult>>[];
-
-    for (var index = 0; index < _packetLossProbeCount; index++) {
-      final endpoint = _probeEndpoints[index % _probeEndpoints.length];
-
-      probes.add(_probe(endpoint));
+    if (_probeTargets.isEmpty) {
+      return 100.0;
     }
 
-    final results = await Future.wait(probes);
+    final List<Future<_NetworkProbeResult>> probes =
+    <Future<_NetworkProbeResult>>[];
 
-    var failures = 0;
+    for (
+    int index = 0;
+    index < _packetLossProbeCount;
+    index++
+    ) {
+      final _NetworkProbeTarget target =
+      _probeTargets[
+      index % _probeTargets.length
+      ];
 
-    for (final result in results) {
+      probes.add(
+        _probe(target),
+      );
+    }
+
+    final List<_NetworkProbeResult> results =
+    await Future.wait(
+      probes,
+    );
+
+    if (results.isEmpty) {
+      return 100.0;
+    }
+
+    int failures = 0;
+
+    for (final _NetworkProbeResult result
+    in results) {
       if (!result.success) {
         failures++;
       }
     }
 
-    return (failures / results.length) * 100.0;
+    final double percentage =
+        (failures / results.length) * 100.0;
+
+    return percentage.clamp(
+      0.0,
+      100.0,
+    );
   }
 
   // ===========================================================
   // Bitrate Compatibility Hook
   // ===========================================================
 
-  /// Backward-compatible hook only.
+  /// Compatibility hook only.
   ///
-  /// NetworkHelper intentionally does NOT directly change the
-  /// WebRTC sender bitrate.
-  ///
-  /// Real bitrate mutation belongs to the existing protected
-  /// BitrateController / NetworkOptimizer layer.
+  /// NetworkHelper never mutates an RTP sender.
   static Future<void> adjustBitrate(
-    NetworkQuality quality,
-    int latency,
-    double packetLoss,
-  ) async {
+      NetworkQuality quality,
+      int latency,
+      double packetLoss,
+      ) async {
     if (!kDebugMode) {
       return;
     }
 
     debugPrint(
       'JR CALL [NetworkHelper]: '
-      'bitrate recommendation requested -> '
-      'quality=$quality, '
-      'latency=${latency}ms, '
-      'advisoryLoss=${packetLoss.toStringAsFixed(1)}%. '
-      'Real WebRTC bitrate remains owned by BitrateController.',
+          'bitrate recommendation requested -> '
+          'quality=$quality, '
+          'latency=${latency}ms, '
+          'advisoryLoss=${packetLoss.toStringAsFixed(1)}%. '
+          'Real WebRTC bitrate remains owned by BitrateController.',
     );
   }
 
@@ -359,11 +358,10 @@ class NetworkHelper {
 
   /// Compatibility recommendation only.
   ///
-  /// Values are in bits per second.
-  ///
-  /// The actual call engine remains free to further adapt bitrate
-  /// using WebRTC stats, TURN conditions, packet loss and recovery.
-  static int recommendedBitrate(NetworkQuality quality) {
+  /// Values are bits per second.
+  static int recommendedBitrate(
+      NetworkQuality quality,
+      ) {
     switch (quality) {
       case NetworkQuality.excellent:
         return 3000000;
@@ -382,9 +380,12 @@ class NetworkHelper {
     }
   }
 
-  /// Backward-compatible alias.
-  static int getBitrate(NetworkQuality quality) {
-    return recommendedBitrate(quality);
+  static int getBitrate(
+      NetworkQuality quality,
+      ) {
+    return recommendedBitrate(
+      quality,
+    );
   }
 
   // ===========================================================
@@ -393,9 +394,11 @@ class NetworkHelper {
 
   /// Compatibility recommendation only.
   ///
-  /// Actual camera/WebRTC frame rate remains controlled by the
-  /// media/video layer.
-  static int recommendedFps(NetworkQuality quality) {
+  /// Camera/WebRTC layers remain authoritative for actual frame
+  /// rate application.
+  static int recommendedFps(
+      NetworkQuality quality,
+      ) {
     switch (quality) {
       case NetworkQuality.excellent:
         return 60;
@@ -414,33 +417,39 @@ class NetworkHelper {
     }
   }
 
-  /// Backward-compatible alias.
-  static int getFps(NetworkQuality quality) {
-    return recommendedFps(quality);
+  static int getFps(
+      NetworkQuality quality,
+      ) {
+    return recommendedFps(
+      quality,
+    );
   }
 
   // ===========================================================
   // Connectivity Stream
   // ===========================================================
 
-  /// Existing public stream API preserved exactly.
-  static Stream<List<ConnectivityResult>> get onNetworkChanged =>
+  /// Existing public stream API preserved.
+  ///
+  /// The helper exposes the plugin stream directly and does not
+  /// create another listener, timer or polling engine.
+  static Stream<List<ConnectivityResult>>
+  get onNetworkChanged =>
       _connectivity.onConnectivityChanged;
 
   // ===========================================================
   // Connectivity Helpers
   // ===========================================================
 
-  static bool _isOfflineResult(List<ConnectivityResult> results) {
+  static bool _isOfflineResult(
+      List<ConnectivityResult> results,
+      ) {
     if (results.isEmpty) {
       return true;
     }
 
-    if (results.length == 1 && results.first == ConnectivityResult.none) {
-      return true;
-    }
-
-    for (final result in results) {
+    for (final ConnectivityResult result
+    in results) {
       if (result != ConnectivityResult.none) {
         return false;
       }
@@ -450,61 +459,172 @@ class NetworkHelper {
   }
 
   // ===========================================================
-  // HTTP Reachability Probe
+  // Reachability Measurement
   // ===========================================================
 
-  static Future<_NetworkProbeResult> _probe(Uri endpoint) async {
-    final stopwatch = Stopwatch()..start();
+  static Future<_ReachabilityMeasurement>
+  _measureReachability() async {
+    final bool hasTransport =
+    await hasNetworkTransport();
+
+    if (!hasTransport) {
+      return const _ReachabilityMeasurement(
+        reachable: false,
+        latencyMilliseconds: _offlineLatency,
+      );
+    }
+
+    // Generic external HTTPS probing is not a dependable browser
+    // test because cross-origin restrictions can block a request
+    // even when the browser has working Internet access.
+    if (kIsWeb) {
+      return const _ReachabilityMeasurement(
+        reachable: true,
+        latencyMilliseconds: _webFallbackLatency,
+      );
+    }
+
+    if (_probeTargets.isEmpty) {
+      return const _ReachabilityMeasurement(
+        reachable: false,
+        latencyMilliseconds: _offlineLatency,
+      );
+    }
+
+    final List<_NetworkProbeResult> results =
+    await Future.wait(
+      _probeTargets.map(
+        _probe,
+      ),
+    );
+
+    int? fastestLatency;
+
+    for (final _NetworkProbeResult result
+    in results) {
+      if (!result.success) {
+        continue;
+      }
+
+      if (fastestLatency == null ||
+          result.latencyMilliseconds <
+              fastestLatency) {
+        fastestLatency =
+            result.latencyMilliseconds;
+      }
+    }
+
+    if (fastestLatency == null) {
+      return const _ReachabilityMeasurement(
+        reachable: false,
+        latencyMilliseconds: _offlineLatency,
+      );
+    }
+
+    return _ReachabilityMeasurement(
+      reachable: true,
+      latencyMilliseconds:
+      fastestLatency.clamp(
+        0,
+        _offlineLatency,
+      ),
+    );
+  }
+
+  // ===========================================================
+  // HTTPS Reachability Probe
+  // ===========================================================
+
+  static Future<_NetworkProbeResult> _probe(
+      _NetworkProbeTarget target,
+      ) async {
+    final Stopwatch stopwatch =
+    Stopwatch()..start();
 
     try {
-      final response = await http
+      final http.Response response =
+      await http
           .get(
-            endpoint,
-            headers: const <String, String>{'Cache-Control': 'no-cache'},
-          )
-          .timeout(_probeTimeout);
+        target.uri,
+        headers: const <String, String>{
+          'Cache-Control': 'no-cache',
+        },
+      )
+          .timeout(
+        _probeTimeout,
+      );
 
       stopwatch.stop();
 
-      // Any valid HTTP response proves that the request crossed
-      // the network and reached an HTTP server.
-      //
-      // A 4xx/5xx response may indicate endpoint policy/service
-      // state, but it still proves network reachability.
-      final validHttpResponse =
-          response.statusCode >= 100 && response.statusCode <= 599;
+      final bool success =
+      _isExpectedProbeResponse(
+        target,
+        response,
+      );
 
       return _NetworkProbeResult(
-        success: validHttpResponse,
-        latencyMilliseconds: stopwatch.elapsedMilliseconds,
+        success: success,
+        latencyMilliseconds:
+        stopwatch.elapsedMilliseconds,
       );
-    } on TimeoutException catch (error, stackTrace) {
+    } on TimeoutException
+    catch (error, stackTrace) {
       stopwatch.stop();
 
-      _debugError('probe timeout: $endpoint', error, stackTrace);
+      _debugError(
+        'probe timeout: ${target.uri}',
+        error,
+        stackTrace,
+      );
 
       return _NetworkProbeResult(
         success: false,
-        latencyMilliseconds: stopwatch.elapsedMilliseconds,
+        latencyMilliseconds:
+        stopwatch.elapsedMilliseconds,
       );
     } catch (error, stackTrace) {
       stopwatch.stop();
 
-      _debugError('probe failure: $endpoint', error, stackTrace);
+      _debugError(
+        'probe failure: ${target.uri}',
+        error,
+        stackTrace,
+      );
 
       return _NetworkProbeResult(
         success: false,
-        latencyMilliseconds: stopwatch.elapsedMilliseconds,
+        latencyMilliseconds:
+        stopwatch.elapsedMilliseconds,
       );
     }
+  }
+
+  static bool _isExpectedProbeResponse(
+      _NetworkProbeTarget target,
+      http.Response response,
+      ) {
+    if (response.statusCode !=
+        target.expectedStatusCode) {
+      return false;
+    }
+
+    final String? requiredBodyText =
+        target.requiredBodyText;
+
+    if (requiredBodyText == null) {
+      return true;
+    }
+
+    return response.body.contains(
+      requiredBodyText,
+    );
   }
 
   // ===========================================================
   // Platform
   // ===========================================================
 
-  /// Returns the current Flutter target platform without importing
-  /// dart:io, keeping this helper compatible with Flutter Web.
+  /// Current Flutter target platform without dart:io.
   static String get platform {
     if (kIsWeb) {
       return 'Web';
@@ -531,7 +651,6 @@ class NetworkHelper {
     }
   }
 
-  /// JR CALL production target support.
   static bool get isSupportedPlatform {
     if (kIsWeb) {
       return true;
@@ -554,24 +673,52 @@ class NetworkHelper {
   // Debug Logging
   // ===========================================================
 
-  static void _debugError(String source, Object error, StackTrace stackTrace) {
+  static void _debugError(
+      String source,
+      Object error,
+      StackTrace stackTrace,
+      ) {
     if (!kDebugMode) {
       return;
     }
 
-    debugPrint('JR CALL [NetworkHelper/$source] error: $error');
+    debugPrint(
+      'JR CALL [NetworkHelper/$source] error: $error',
+    );
 
     debugPrintStack(
-      label: 'JR CALL [NetworkHelper/$source]',
-      stackTrace: stackTrace,
+      label:
+      'JR CALL [NetworkHelper/$source]',
+      stackTrace:
+      stackTrace,
     );
   }
 }
 
 // ===========================================================
-// Internal Network Probe Result
+// Internal Probe Target
 // ===========================================================
 
+@immutable
+class _NetworkProbeTarget {
+  const _NetworkProbeTarget({
+    required this.uri,
+    required this.expectedStatusCode,
+    this.requiredBodyText,
+  });
+
+  final Uri uri;
+
+  final int expectedStatusCode;
+
+  final String? requiredBodyText;
+}
+
+// ===========================================================
+// Internal Probe Result
+// ===========================================================
+
+@immutable
 class _NetworkProbeResult {
   const _NetworkProbeResult({
     required this.success,
@@ -579,5 +726,22 @@ class _NetworkProbeResult {
   });
 
   final bool success;
+
+  final int latencyMilliseconds;
+}
+
+// ===========================================================
+// Internal Reachability Measurement
+// ===========================================================
+
+@immutable
+class _ReachabilityMeasurement {
+  const _ReachabilityMeasurement({
+    required this.reachable,
+    required this.latencyMilliseconds,
+  });
+
+  final bool reachable;
+
   final int latencyMilliseconds;
 }

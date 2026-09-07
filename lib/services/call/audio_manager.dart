@@ -1,35 +1,51 @@
-// ===========================================================
+// ===============================================================
 // JR CALL
 // File: audio_manager.dart
 // Location: lib/services/call/audio_manager.dart
 //
-// Description:
-// Central production audio-state and routing orchestrator.
+// MASTER PRODUCTION AUDIO MANAGER
 //
-// Responsibilities:
-// - Microphone enable / disable
-// - Mute / unmute
-// - Real WebRTC local audio-track synchronization
-// - Speaker / earpiece routing
-// - Bluetooth audio-state coordination
-// - Input / output volume preference state
-// - Noise suppression preference
-// - Echo cancellation preference
-// - Automatic gain-control preference
-// - Microphone permission verification
-// - Serialized audio operations to prevent race conditions
-// - Lifecycle-safe reset / disposal
+// RESPONSIBILITIES:
 //
-// Ownership:
-// - MicrophoneManager owns microphone preference state
-// - SpeakerManager owns output-route preference state
-// - BluetoothManager owns Bluetooth device state
-// - AudioManager coordinates those managers with WebRTC media
+// - Microphone enable / disable.
+// - Mute / unmute.
+// - Real WebRTC local audio-track synchronization.
+// - Speaker / earpiece routing coordination.
+// - Bluetooth audio-state coordination.
+// - Input / output volume preference coordination.
+// - Noise-suppression preference coordination.
+// - Echo-cancellation preference coordination.
+// - Automatic-gain-control preference coordination.
+// - Microphone permission verification.
+// - Serialized audio mutation.
+// - Lifecycle-safe reset / disposal.
 //
-// Important:
-// AudioManager does NOT create a second MediaStream.
-// The active stream must come from WebRTCService / CallService.
-// ===========================================================
+// OWNERSHIP:
+//
+// MicrophoneManager:
+// - Microphone preference state.
+//
+// SpeakerManager:
+// - Speaker / output-route preference state.
+//
+// BluetoothManager:
+// - Bluetooth device state.
+//
+// AudioManager:
+// - Coordinates those managers with the ACTIVE WebRTC MediaStream.
+//
+// WebRTCService / CallService:
+// - Own MediaStream creation and destruction.
+//
+// IMPORTANT:
+//
+// - AudioManager NEVER creates a second MediaStream.
+// - AudioManager NEVER disposes the attached WebRTC MediaStream.
+// - AudioManager NEVER owns PeerConnection.
+// - AudioManager NEVER owns signaling.
+// - AudioManager NEVER owns ICE.
+// - AudioManager NEVER owns call lifecycle.
+// ===============================================================
 
 import 'dart:async';
 
@@ -41,44 +57,76 @@ import 'bluetooth_manager.dart';
 import 'microphone_manager.dart';
 import 'speaker_manager.dart';
 
-enum AudioOutputRoute { earpiece, speaker, bluetooth }
+// ===============================================================
+// AUDIO OUTPUT ROUTE
+// ===============================================================
+
+enum AudioOutputRoute {
+  earpiece,
+  speaker,
+  bluetooth,
+}
+
+// ===============================================================
+// AUDIO MANAGER
+// ===============================================================
 
 class AudioManager extends ChangeNotifier {
   AudioManager._() {
-    microphone.addListener(_handleChildStateChanged);
-    speaker.addListener(_handleChildStateChanged);
-    bluetooth.addListener(_handleChildStateChanged);
+    microphone.addListener(
+      _handleChildStateChanged,
+    );
+
+    speaker.addListener(
+      _handleChildStateChanged,
+    );
+
+    bluetooth.addListener(
+      _handleChildStateChanged,
+    );
   }
 
   static final AudioManager instance = AudioManager._();
 
-  // ===========================================================
-  // Child Managers
-  // ===========================================================
+  // =============================================================
+  // CHILD MANAGERS
+  // =============================================================
 
   final MicrophoneManager microphone = MicrophoneManager();
+
   final SpeakerManager speaker = SpeakerManager();
+
   final BluetoothManager bluetooth = BluetoothManager();
 
-  // ===========================================================
-  // Runtime State
-  // ===========================================================
+  // =============================================================
+  // RUNTIME STATE
+  // =============================================================
 
   MediaStream? _localStream;
 
   bool _isInitialized = false;
+
   bool _isDisposed = false;
+
   bool _suppressChildNotifications = false;
 
   AudioOutputRoute _outputRoute = AudioOutputRoute.earpiece;
 
-  // Serializes every audio mutation so two UI actions cannot
-  // change the same audio state at the same time.
+  // -------------------------------------------------------------
+  // Every mutation is serialized through this queue.
+  //
+  // This prevents rapid UI actions from racing:
+  // - mute/unmute
+  // - speaker toggles
+  // - Bluetooth route changes
+  // - stream attach/detach
+  // -------------------------------------------------------------
+
   Future<void> _operationQueue = Future<void>.value();
 
-  // ===========================================================
-  // Public State
-  // ===========================================================
+  // =============================================================
+  // PUBLIC STATE
+  // =============================================================
 
   bool get isInitialized => _isInitialized;
 
@@ -110,75 +158,124 @@ class AudioManager extends ChangeNotifier {
 
   AudioOutputRoute get outputRoute => _outputRoute;
 
-  bool get isAudioTransmitting => microphone.isEnabled && !microphone.isMuted;
+  bool get isAudioTransmitting {
+    return microphone.isEnabled && !microphone.isMuted;
+  }
 
-  // ===========================================================
-  // Initialization
-  // ===========================================================
+  // =============================================================
+  // INITIALIZATION
+  // =============================================================
 
-  Future<void> initialize({MediaStream? localStream}) async {
+  Future<void> initialize({
+    MediaStream? localStream,
+  }) async {
     if (_isDisposed) {
-      throw StateError('AudioManager has already been disposed.');
+      throw StateError(
+        'AudioManager has already been disposed.',
+      );
     }
 
-    await _runSerialized<void>('initialize', () async {
-      if (localStream != null) {
-        _localStream = localStream;
-      }
+    await _runSerialized<void>(
+      'initialize',
+          () async {
+        if (localStream != null) {
+          _localStream = localStream;
+        }
 
-      if (!_isInitialized) {
+        if (_isInitialized) {
+          await _syncMicrophoneTracks();
+          return;
+        }
+
+        // Start every new AudioManager runtime from the
+        // neutral mobile output route.
+        await _setNativeSpeakerphone(
+          false,
+        );
+
         await microphone.reset();
+
         await speaker.reset();
+
         await bluetooth.reset();
 
         _outputRoute = AudioOutputRoute.earpiece;
-        _isInitialized = true;
-      }
 
-      await _syncMicrophoneTracks();
-    });
-  }
-
-  // ===========================================================
-  // WebRTC Stream Binding
-  // ===========================================================
-
-  /// Attach the active WebRTC local MediaStream.
-  ///
-  /// CallService/WebRTCService should call this after
-  /// local media has been created.
-  Future<void> attachLocalStream(MediaStream? stream) async {
-    await _runSerialized<void>('attachLocalStream', () async {
-      _localStream = stream;
-
-      if (stream != null) {
-        _isInitialized = true;
+        // Apply the resulting microphone state to the real
+        // WebRTC stream before declaring initialization complete.
         await _syncMicrophoneTracks();
-      }
-    });
+
+        _isInitialized = true;
+      },
+    );
   }
 
-  /// Detaches only the reference.
+  // =============================================================
+  // WEBRTC STREAM BINDING
+  // =============================================================
+
+  /// Attaches the ACTIVE local WebRTC MediaStream.
   ///
-  /// AudioManager intentionally does NOT stop or dispose
-  /// WebRTCService's MediaStream because WebRTCService owns it.
-  Future<void> detachLocalStream() async {
-    await _runSerialized<void>('detachLocalStream', () async {
-      _localStream = null;
-    });
+  /// Ownership remains with WebRTCService / CallService.
+  Future<void> attachLocalStream(
+      MediaStream? stream,
+      ) async {
+    await _runSerialized<void>(
+      'attachLocalStream',
+          () async {
+        final MediaStream? previousStream = _localStream;
+
+        final bool previousInitialized = _isInitialized;
+
+        _localStream = stream;
+
+        if (stream == null) {
+          return;
+        }
+
+        try {
+          await _syncMicrophoneTracks();
+
+          _isInitialized = true;
+        } catch (_) {
+          // Keep AudioManager internally coherent if WebRTC track
+          // synchronization rejects the newly supplied stream.
+          _localStream = previousStream;
+
+          _isInitialized = previousInitialized;
+
+          rethrow;
+        }
+      },
+    );
   }
 
-  // ===========================================================
-  // Permission
-  // ===========================================================
+  /// Detaches only AudioManager's reference.
+  ///
+  /// The MediaStream itself is NOT stopped or disposed here.
+  Future<void> detachLocalStream() async {
+    await _runSerialized<void>(
+      'detachLocalStream',
+          () async {
+        _localStream = null;
+      },
+    );
+  }
 
-  Future<bool> ensureMicrophonePermission({bool requestIfNeeded = true}) async {
+  // =============================================================
+  // MICROPHONE PERMISSION
+  // =============================================================
+
+  Future<bool> ensureMicrophonePermission({
+    bool requestIfNeeded = true,
+  }) async {
     if (_isDisposed) {
       return false;
     }
 
     try {
-      final alreadyGranted = await AppPermissions.hasMicrophonePermission();
+      final bool alreadyGranted =
+      await AppPermissions.hasMicrophonePermission();
 
       if (alreadyGranted) {
         return true;
@@ -188,33 +285,47 @@ class AudioManager extends ChangeNotifier {
         return false;
       }
 
-      return await AppPermissions.requestMicrophone();
+      return AppPermissions.requestMicrophone();
     } catch (error, stackTrace) {
-      _reportError('Microphone permission', error, stackTrace);
+      _reportError(
+        'Microphone permission',
+        error,
+        stackTrace,
+      );
 
       return false;
     }
   }
 
-  // ===========================================================
-  // Microphone
-  // ===========================================================
+  // =============================================================
+  // MICROPHONE
+  // =============================================================
 
   Future<void> enableMicrophone() async {
-    await _runSerialized<void>('enableMicrophone', () async {
-      await microphone.enable();
-      await _syncMicrophoneTracks();
-    });
+    await _runSerialized<void>(
+      'enableMicrophone',
+          () async {
+        await microphone.enable();
+
+        await _syncMicrophoneTracks();
+      },
+    );
   }
 
   Future<void> disableMicrophone() async {
-    await _runSerialized<void>('disableMicrophone', () async {
-      await microphone.disable();
-      await _syncMicrophoneTracks();
-    });
+    await _runSerialized<void>(
+      'disableMicrophone',
+          () async {
+        await microphone.disable();
+
+        await _syncMicrophoneTracks();
+      },
+    );
   }
 
-  Future<void> setMicrophoneEnabled(bool enabled) async {
+  Future<void> setMicrophoneEnabled(
+      bool enabled,
+      ) async {
     if (enabled) {
       await enableMicrophone();
     } else {
@@ -222,224 +333,396 @@ class AudioManager extends ChangeNotifier {
     }
   }
 
-  // ===========================================================
-  // Mute
-  // ===========================================================
+  // =============================================================
+  // MUTE
+  // =============================================================
 
   Future<void> mute() async {
-    await setMute(true);
+    await setMute(
+      true,
+    );
   }
 
+  /// Existing compatibility API.
   Future<void> unMute() async {
-    await setMute(false);
+    await setMute(
+      false,
+    );
   }
 
   Future<void> unmute() async {
     await unMute();
   }
 
-  Future<void> setMute(bool muted) async {
-    await _runSerialized<void>('setMute', () async {
-      await microphone.setMute(muted);
-      await _syncMicrophoneTracks();
-    });
+  Future<void> setMute(
+      bool muted,
+      ) async {
+    await _runSerialized<void>(
+      'setMute',
+          () async {
+        await microphone.setMute(
+          muted,
+        );
+
+        await _syncMicrophoneTracks();
+      },
+    );
   }
 
   Future<void> toggleMute() async {
-    await _runSerialized<void>('toggleMute', () async {
-      await microphone.toggleMute();
-      await _syncMicrophoneTracks();
-    });
+    await _runSerialized<void>(
+      'toggleMute',
+          () async {
+        // The state is read INSIDE the serialized operation.
+        // Therefore rapid double taps cannot calculate from stale state.
+        await microphone.toggleMute();
+
+        await _syncMicrophoneTracks();
+      },
+    );
   }
 
-  /// Applies AudioManager microphone state to the real
-  /// WebRTC audio track.
+  // =============================================================
+  // WEBRTC MICROPHONE TRACK SYNCHRONIZATION
+  // =============================================================
+
   Future<void> _syncMicrophoneTracks() async {
-    final stream = _localStream;
+    final MediaStream? stream = _localStream;
 
     if (stream == null) {
       return;
     }
 
-    final shouldTransmit = microphone.isEnabled && !microphone.isMuted;
+    final bool shouldTransmit =
+        microphone.isEnabled && !microphone.isMuted;
 
     try {
-      final tracks = stream.getAudioTracks();
+      final List<MediaStreamTrack> tracks = stream.getAudioTracks();
 
-      for (final track in tracks) {
-        if (track.enabled != shouldTransmit) {
-          track.enabled = shouldTransmit;
+      for (final MediaStreamTrack track in tracks) {
+        if (track.enabled == shouldTransmit) {
+          continue;
         }
+
+        track.enabled = shouldTransmit;
       }
     } catch (error, stackTrace) {
-      _reportError('Microphone track synchronization', error, stackTrace);
+      _reportError(
+        'Microphone track synchronization',
+        error,
+        stackTrace,
+      );
 
       rethrow;
     }
   }
 
-  // ===========================================================
-  // Speaker / Earpiece
-  // ===========================================================
+  // =============================================================
+  // SPEAKER / EARPIECE
+  // =============================================================
 
   Future<void> enableSpeaker() async {
-    await setSpeakerEnabled(true);
+    await setSpeakerEnabled(
+      true,
+    );
   }
 
   Future<void> disableSpeaker() async {
-    await setSpeakerEnabled(false);
+    await setSpeakerEnabled(
+      false,
+    );
   }
 
-  Future<void> setSpeakerEnabled(bool enabled) async {
-    await _runSerialized<void>('setSpeakerEnabled', () async {
-      await _setNativeSpeakerphone(enabled);
-
-      if (enabled) {
-        if (speaker.bluetoothEnabled) {
-          await speaker.disconnectBluetooth();
-        }
-
-        await speaker.enableSpeaker();
-
-        _outputRoute = AudioOutputRoute.speaker;
-      } else {
-        await speaker.disableSpeaker();
-
-        _outputRoute = AudioOutputRoute.earpiece;
-      }
-    });
+  Future<void> setSpeakerEnabled(
+      bool enabled,
+      ) async {
+    await _runSerialized<void>(
+      'setSpeakerEnabled',
+          () async {
+        await _applySpeakerEnabled(
+          enabled,
+        );
+      },
+    );
   }
 
   Future<void> toggleSpeaker() async {
-    await setSpeakerEnabled(!speaker.speakerEnabled);
+    await _runSerialized<void>(
+      'toggleSpeaker',
+          () async {
+        // CRITICAL:
+        // Resolve the next value INSIDE the operation queue.
+        //
+        // Reading speakerEnabled before entering the queue would allow
+        // two rapid taps to calculate the same stale target state.
+        final bool nextEnabled = !speaker.speakerEnabled;
+
+        await _applySpeakerEnabled(
+          nextEnabled,
+        );
+      },
+    );
   }
 
   Future<void> useEarpiece() async {
-    await setSpeakerEnabled(false);
+    await setSpeakerEnabled(
+      false,
+    );
   }
 
-  Future<void> _setNativeSpeakerphone(bool enabled) async {
+  Future<void> _applySpeakerEnabled(
+      bool enabled,
+      ) async {
+    if (enabled) {
+      // Bluetooth output preference must no longer be active
+      // when explicit loudspeaker output is selected.
+      if (speaker.bluetoothEnabled) {
+        await speaker.disconnectBluetooth();
+      }
+
+      await _setNativeSpeakerphone(
+        true,
+      );
+
+      await speaker.enableSpeaker();
+
+      _outputRoute = AudioOutputRoute.speaker;
+
+      return;
+    }
+
+    await _setNativeSpeakerphone(
+      false,
+    );
+
+    await speaker.disableSpeaker();
+
+    _outputRoute = AudioOutputRoute.earpiece;
+  }
+
+  Future<void> _setNativeSpeakerphone(
+      bool enabled,
+      ) async {
     try {
-      await Helper.setSpeakerphoneOn(enabled);
+      await Helper.setSpeakerphoneOn(
+        enabled,
+      );
     } catch (error, stackTrace) {
-      // Some platforms do not expose mobile-style
-      // speaker/earpiece switching.
+      // Desktop/web or unsupported platforms may not expose
+      // mobile-style speaker/earpiece switching.
       //
-      // Do not crash a call because routing is unsupported.
-      _reportError('Native speaker routing', error, stackTrace);
+      // Unsupported routing must not terminate an active call.
+      _reportError(
+        'Native speaker routing',
+        error,
+        stackTrace,
+      );
     }
   }
 
-  // ===========================================================
-  // Bluetooth
-  // ===========================================================
+  // =============================================================
+  // BLUETOOTH
+  // =============================================================
 
   Future<void> connectBluetooth({
     required String name,
     required String address,
   }) async {
-    final normalizedName = name.trim();
-    final normalizedAddress = address.trim();
+    final String normalizedName = name.trim();
+
+    final String normalizedAddress = address.trim();
 
     if (normalizedName.isEmpty || normalizedAddress.isEmpty) {
-      throw ArgumentError('Bluetooth device name and address cannot be empty.');
+      throw ArgumentError(
+        'Bluetooth device name and address cannot be empty.',
+      );
     }
 
-    await _runSerialized<void>('connectBluetooth', () async {
-      // Speakerphone should not remain forced ON
-      // while Bluetooth is selected.
-      await _setNativeSpeakerphone(false);
+    await _runSerialized<void>(
+      'connectBluetooth',
+          () async {
+        // Never leave loudspeaker force-enabled while Bluetooth
+        // is being selected as the preferred route.
+        await _setNativeSpeakerphone(
+          false,
+        );
 
-      await bluetooth.connect(name: normalizedName, address: normalizedAddress);
+        await bluetooth.connect(
+          name: normalizedName,
+          address: normalizedAddress,
+        );
 
-      await speaker.connectBluetooth();
+        try {
+          await speaker.connectBluetooth();
+        } catch (_) {
+          // Roll back the child Bluetooth selection if SpeakerManager
+          // cannot complete the route preference transition.
+          try {
+            await bluetooth.disconnect();
+          } catch (rollbackError, rollbackStackTrace) {
+            _reportError(
+              'Bluetooth connection rollback',
+              rollbackError,
+              rollbackStackTrace,
+            );
+          }
 
-      _outputRoute = AudioOutputRoute.bluetooth;
-    });
+          rethrow;
+        }
+
+        _outputRoute = AudioOutputRoute.bluetooth;
+      },
+    );
   }
 
   Future<void> disconnectBluetooth() async {
-    await _runSerialized<void>('disconnectBluetooth', () async {
-      await bluetooth.disconnect();
-      await speaker.disconnectBluetooth();
+    await _runSerialized<void>(
+      'disconnectBluetooth',
+          () async {
+        await bluetooth.disconnect();
 
-      await _setNativeSpeakerphone(false);
+        await speaker.disconnectBluetooth();
 
-      _outputRoute = AudioOutputRoute.earpiece;
-    });
+        await _setNativeSpeakerphone(
+          false,
+        );
+
+        _outputRoute = AudioOutputRoute.earpiece;
+      },
+    );
   }
 
   Future<void> startBluetoothScan() async {
-    await _runSerialized<void>('startBluetoothScan', () async {
-      await bluetooth.startScan();
-    });
+    await _runSerialized<void>(
+      'startBluetoothScan',
+          () async {
+        await bluetooth.startScan();
+      },
+    );
   }
 
   Future<void> stopBluetoothScan() async {
-    await _runSerialized<void>('stopBluetoothScan', () async {
-      await bluetooth.stopScan();
-    });
+    await _runSerialized<void>(
+      'stopBluetoothScan',
+          () async {
+        await bluetooth.stopScan();
+      },
+    );
   }
 
   Future<void> refreshBluetooth() async {
-    await _runSerialized<void>('refreshBluetooth', () async {
-      await bluetooth.refresh();
-    });
+    await _runSerialized<void>(
+      'refreshBluetooth',
+          () async {
+        await bluetooth.refresh();
+      },
+    );
   }
 
-  // ===========================================================
-  // Volume Preferences
-  // ===========================================================
+  // =============================================================
+  // VOLUME PREFERENCES
+  // =============================================================
 
-  Future<void> setInputVolume(double value) async {
-    await _runSerialized<void>('setInputVolume', () async {
-      await microphone.setInputVolume(value.clamp(0.0, 1.0).toDouble());
-    });
+  Future<void> setInputVolume(
+      double value,
+      ) async {
+    final double normalizedValue = value.clamp(
+      0.0,
+      1.0,
+    ).toDouble();
+
+    await _runSerialized<void>(
+      'setInputVolume',
+          () async {
+        await microphone.setInputVolume(
+          normalizedValue,
+        );
+      },
+    );
   }
 
-  Future<void> setOutputVolume(double value) async {
-    await _runSerialized<void>('setOutputVolume', () async {
-      await speaker.setVolume(value.clamp(0.0, 1.0).toDouble());
-    });
+  Future<void> setOutputVolume(
+      double value,
+      ) async {
+    final double normalizedValue = value.clamp(
+      0.0,
+      1.0,
+    ).toDouble();
+
+    await _runSerialized<void>(
+      'setOutputVolume',
+          () async {
+        await speaker.setVolume(
+          normalizedValue,
+        );
+      },
+    );
   }
 
   Future<void> volumeUp() async {
-    await _runSerialized<void>('volumeUp', () async {
-      await speaker.volumeUp();
-    });
+    await _runSerialized<void>(
+      'volumeUp',
+          () async {
+        await speaker.volumeUp();
+      },
+    );
   }
 
   Future<void> volumeDown() async {
-    await _runSerialized<void>('volumeDown', () async {
-      await speaker.volumeDown();
-    });
+    await _runSerialized<void>(
+      'volumeDown',
+          () async {
+        await speaker.volumeDown();
+      },
+    );
   }
 
-  // ===========================================================
-  // Audio Processing Preferences
-  // ===========================================================
+  // =============================================================
+  // AUDIO PROCESSING PREFERENCES
+  // =============================================================
 
-  Future<void> enableNoiseSuppression(bool enabled) async {
-    await _runSerialized<void>('enableNoiseSuppression', () async {
-      await microphone.setNoiseSuppression(enabled);
-    });
+  Future<void> enableNoiseSuppression(
+      bool enabled,
+      ) async {
+    await _runSerialized<void>(
+      'enableNoiseSuppression',
+          () async {
+        await microphone.setNoiseSuppression(
+          enabled,
+        );
+      },
+    );
   }
 
-  Future<void> enableEchoCancellation(bool enabled) async {
-    await _runSerialized<void>('enableEchoCancellation', () async {
-      await microphone.setEchoCancellation(enabled);
-    });
+  Future<void> enableEchoCancellation(
+      bool enabled,
+      ) async {
+    await _runSerialized<void>(
+      'enableEchoCancellation',
+          () async {
+        await microphone.setEchoCancellation(
+          enabled,
+        );
+      },
+    );
   }
 
-  Future<void> enableAutoGainControl(bool enabled) async {
-    await _runSerialized<void>('enableAutoGainControl', () async {
-      await microphone.setAutoGainControl(enabled);
-    });
+  Future<void> enableAutoGainControl(
+      bool enabled,
+      ) async {
+    await _runSerialized<void>(
+      'enableAutoGainControl',
+          () async {
+        await microphone.setAutoGainControl(
+          enabled,
+        );
+      },
+    );
   }
 
-  // ===========================================================
-  // State Snapshot
-  // ===========================================================
+  // =============================================================
+  // STATE SNAPSHOT
+  // =============================================================
 
   Map<String, dynamic> get stateSnapshot {
     return <String, dynamic>{
@@ -462,89 +745,128 @@ class AudioManager extends ChangeNotifier {
     };
   }
 
-  // ===========================================================
-  // Reset
-  // ===========================================================
+  // =============================================================
+  // RESET
+  // =============================================================
 
-  Future<void> reset({bool detachStream = false}) async {
+  Future<void> reset({
+    bool detachStream = false,
+  }) async {
     if (_isDisposed) {
       return;
     }
 
-    await _runSerialized<void>('reset', () async {
-      try {
-        await _setNativeSpeakerphone(false);
-      } catch (_) {
-        // Best-effort routing cleanup.
-      }
+    await _runSerialized<void>(
+      'reset',
+          () async {
+        await _setNativeSpeakerphone(
+          false,
+        );
 
-      await microphone.reset();
-      await speaker.reset();
-      await bluetooth.reset();
+        await microphone.reset();
 
-      _outputRoute = AudioOutputRoute.earpiece;
+        await speaker.reset();
 
-      if (detachStream) {
-        _localStream = null;
-      } else {
-        await _syncMicrophoneTracks();
-      }
+        await bluetooth.reset();
 
-      _isInitialized = false;
-    });
+        _outputRoute = AudioOutputRoute.earpiece;
+
+        if (detachStream) {
+          // Only remove AudioManager's reference.
+          //
+          // WebRTCService still owns disposal of the MediaStream.
+          _localStream = null;
+        } else {
+          // Preserve existing compatibility:
+          // if the stream remains attached, synchronize it with
+          // the newly reset microphone preference state.
+          await _syncMicrophoneTracks();
+        }
+
+        _isInitialized = false;
+      },
+    );
   }
 
-  // ===========================================================
-  // Serialized Operation Engine
-  // ===========================================================
+  // =============================================================
+  // SERIALIZED OPERATION ENGINE
+  // =============================================================
 
-  Future<T> _runSerialized<T>(String operation, Future<T> Function() action) {
-    final completer = Completer<T>();
+  Future<T> _runSerialized<T>(
+      String operation,
+      Future<T> Function() action,
+      ) {
+    final Completer<T> completer = Completer<T>();
 
-    _operationQueue = _operationQueue.then((_) async {
-      if (_isDisposed) {
-        if (!completer.isCompleted) {
-          completer.completeError(
-            StateError(
-              'AudioManager is disposed. '
-              'Operation "$operation" cannot run.',
-            ),
+    _operationQueue = _operationQueue.then(
+          (_) async {
+        if (_isDisposed) {
+          if (!completer.isCompleted) {
+            completer.completeError(
+              StateError(
+                'AudioManager is disposed. '
+                    'Operation "$operation" cannot run.',
+              ),
+            );
+          }
+
+          return;
+        }
+
+        _suppressChildNotifications = true;
+
+        try {
+          final T result = await action();
+
+          if (!completer.isCompleted) {
+            completer.complete(
+              result,
+            );
+          }
+        } catch (error, stackTrace) {
+          _reportError(
+            operation,
+            error,
+            stackTrace,
           );
+
+          if (!completer.isCompleted) {
+            completer.completeError(
+              error,
+              stackTrace,
+            );
+          }
+        } finally {
+          _suppressChildNotifications = false;
+
+          _notifySafely();
         }
-
-        return;
-      }
-
-      _suppressChildNotifications = true;
-
-      try {
-        final result = await action();
-
-        if (!completer.isCompleted) {
-          completer.complete(result);
-        }
-      } catch (error, stackTrace) {
-        _reportError(operation, error, stackTrace);
-
-        if (!completer.isCompleted) {
-          completer.completeError(error, stackTrace);
-        }
-      } finally {
-        _suppressChildNotifications = false;
-        _notifySafely();
-      }
-    });
+      },
+    );
 
     return completer.future;
   }
 
-  // ===========================================================
-  // Child Manager Synchronization
-  // ===========================================================
+  // =============================================================
+  // CHILD MANAGER SYNCHRONIZATION
+  // =============================================================
 
   void _handleChildStateChanged() {
     if (_suppressChildNotifications || _isDisposed) {
       return;
+    }
+
+    // Keep AudioManager route metadata coherent if a child
+    // manager changes state independently.
+    if (_outputRoute == AudioOutputRoute.bluetooth &&
+        !bluetooth.isConnected &&
+        !speaker.bluetoothEnabled) {
+      _outputRoute = speaker.speakerEnabled
+          ? AudioOutputRoute.speaker
+          : AudioOutputRoute.earpiece;
+    } else if (_outputRoute == AudioOutputRoute.speaker &&
+        !speaker.speakerEnabled) {
+      _outputRoute = AudioOutputRoute.earpiece;
     }
 
     _notifySafely();
@@ -558,12 +880,18 @@ class AudioManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ===========================================================
-  // Error Logging
-  // ===========================================================
+  // =============================================================
+  // ERROR LOGGING
+  // =============================================================
 
-  void _reportError(String source, Object error, [StackTrace? stackTrace]) {
-    debugPrint('JR CALL [AudioManager/$source] error: $error');
+  void _reportError(
+      String source,
+      Object error, [
+        StackTrace? stackTrace,
+      ]) {
+    debugPrint(
+      'JR CALL [AudioManager/$source] error: $error',
+    );
 
     if (stackTrace != null) {
       debugPrintStack(
@@ -573,9 +901,9 @@ class AudioManager extends ChangeNotifier {
     }
   }
 
-  // ===========================================================
-  // Disposal
-  // ===========================================================
+  // =============================================================
+  // DISPOSAL
+  // =============================================================
 
   @override
   void dispose() {
@@ -585,16 +913,61 @@ class AudioManager extends ChangeNotifier {
 
     _isDisposed = true;
 
-    microphone.removeListener(_handleChildStateChanged);
-    speaker.removeListener(_handleChildStateChanged);
-    bluetooth.removeListener(_handleChildStateChanged);
+    microphone.removeListener(
+      _handleChildStateChanged,
+    );
 
+    speaker.removeListener(
+      _handleChildStateChanged,
+    );
+
+    bluetooth.removeListener(
+      _handleChildStateChanged,
+    );
+
+    // MediaStream ownership remains outside AudioManager.
     _localStream = null;
 
     microphone.dispose();
+
     speaker.dispose();
+
     bluetooth.dispose();
 
     super.dispose();
   }
 }
+
+// ===============================================================
+// END OF FILE
+//
+// FILE 23 PRODUCTION CONTRACT:
+//
+// ✓ No second MediaStream created.
+// ✓ Attached MediaStream never disposed here.
+// ✓ Real audio-track mute synchronization preserved.
+// ✓ Microphone state remains MicrophoneManager-owned.
+// ✓ Speaker preference remains SpeakerManager-owned.
+// ✓ Bluetooth device state remains BluetoothManager-owned.
+// ✓ Microphone permission API preserved.
+// ✓ Existing public AudioManager APIs preserved.
+// ✓ unMute() compatibility preserved.
+// ✓ unmute() compatibility preserved.
+//
+// ✓ All audio mutations serialized.
+// ✓ Speaker double-tap stale-state race removed.
+// ✓ Mute serialization preserved.
+// ✓ Stream attach synchronization made transactional.
+// ✓ Initialization completion occurs after track synchronization.
+// ✓ Bluetooth route partial-failure rollback added.
+// ✓ Child-route metadata reconciliation added.
+// ✓ Native speaker routing remains best effort.
+// ✓ No unsupported platform routing failure terminates a call.
+//
+// ✓ No CallService ownership duplicated.
+// ✓ No WebRTCService ownership duplicated.
+// ✓ No PeerConnection ownership added.
+// ✓ No signaling ownership added.
+// ✓ No ICE ownership added.
+// ✓ No RecoveryManager ownership added.
+// ===============================================================

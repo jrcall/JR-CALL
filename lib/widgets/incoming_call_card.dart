@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'caller_avatar.dart';
@@ -11,25 +13,32 @@ import 'caller_avatar.dart';
 /// Production-ready reusable premium incoming-call card.
 ///
 /// Responsibilities:
-/// - Display incoming caller identity
-/// - Display voice/video call type
-/// - Display caller avatar
-/// - Accept incoming call
-/// - Decline incoming call
+/// - Display incoming caller identity.
+/// - Display voice/video call type.
+/// - Display caller avatar.
+/// - Forward accept action to the parent.
+/// - Forward decline action to the parent.
+/// - Prevent rapid duplicate or contradictory UI actions.
 ///
 /// Architecture:
-/// - Presentation only
-/// - No CallService logic
-/// - No signaling logic
-/// - No WebRTC logic
-/// - No ICE logic
-/// - No Firebase logic
+/// - Presentation only.
+/// - No CallService ownership.
+/// - No signaling ownership.
+/// - No WebRTC ownership.
+/// - No ICE ownership.
+/// - No Firebase ownership.
+/// - No recovery ownership.
+/// - No history ownership.
+/// - No media ownership.
+/// - No navigation ownership.
 ///
-/// Backward Compatibility:
-/// Existing public constructor and parameters are preserved.
+/// Important:
+/// - Parent/provider/CallService owns the real call lifecycle.
+/// - The local action lock is presentation debounce only.
+/// - Existing public constructor/API and visual design are preserved.
 /// ===========================================================
 
-class IncomingCallCard extends StatelessWidget {
+class IncomingCallCard extends StatefulWidget {
   const IncomingCallCard({
     super.key,
     required this.callerName,
@@ -75,12 +84,25 @@ class IncomingCallCard extends StatelessWidget {
 
   static const Color _border = Color(0xFFDCE7F5);
 
+  @override
+  State<IncomingCallCard> createState() => _IncomingCallCardState();
+}
+
+class _IncomingCallCardState extends State<IncomingCallCard> {
+  static const Duration _actionLockDuration = Duration(
+    milliseconds: 650,
+  );
+
+  bool _actionLocked = false;
+
+  Timer? _actionUnlockTimer;
+
   // ===========================================================
-  // Safe Data
+  // Safe Presentation Data
   // ===========================================================
 
   String get _safeCallerName {
-    final String value = callerName.trim();
+    final String value = widget.callerName.trim();
 
     if (value.isEmpty) {
       return 'JR CALL User';
@@ -90,7 +112,7 @@ class IncomingCallCard extends StatelessWidget {
   }
 
   String? get _safeCallerImage {
-    final String? value = callerImage?.trim();
+    final String? value = widget.callerImage?.trim();
 
     if (value == null || value.isEmpty) {
       return null;
@@ -100,11 +122,83 @@ class IncomingCallCard extends StatelessWidget {
   }
 
   String get _callTypeText {
-    return isVideoCall ? 'Incoming Video Call' : 'Incoming Voice Call';
+    return widget.isVideoCall
+        ? 'Incoming Video Call'
+        : 'Incoming Voice Call';
   }
 
   IconData get _callTypeIcon {
-    return isVideoCall ? Icons.videocam_rounded : Icons.call_rounded;
+    return widget.isVideoCall
+        ? Icons.videocam_rounded
+        : Icons.call_rounded;
+  }
+
+  // ===========================================================
+  // Action Protection
+  // ===========================================================
+
+  void _accept() {
+    _runAction(
+      widget.onAccept,
+    );
+  }
+
+  void _decline() {
+    _runAction(
+      widget.onDecline,
+    );
+  }
+
+  void _runAction(
+      VoidCallback callback,
+      ) {
+    if (_actionLocked || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _actionLocked = true;
+    });
+
+    try {
+      callback();
+    } catch (error, stackTrace) {
+      _releaseActionLock();
+
+      Error.throwWithStackTrace(
+        error,
+        stackTrace,
+      );
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    _actionUnlockTimer?.cancel();
+
+    _actionUnlockTimer = Timer(
+      _actionLockDuration,
+      _releaseActionLock,
+    );
+  }
+
+  void _releaseActionLock() {
+    _actionUnlockTimer?.cancel();
+    _actionUnlockTimer = null;
+
+    if (!_actionLocked) {
+      return;
+    }
+
+    if (!mounted) {
+      _actionLocked = false;
+      return;
+    }
+
+    setState(() {
+      _actionLocked = false;
+    });
   }
 
   // ===========================================================
@@ -117,7 +211,10 @@ class IncomingCallCard extends StatelessWidget {
       container: true,
       label: '$_callTypeText from $_safeCallerName',
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        margin: const EdgeInsets.symmetric(
+          horizontal: 20,
+          vertical: 16,
+        ),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(28),
           gradient: const LinearGradient(
@@ -129,7 +226,10 @@ class IncomingCallCard extends StatelessWidget {
               Color(0xFFF4FCFF),
             ],
           ),
-          border: Border.all(color: _border, width: 1),
+          border: Border.all(
+            color: IncomingCallCard._border,
+            width: 1,
+          ),
           boxShadow: const <BoxShadow>[
             BoxShadow(
               color: Color(0x16087AF5),
@@ -152,15 +252,26 @@ class IncomingCallCard extends StatelessWidget {
               const Positioned(
                 top: -70,
                 right: -55,
-                child: _SoftGlow(size: 170, color: Color(0x18087AF5)),
+                child: _SoftGlow(
+                  size: 170,
+                  color: Color(0x18087AF5),
+                ),
               ),
               const Positioned(
                 bottom: -70,
                 left: -65,
-                child: _SoftGlow(size: 160, color: Color(0x1400D99B)),
+                child: _SoftGlow(
+                  size: 160,
+                  color: Color(0x1400D99B),
+                ),
               ),
               Padding(
-                padding: const EdgeInsets.fromLTRB(22, 22, 22, 24),
+                padding: const EdgeInsets.fromLTRB(
+                  22,
+                  22,
+                  22,
+                  24,
+                ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
@@ -173,8 +284,8 @@ class IncomingCallCard extends StatelessWidget {
                       imageUrl: _safeCallerImage,
                       radius: 50,
                       isOnline: true,
-                      borderColor: _primaryBlue,
-                      onlineColor: _callGreen,
+                      borderColor: IncomingCallCard._primaryBlue,
+                      onlineColor: IncomingCallCard._callGreen,
                     ),
 
                     const SizedBox(height: 18),
@@ -185,7 +296,7 @@ class IncomingCallCard extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       textAlign: TextAlign.center,
                       style: const TextStyle(
-                        color: _textPrimary,
+                        color: IncomingCallCard._textPrimary,
                         fontSize: 23,
                         height: 1.15,
                         fontWeight: FontWeight.w800,
@@ -199,7 +310,11 @@ class IncomingCallCard extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.center,
                       mainAxisSize: MainAxisSize.min,
                       children: <Widget>[
-                        Icon(_callTypeIcon, size: 17, color: _primaryBlue),
+                        Icon(
+                          _callTypeIcon,
+                          size: 17,
+                          color: IncomingCallCard._primaryBlue,
+                        ),
                         const SizedBox(width: 7),
                         Flexible(
                           child: Text(
@@ -207,7 +322,7 @@ class IncomingCallCard extends StatelessWidget {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                              color: _textSecondary,
+                              color: IncomingCallCard._textSecondary,
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
                             ),
@@ -235,11 +350,18 @@ class IncomingCallCard extends StatelessWidget {
 
   Widget _buildTopStatus() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: 7,
+      ),
       decoration: BoxDecoration(
-        color: _surfaceSoft,
+        color: IncomingCallCard._surfaceSoft,
         borderRadius: BorderRadius.circular(30),
-        border: Border.all(color: _primaryBlue.withValues(alpha: 0.12)),
+        border: Border.all(
+          color: IncomingCallCard._primaryBlue.withValues(
+            alpha: 0.12,
+          ),
+        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -249,7 +371,7 @@ class IncomingCallCard extends StatelessWidget {
             height: 8,
             decoration: const BoxDecoration(
               shape: BoxShape.circle,
-              color: _callGreen,
+              color: IncomingCallCard._callGreen,
               boxShadow: <BoxShadow>[
                 BoxShadow(
                   color: Color(0x5500D99B),
@@ -263,7 +385,7 @@ class IncomingCallCard extends StatelessWidget {
           const Text(
             'JR CALL',
             style: TextStyle(
-              color: _secondaryBlue,
+              color: IncomingCallCard._secondaryBlue,
               fontSize: 12,
               fontWeight: FontWeight.w800,
               letterSpacing: 0.7,
@@ -287,11 +409,12 @@ class IncomingCallCard extends StatelessWidget {
             semanticsLabel: 'Decline incoming call',
             label: 'Decline',
             icon: Icons.call_end_rounded,
-            foregroundColor: _danger,
+            foregroundColor: IncomingCallCard._danger,
             backgroundColor: const Color(0xFFFFF2F3),
             borderColor: const Color(0xFFFFD4D8),
-            glowColor: _danger,
-            onTap: onDecline,
+            glowColor: IncomingCallCard._danger,
+            enabled: !_actionLocked,
+            onTap: _decline,
           ),
         ),
 
@@ -299,20 +422,35 @@ class IncomingCallCard extends StatelessWidget {
 
         Expanded(
           child: _IncomingCallAction(
-            semanticsLabel: isVideoCall
+            semanticsLabel: widget.isVideoCall
                 ? 'Accept incoming video call'
                 : 'Accept incoming voice call',
             label: 'Accept',
-            icon: isVideoCall ? Icons.videocam_rounded : Icons.call_rounded,
-            foregroundColor: _surface,
-            backgroundColor: _callGreenDark,
-            borderColor: _callGreen,
-            glowColor: _callGreen,
-            onTap: onAccept,
+            icon: widget.isVideoCall
+                ? Icons.videocam_rounded
+                : Icons.call_rounded,
+            foregroundColor: IncomingCallCard._surface,
+            backgroundColor: IncomingCallCard._callGreenDark,
+            borderColor: IncomingCallCard._callGreen,
+            glowColor: IncomingCallCard._callGreen,
+            enabled: !_actionLocked,
+            onTap: _accept,
           ),
         ),
       ],
     );
+  }
+
+  // ===========================================================
+  // Dispose
+  // ===========================================================
+
+  @override
+  void dispose() {
+    _actionUnlockTimer?.cancel();
+    _actionUnlockTimer = null;
+
+    super.dispose();
   }
 }
 
@@ -329,6 +467,7 @@ class _IncomingCallAction extends StatelessWidget {
     required this.backgroundColor,
     required this.borderColor,
     required this.glowColor,
+    required this.enabled,
     required this.onTap,
   });
 
@@ -342,12 +481,15 @@ class _IncomingCallAction extends StatelessWidget {
   final Color borderColor;
   final Color glowColor;
 
+  final bool enabled;
+
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return Semantics(
       button: true,
+      enabled: enabled,
       label: semanticsLabel,
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -357,7 +499,7 @@ class _IncomingCallAction extends StatelessWidget {
             shape: const CircleBorder(),
             child: InkWell(
               customBorder: const CircleBorder(),
-              onTap: onTap,
+              onTap: enabled ? onTap : null,
               child: Container(
                 width: 68,
                 height: 68,
@@ -365,17 +507,26 @@ class _IncomingCallAction extends StatelessWidget {
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: backgroundColor,
-                  border: Border.all(color: borderColor, width: 1.4),
+                  border: Border.all(
+                    color: borderColor,
+                    width: 1.4,
+                  ),
                   boxShadow: <BoxShadow>[
                     BoxShadow(
-                      color: glowColor.withValues(alpha: 0.20),
+                      color: glowColor.withValues(
+                        alpha: 0.20,
+                      ),
                       blurRadius: 18,
                       spreadRadius: 1,
                       offset: const Offset(0, 7),
                     ),
                   ],
                 ),
-                child: Icon(icon, color: foregroundColor, size: 30),
+                child: Icon(
+                  icon,
+                  color: foregroundColor,
+                  size: 30,
+                ),
               ),
             ),
           ),
@@ -402,7 +553,10 @@ class _IncomingCallAction extends StatelessWidget {
 /// ===========================================================
 
 class _SoftGlow extends StatelessWidget {
-  const _SoftGlow({required this.size, required this.color});
+  const _SoftGlow({
+    required this.size,
+    required this.color,
+  });
 
   final double size;
   final Color color;
@@ -413,7 +567,10 @@ class _SoftGlow extends StatelessWidget {
       child: Container(
         width: size,
         height: size,
-        decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: color,
+        ),
       ),
     );
   }

@@ -2,28 +2,40 @@
 // JR CALL
 // File: profile_service.dart
 // Location: lib/services/profile_service.dart
-// Master Repair: FILE 03/05
 //
-// PRODUCTION PROFILE COORDINATOR
-// - Preserves existing Auth / Firestore / Storage ownership.
+// OTP / AUTH MASTER PROFILE COORDINATOR
+//
+// MASTER CONTRACT:
+//
+// Firebase Authentication
+//      ↓
+// verified Firebase UID
+//      ↓
+// ProfileService
+//      ↓
+// FirestoreService
+//      ↓
+// EXISTING users/{uid}
+//
+// IMPORTANT:
+//
+// - Authentication metadata NEVER creates a missing profile.
+// - Explicit profile creation belongs to createDefaultProfile().
+// - Missing Login profile remains Profile Setup state.
 // - Firebase UID remains canonical private identity.
-// - JR CALL ID remains separate public identity.
-// - Profile + cover persistence supported.
-// - Username / JR CALL ID uniqueness preserved.
-// - Auth metadata sync preserved.
-// - Existing valid phone/email are never erased merely because
-//   Firebase Auth has no corresponding value.
-// - New profiles remain discoverable by configured public
-//   Name / Username / JR CALL ID / Email / Phone search.
-// - Existing privacy choices are never overwritten during sync.
-// - No Call Engine / WebRTC logic touched.
-// - No password / OTP storage.
+// - JR CALL ID remains separate public/search identity.
+// - Existing profile phone/email are never erased merely because
+//   Firebase Authentication currently has no corresponding value.
+// - No password / OTP persistence.
+// - Call Engine / Message Engine / WebRTC untouched.
 // ===============================================================
 
+import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 
 import '../models/user_model.dart';
 import 'auth_service.dart';
@@ -35,16 +47,39 @@ class ProfileService {
 
   static final ProfileService instance = ProfileService._();
 
+  // =============================================================
+  // SERVICES
+  // =============================================================
+
   final AuthService _authService = AuthService.instance;
   final FirestoreService _firestoreService = FirestoreService.instance;
   final StorageService _storageService = StorageService.instance;
+  final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance;
+
+  // =============================================================
+  // JR CALL ID CONFIGURATION
+  // =============================================================
 
   static const String _jrCallIdPrefix = 'jrcall_';
-  static const String _jrCallIdAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+  static const String _jrCallIdAlphabet =
+      'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
   static const int _jrCallIdRandomLength = 8;
   static const int _maximumJrCallIdGenerationAttempts = 12;
 
   final Random _secureRandom = Random.secure();
+
+  // =============================================================
+  // FCM TOKEN STATE
+  // =============================================================
+
+  StreamSubscription<String>? _fcmTokenSubscription;
+
+  String? _lastSavedFcmToken;
+  String? _tokenSyncUid;
+
+  bool _startingTokenSync = false;
 
   // =============================================================
   // COMPATIBILITY ACCESS
@@ -60,45 +95,144 @@ class ProfileService {
 
   String? get currentUserId {
     final String value = _authService.currentUserId?.trim() ?? '';
+
     return value.isEmpty ? null : value;
   }
 
   bool get hasAuthenticatedUser => currentUserId != null;
+
+  bool get isDeviceTokenSyncActive => _fcmTokenSubscription != null;
 
   // =============================================================
   // READ / STREAM
   // =============================================================
 
   Future<UserModel?> getProfile(String uid) {
-    return _firestoreService.getUser(_normalizeRequiredUid(uid));
+    return _firestoreService.getUser(
+      _normalizeRequiredUid(uid),
+    );
   }
 
-  Future<UserModel?> getUser(String uid) => getProfile(uid);
+  Future<UserModel?> getUser(String uid) {
+    return getProfile(uid);
+  }
 
   Future<UserModel?> getCurrentProfile() {
     final String? uid = currentUserId;
 
-    return uid == null
-        ? Future<UserModel?>.value(null)
-        : _firestoreService.getUser(uid);
+    if (uid == null) {
+      return Future<UserModel?>.value(null);
+    }
+
+    return _firestoreService.getUser(uid);
   }
 
   Stream<UserModel?> profileStream(String uid) {
     final String normalized = uid.trim();
 
-    return normalized.isEmpty
-        ? Stream<UserModel?>.value(null)
-        : _firestoreService.watchUser(normalized);
+    if (normalized.isEmpty) {
+      return Stream<UserModel?>.value(null);
+    }
+
+    return _firestoreService.watchUser(normalized);
   }
 
-  Stream<UserModel?> watchProfile(String uid) => profileStream(uid);
+  Stream<UserModel?> watchProfile(String uid) {
+    return profileStream(uid);
+  }
 
   Stream<UserModel?> currentProfileStream() {
     final String? uid = currentUserId;
 
-    return uid == null
-        ? Stream<UserModel?>.value(null)
-        : _firestoreService.watchUser(uid);
+    if (uid == null) {
+      return Stream<UserModel?>.value(null);
+    }
+
+    return _firestoreService.watchUser(uid);
+  }
+
+  // =============================================================
+  // DISCOVERY
+  // =============================================================
+
+  Future<List<UserModel>> searchProfiles(
+      String query, {
+        int limit = 20,
+        bool excludeCurrentUser = true,
+      }) {
+    final String normalized = query.trim();
+
+    if (normalized.isEmpty) {
+      return Future<List<UserModel>>.value(
+        const <UserModel>[],
+      );
+    }
+
+    return _firestoreService.searchUsers(
+      normalized,
+      limit: limit,
+      excludeUid: excludeCurrentUser ? currentUserId : null,
+    );
+  }
+
+  // =============================================================
+  // PHONE DISCOVERY
+  // =============================================================
+
+  Future<List<UserModel>> searchProfilesByPhone(
+      String phoneNumber, {
+        int limit = 20,
+        bool excludeCurrentUser = true,
+      }) {
+    final String normalized = phoneNumber.trim();
+
+    if (normalized.isEmpty) {
+      return Future<List<UserModel>>.value(
+        const <UserModel>[],
+      );
+    }
+
+    return _firestoreService.getUsersByPhone(
+      normalized,
+      limit: limit,
+      excludeUid: excludeCurrentUser ? currentUserId : null,
+    );
+  }
+
+  Future<List<UserModel>> searchUsersByPhone(
+      String phoneNumber, {
+        int limit = 20,
+        bool excludeCurrentUser = true,
+      }) {
+    return searchProfilesByPhone(
+      phoneNumber,
+      limit: limit,
+      excludeCurrentUser: excludeCurrentUser,
+    );
+  }
+
+  // =============================================================
+  // EMAIL DISCOVERY
+  // =============================================================
+
+  Future<List<UserModel>> searchProfilesByEmail(
+      String email, {
+        int limit = 20,
+        bool excludeCurrentUser = true,
+      }) {
+    final String normalized = email.trim().toLowerCase();
+
+    if (normalized.isEmpty) {
+      return Future<List<UserModel>>.value(
+        const <UserModel>[],
+      );
+    }
+
+    return _firestoreService.getUsersByEmail(
+      normalized,
+      limit: limit,
+      excludeUid: excludeCurrentUser ? currentUserId : null,
+    );
   }
 
   // =============================================================
@@ -110,23 +244,24 @@ class ProfileService {
   }) async {
     final User firebaseUser = _requireCurrentFirebaseUser();
 
-    UserModel? profile = await _firestoreService.getUser(firebaseUser.uid);
+    UserModel? profile = await _firestoreService.getUser(
+      firebaseUser.uid,
+    );
 
     if (profile == null) {
-      return createDefaultProfile(generateJrCallUserId: generateJrCallUserId);
+      return createDefaultProfile(
+        generateJrCallUserId: generateJrCallUserId,
+      );
     }
 
-    // Synchronize only values Firebase Auth actually owns.
-    //
-    // IMPORTANT:
-    // A missing Auth phone/email must NOT delete an existing
-    // Firestore profile phone/email.
     await syncAuthenticationProfile();
 
     if (generateJrCallUserId && !profile.hasJrCallUserId) {
       await ensureCurrentUserJrCallId();
 
-      profile = await _firestoreService.getUser(firebaseUser.uid);
+      profile = await _firestoreService.getUser(
+        firebaseUser.uid,
+      );
 
       if (profile == null) {
         throw StateError(
@@ -159,16 +294,26 @@ class ProfileService {
     );
 
     if (existing != null) {
-      return existing;
+      await syncAuthenticationProfile();
+
+      return await _firestoreService.getUser(firebaseUser.uid) ?? existing;
     }
 
     final String resolvedName =
-        _cleanString(fullName) ?? _cleanString(firebaseUser.displayName) ?? '';
+        _cleanString(fullName) ??
+            _cleanString(firebaseUser.displayName) ??
+            '';
 
-    final String resolvedPhone = _cleanString(firebaseUser.phoneNumber) ?? '';
+    final String resolvedPhone =
+        _cleanString(firebaseUser.phoneNumber) ?? '';
 
-    final String? resolvedEmail = _cleanString(firebaseUser.email);
-    final String? resolvedPhoto = _cleanString(firebaseUser.photoURL);
+    final String? resolvedEmail = _cleanString(
+      firebaseUser.email,
+    );
+
+    final String? resolvedPhoto = _cleanString(
+      firebaseUser.photoURL,
+    );
 
     final List<String> providers = _authService.linkedProviderIds;
 
@@ -176,7 +321,9 @@ class ProfileService {
       _authService.primaryProviderId,
     );
 
-    String? resolvedJrCallId = _cleanString(jrCallUserId);
+    String? resolvedJrCallId = _cleanString(
+      jrCallUserId,
+    );
 
     if (resolvedJrCallId == null && generateJrCallUserId) {
       resolvedJrCallId = await _generateAvailableJrCallId();
@@ -194,28 +341,19 @@ class ProfileService {
       country: _cleanString(country),
       countryCode: _cleanString(countryCode)?.toUpperCase(),
       dateOfBirth: dateOfBirth,
-      verified: firebaseUser.emailVerified || resolvedPhone.isNotEmpty,
+      verified:
+      firebaseUser.emailVerified ||
+          resolvedPhone.isNotEmpty,
       emailVerified: firebaseUser.emailVerified,
       phoneVerified: resolvedPhone.isNotEmpty,
       provider: primaryProvider,
       signInProviders: providers,
-
-      // ---------------------------------------------------------
-      // DISCOVERY DEFAULTS
-      //
-      // Previous code explicitly wrote false for Email/Phone.
-      // That prevented a correctly stored phone from being
-      // returned by discovery.
-      //
-      // These values apply ONLY when creating a brand-new profile.
-      // Existing privacy preferences are never overwritten here.
-      // ---------------------------------------------------------
-
       isDiscoverable: true,
       isDiscoverableByEmail: true,
       isDiscoverableByPhone: true,
-
-      createdAt: firebaseUser.metadata.creationTime ?? DateTime.now(),
+      createdAt:
+      firebaseUser.metadata.creationTime ??
+          DateTime.now(),
       lastLogin: firebaseUser.metadata.lastSignInTime,
     );
 
@@ -235,7 +373,9 @@ class ProfileService {
 
     await syncAuthenticationProfile();
 
-    final UserModel? saved = await _firestoreService.getUser(firebaseUser.uid);
+    final UserModel? saved = await _firestoreService.getUser(
+      firebaseUser.uid,
+    );
 
     if (saved == null) {
       throw StateError(
@@ -268,10 +408,12 @@ class ProfileService {
   }) async {
     final String uid = _requireCurrentUid();
 
+    final String? normalizedPhone = phoneNumber?.trim();
+
     await _firestoreService.updateProfile(
       uid: uid,
       name: fullName,
-      phone: phoneNumber,
+      phone: normalizedPhone,
       email: email,
       username: username,
       userAddress: jrCallUserId,
@@ -287,19 +429,55 @@ class ProfileService {
     );
 
     if (fullName != null) {
-      await _syncFirebaseDisplayNameSafely(fullName);
+      await _syncFirebaseDisplayNameSafely(
+        fullName,
+      );
     }
 
     if (profilePhotoUrl != null) {
-      await _syncFirebasePhotoUrlSafely(profilePhotoUrl);
+      await _syncFirebasePhotoUrlSafely(
+        profilePhotoUrl,
+      );
     }
+  }
+
+  // =============================================================
+  // PHONE
+  // =============================================================
+
+  Future<void> updatePhoneNumber(
+      String phoneNumber,
+      ) async {
+    final String normalized = phoneNumber.trim();
+
+    if (normalized.isEmpty) {
+      throw ArgumentError.value(
+        phoneNumber,
+        'phoneNumber',
+        'Phone number cannot be empty.',
+      );
+    }
+
+    await _firestoreService.updateProfile(
+      uid: _requireCurrentUid(),
+      phone: normalized,
+    );
+  }
+
+  Future<void> clearPhoneNumber() {
+    return _firestoreService.clearProfileField(
+      uid: _requireCurrentUid(),
+      field: UserProfileField.phone,
+    );
   }
 
   // =============================================================
   // FULL NAME
   // =============================================================
 
-  Future<void> updateFullName(String fullName) async {
+  Future<void> updateFullName(
+      String fullName,
+      ) async {
     final String uid = _requireCurrentUid();
 
     await _firestoreService.updateFullName(
@@ -307,7 +485,9 @@ class ProfileService {
       fullName: fullName,
     );
 
-    await _syncFirebaseDisplayNameSafely(fullName);
+    await _syncFirebaseDisplayNameSafely(
+      fullName,
+    );
   }
 
   // =============================================================
@@ -324,7 +504,9 @@ class ProfileService {
     );
   }
 
-  Future<void> updateUsername(String username) {
+  Future<void> updateUsername(
+      String username,
+      ) {
     return _firestoreService.updateUsername(
       uid: _requireCurrentUid(),
       username: username,
@@ -362,23 +544,39 @@ class ProfileService {
     );
   }
 
-  Future<void> updateJrCallUserId(String jrCallUserId) {
+  Future<void> updateJrCallUserId(
+      String jrCallUserId,
+      ) {
     return _firestoreService.updateUserAddress(
       uid: _requireCurrentUid(),
       userAddress: jrCallUserId,
     );
   }
 
-  Future<void> updateUserAddress(String userAddress) {
-    return updateJrCallUserId(userAddress);
+  Future<void> updateUserAddress(
+      String userAddress,
+      ) {
+    return updateJrCallUserId(
+      userAddress,
+    );
   }
 
   Future<String> ensureCurrentUserJrCallId() async {
     final String uid = _requireCurrentUid();
 
-    final UserModel? profile = await _firestoreService.getUser(uid);
+    final UserModel? profile = await _firestoreService.getUser(
+      uid,
+    );
 
-    final String? currentId = _cleanString(profile?.jrCallUserId);
+    if (profile == null) {
+      throw StateError(
+        'JR CALL profile does not exist.',
+      );
+    }
+
+    final String? currentId = _cleanString(
+      profile.jrCallUserId,
+    );
 
     if (currentId != null) {
       return currentId;
@@ -399,7 +597,7 @@ class ProfileService {
 
         return candidate;
       } on StateError {
-        // Reservation collision: safely retry.
+        // Reservation collision.
       }
     }
 
@@ -448,7 +646,9 @@ class ProfileService {
   // BIO
   // =============================================================
 
-  Future<void> updateBio(String bio) {
+  Future<void> updateBio(
+      String bio,
+      ) {
     return _firestoreService.updateBio(
       uid: _requireCurrentUid(),
       bio: bio,
@@ -466,7 +666,9 @@ class ProfileService {
   // DATE OF BIRTH
   // =============================================================
 
-  Future<void> updateDateOfBirth(DateTime dateOfBirth) {
+  Future<void> updateDateOfBirth(
+      DateTime dateOfBirth,
+      ) {
     return _firestoreService.updateDateOfBirth(
       uid: _requireCurrentUid(),
       dateOfBirth: dateOfBirth,
@@ -490,7 +692,8 @@ class ProfileService {
   }) async {
     final String uid = _requireCurrentUid();
 
-    final String downloadUrl = await _storageService.uploadProfilePhoto(
+    final String downloadUrl =
+    await _storageService.uploadProfilePhoto(
       uid: uid,
       bytes: bytes,
       contentType: contentType,
@@ -502,14 +705,18 @@ class ProfileService {
         photoUrl: downloadUrl,
       );
 
-      await _syncFirebasePhotoUrlSafely(downloadUrl);
+      await _syncFirebasePhotoUrlSafely(
+        downloadUrl,
+      );
 
       return downloadUrl;
     } catch (_) {
       try {
-        await _storageService.deleteProfilePhoto(uid: uid);
+        await _storageService.deleteProfilePhoto(
+          uid: uid,
+        );
       } catch (_) {
-        // Best-effort rollback only.
+        // Best-effort rollback.
       }
 
       rethrow;
@@ -519,14 +726,18 @@ class ProfileService {
   Future<void> deleteProfilePhoto() async {
     final String uid = _requireCurrentUid();
 
-    await _storageService.deleteProfilePhoto(uid: uid);
+    await _storageService.deleteProfilePhoto(
+      uid: uid,
+    );
 
     await _firestoreService.clearProfileField(
       uid: uid,
       field: UserProfileField.photoUrl,
     );
 
-    await _syncFirebasePhotoUrlSafely(null);
+    await _syncFirebasePhotoUrlSafely(
+      null,
+    );
   }
 
   // =============================================================
@@ -539,7 +750,8 @@ class ProfileService {
   }) async {
     final String uid = _requireCurrentUid();
 
-    final String downloadUrl = await _storageService.uploadCoverPhoto(
+    final String downloadUrl =
+    await _storageService.uploadCoverPhoto(
       uid: uid,
       bytes: bytes,
       contentType: contentType,
@@ -554,9 +766,11 @@ class ProfileService {
       return downloadUrl;
     } catch (_) {
       try {
-        await _storageService.deleteCoverPhoto(uid: uid);
+        await _storageService.deleteCoverPhoto(
+          uid: uid,
+        );
       } catch (_) {
-        // Best-effort rollback only.
+        // Best-effort rollback.
       }
 
       rethrow;
@@ -566,7 +780,9 @@ class ProfileService {
   Future<void> deleteCoverPhoto() async {
     final String uid = _requireCurrentUid();
 
-    await _storageService.deleteCoverPhoto(uid: uid);
+    await _storageService.deleteCoverPhoto(
+      uid: uid,
+    );
 
     await _firestoreService.clearProfileField(
       uid: uid,
@@ -575,7 +791,10 @@ class ProfileService {
   }
 
   // =============================================================
-  // AUTH METADATA SYNC — CRITICAL REPAIR
+  // AUTH METADATA SYNC
+  //
+  // IMPORTANT:
+  // Never creates a missing users/{uid}.
   // =============================================================
 
   Future<void> syncAuthenticationProfile() async {
@@ -587,44 +806,41 @@ class ProfileService {
       // Existing authenticated snapshot remains usable.
     }
 
-    final User user = _authService.currentUser ?? originalUser;
+    final User user =
+        _authService.currentUser ??
+            originalUser;
 
-    final String? email = _cleanString(user.email);
-    final String? phone = _cleanString(user.phoneNumber);
+    final UserModel? existingProfile =
+    await _firestoreService.getUser(
+      user.uid,
+    );
 
-    final List<String> providers = user.providerData
+    if (existingProfile == null) {
+      return;
+    }
+
+    final String? email = _cleanString(
+      user.email,
+    );
+
+    final String? phone = _cleanString(
+      user.phoneNumber,
+    );
+
+    final List<String> providers =
+    user.providerData
         .map(
-          (UserInfo provider) => provider.providerId.trim(),
+          (UserInfo provider) =>
+          provider.providerId.trim(),
     )
         .where(
-          (String id) => id.isNotEmpty,
+          (String id) =>
+      id.isNotEmpty,
     )
         .toSet()
-        .toList(growable: false);
-
-    // ---------------------------------------------------------
-    // IMPORTANT:
-    //
-    // OLD BEHAVIOUR:
-    //
-    // email: email ?? '',
-    // phoneNumber: phone ?? '',
-    //
-    // That converted "Firebase Auth has no value" into an
-    // explicit empty-string update.
-    //
-    // FirestoreService correctly interprets an explicit empty
-    // phone/email as "clear this field", so a perfectly valid
-    // profile phone saved previously could be erased.
-    //
-    // NEW BEHAVIOUR:
-    //
-    // null = Auth has no value to synchronize.
-    // non-null = Auth owns a real value and may synchronize it.
-    //
-    // Therefore existing profile phone/email remain untouched
-    // when Firebase Auth has no corresponding value.
-    // ---------------------------------------------------------
+        .toList(
+      growable: false,
+    );
 
     await _firestoreService.syncAuthenticationProfile(
       uid: user.uid,
@@ -641,6 +857,211 @@ class ProfileService {
   }
 
   // =============================================================
+  // FCM DEVICE TOKEN
+  // =============================================================
+
+  Future<String?> syncCurrentDeviceToken() async {
+    final String uid = _requireCurrentUid();
+
+    final UserModel? profile =
+    await _firestoreService.getUser(
+      uid,
+    );
+
+    if (profile == null) {
+      return null;
+    }
+
+    try {
+      final String? rawToken =
+      await _firebaseMessaging.getToken();
+
+      final String token =
+          rawToken?.trim() ?? '';
+
+      if (token.isEmpty) {
+        return null;
+      }
+
+      if (_tokenSyncUid == uid &&
+          _lastSavedFcmToken == token) {
+        return token;
+      }
+
+      await _firestoreService.updateProfile(
+        uid: uid,
+        deviceToken: token,
+      );
+
+      _tokenSyncUid = uid;
+      _lastSavedFcmToken = token;
+
+      return token;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // =============================================================
+  // FCM TOKEN REFRESH
+  // =============================================================
+
+  Future<void> startDeviceTokenSync() async {
+    if (_startingTokenSync) {
+      return;
+    }
+
+    final String uid = _requireCurrentUid();
+
+    final UserModel? profile =
+    await _firestoreService.getUser(
+      uid,
+    );
+
+    if (profile == null) {
+      return;
+    }
+
+    if (_fcmTokenSubscription != null &&
+        _tokenSyncUid == uid) {
+      await syncCurrentDeviceToken();
+
+      return;
+    }
+
+    _startingTokenSync = true;
+
+    try {
+      await stopDeviceTokenSync(
+        clearCachedToken: false,
+      );
+
+      _tokenSyncUid = uid;
+
+      await syncCurrentDeviceToken();
+
+      if (_authService.currentUser?.uid != uid) {
+        return;
+      }
+
+      _fcmTokenSubscription =
+          _firebaseMessaging.onTokenRefresh.listen(
+                (String token) {
+              final String normalizedToken =
+              token.trim();
+
+              if (normalizedToken.isEmpty) {
+                return;
+              }
+
+              final User? currentUser =
+                  _authService.currentUser;
+
+              if (currentUser == null ||
+                  currentUser.uid != uid) {
+                return;
+              }
+
+              unawaited(
+                _persistRefreshedDeviceToken(
+                  uid: uid,
+                  token: normalizedToken,
+                ),
+              );
+            },
+            onError: (Object _) {
+              // Non-fatal.
+            },
+          );
+    } finally {
+      _startingTokenSync = false;
+    }
+  }
+
+  Future<void> _persistRefreshedDeviceToken({
+    required String uid,
+    required String token,
+  }) async {
+    if (_authService.currentUser?.uid != uid) {
+      return;
+    }
+
+    if (_tokenSyncUid == uid &&
+        _lastSavedFcmToken == token) {
+      return;
+    }
+
+    try {
+      final UserModel? profile =
+      await _firestoreService.getUser(
+        uid,
+      );
+
+      if (profile == null) {
+        return;
+      }
+
+      await _firestoreService.updateProfile(
+        uid: uid,
+        deviceToken: token,
+      );
+
+      if (_authService.currentUser?.uid == uid) {
+        _tokenSyncUid = uid;
+        _lastSavedFcmToken = token;
+      }
+    } catch (_) {
+      // FCM must not destabilize authentication/profile state.
+    }
+  }
+
+  Future<void> stopDeviceTokenSync({
+    bool clearCachedToken = true,
+  }) async {
+    final StreamSubscription<String>? subscription =
+        _fcmTokenSubscription;
+
+    _fcmTokenSubscription = null;
+
+    if (subscription != null) {
+      try {
+        await subscription.cancel();
+      } catch (_) {
+        // Already closed.
+      }
+    }
+
+    if (clearCachedToken) {
+      _tokenSyncUid = null;
+      _lastSavedFcmToken = null;
+    }
+  }
+
+  // =============================================================
+  // CLEAR DEVICE TOKEN
+  // =============================================================
+
+  Future<void> clearCurrentDeviceToken() async {
+    final String uid = _requireCurrentUid();
+
+    await stopDeviceTokenSync();
+
+    final UserModel? profile =
+    await _firestoreService.getUser(
+      uid,
+    );
+
+    if (profile == null) {
+      return;
+    }
+
+    await _firestoreService.clearProfileField(
+      uid: uid,
+      field: UserProfileField.deviceToken,
+    );
+  }
+
+  // =============================================================
   // DISCOVERABILITY / PRIVACY
   // =============================================================
 
@@ -652,8 +1073,10 @@ class ProfileService {
     return _firestoreService.updateDiscoverability(
       uid: _requireCurrentUid(),
       isDiscoverable: isDiscoverable,
-      isDiscoverableByEmail: isDiscoverableByEmail,
-      isDiscoverableByPhone: isDiscoverableByPhone,
+      isDiscoverableByEmail:
+      isDiscoverableByEmail,
+      isDiscoverableByPhone:
+      isDiscoverableByPhone,
     );
   }
 
@@ -661,7 +1084,9 @@ class ProfileService {
   // CLEAR FIELD
   // =============================================================
 
-  Future<void> clearProfileField(UserProfileField field) async {
+  Future<void> clearProfileField(
+      UserProfileField field,
+      ) async {
     final String uid = _requireCurrentUid();
 
     if (field == UserProfileField.photoUrl) {
@@ -672,6 +1097,10 @@ class ProfileService {
     if (field == UserProfileField.coverPhoto) {
       await deleteCoverPhoto();
       return;
+    }
+
+    if (field == UserProfileField.deviceToken) {
+      await stopDeviceTokenSync();
     }
 
     await _firestoreService.clearProfileField(
@@ -707,17 +1136,23 @@ class ProfileService {
   Future<void> deleteCurrentUserProfileData() async {
     final String uid = _requireCurrentUid();
 
+    await stopDeviceTokenSync();
+
     Object? mediaError;
     StackTrace? mediaStackTrace;
 
     try {
-      await _storageService.deleteUserProfileMedia(uid: uid);
+      await _storageService.deleteUserProfileMedia(
+        uid: uid,
+      );
     } catch (error, stackTrace) {
       mediaError = error;
       mediaStackTrace = stackTrace;
     }
 
-    await _firestoreService.deleteUserProfile(uid);
+    await _firestoreService.deleteUserProfile(
+      uid,
+    );
 
     if (mediaError != null) {
       Error.throwWithStackTrace(
@@ -751,9 +1186,11 @@ class ProfileService {
     attempt < _maximumJrCallIdGenerationAttempts;
     attempt++
     ) {
-      final String candidate = _generateJrCallIdCandidate();
+      final String candidate =
+      _generateJrCallIdCandidate();
 
-      final bool available = await _firestoreService.isUserAddressAvailable(
+      final bool available =
+      await _firestoreService.isUserAddressAvailable(
         candidate,
         forUid: uid,
       );
@@ -769,7 +1206,10 @@ class ProfileService {
   }
 
   String _generateJrCallIdCandidate() {
-    final StringBuffer buffer = StringBuffer(_jrCallIdPrefix);
+    final StringBuffer buffer =
+    StringBuffer(
+      _jrCallIdPrefix,
+    );
 
     for (
     int index = 0;
@@ -778,28 +1218,40 @@ class ProfileService {
     ) {
       buffer.write(
         _jrCallIdAlphabet[
-        _secureRandom.nextInt(_jrCallIdAlphabet.length)],
+        _secureRandom.nextInt(
+          _jrCallIdAlphabet.length,
+        )],
       );
     }
 
-    return buffer.toString().toLowerCase();
+    return buffer
+        .toString()
+        .toLowerCase();
   }
 
   // =============================================================
   // FIREBASE AUTH DISPLAY METADATA
   // =============================================================
 
-  Future<void> _syncFirebaseDisplayNameSafely(String value) async {
+  Future<void> _syncFirebaseDisplayNameSafely(
+      String value,
+      ) async {
     try {
-      await _authService.updateDisplayName(value);
+      await _authService.updateDisplayName(
+        value,
+      );
     } on FirebaseAuthException {
       // Firestore remains canonical profile storage.
     }
   }
 
-  Future<void> _syncFirebasePhotoUrlSafely(String? value) async {
+  Future<void> _syncFirebasePhotoUrlSafely(
+      String? value,
+      ) async {
     try {
-      await _authService.updatePhotoUrl(value);
+      await _authService.updatePhotoUrl(
+        value,
+      );
     } on FirebaseAuthException {
       // Firestore/Storage remain canonical media storage.
     }
@@ -814,7 +1266,8 @@ class ProfileService {
 
     if (user == null) {
       throw StateError(
-        'An authenticated Firebase user is required for profile operations.',
+        'An authenticated Firebase user is required '
+            'for profile operations.',
       );
     }
 
@@ -828,10 +1281,14 @@ class ProfileService {
   }
 
   String _requireCurrentUid() {
-    return _requireCurrentFirebaseUser().uid.trim();
+    return _requireCurrentFirebaseUser()
+        .uid
+        .trim();
   }
 
-  String _normalizeRequiredUid(String uid) {
+  String _normalizeRequiredUid(
+      String uid,
+      ) {
     final String normalized = uid.trim();
 
     if (normalized.isEmpty) {
@@ -849,33 +1306,41 @@ class ProfileService {
   // STRING
   // =============================================================
 
-  String? _cleanString(String? value) {
-    final String normalized = value?.trim() ?? '';
+  String? _cleanString(
+      String? value,
+      ) {
+    final String normalized =
+        value?.trim() ?? '';
 
-    return normalized.isEmpty ? null : normalized;
+    return normalized.isEmpty
+        ? null
+        : normalized;
   }
 }
 
 // ===============================================================
 // END OF FILE
 //
-// FILE 03/05
+// OTP/AUTH MASTER PROFILE CONTRACT:
+//
+// ✓ Firebase UID canonical.
+// ✓ Missing profile is never created by Auth metadata sync.
+// ✓ Missing Login profile remains distinguishable.
+// ✓ Explicit profile creation remains explicit.
+// ✓ Existing phone/email preservation remains intact.
+// ✓ Firestore phone-search metadata remains intact.
+// ✓ Username/JR CALL ID uniqueness remains intact.
+// ✓ Profile/Cover Storage remains intact.
+// ✓ FCM cannot create a missing profile.
+// ✓ OTP/password are never stored.
+// ✓ Call Engine untouched.
+// ✓ Message Engine untouched.
+// ✓ WebRTC untouched.
 //
 // FIXED:
-// - Existing saved phone will no longer be erased merely because
-//   Firebase Auth phoneNumber is null.
-// - Existing saved email receives the same protection.
-// - New profiles are discoverable through Email/Phone by default.
-// - Existing user's chosen discoverability settings are preserved.
-// - Name / Username / JR CALL ID logic unchanged.
-// - Profile photo / cover / country / bio / DOB unchanged.
-// - Firebase UID ownership unchanged.
-// - No Call Engine / WebRTC code touched.
 //
-// SAVE THIS FILE.
+// ✓ Invalid catch(error, stackTrace,) syntax repaired.
+// ✓ Valid Dart syntax is catch(error, stackTrace).
 //
-// REMAINING MAIN FILES: 2
-//
-// NEXT FILE: contacts_screen.dart
-// Location: lib/screens/contacts_screen.dart
+// SAVE/REPLACE THIS WHOLE FILE.
 // ===============================================================

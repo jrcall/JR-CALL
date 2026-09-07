@@ -93,6 +93,34 @@
           "order": "ASCENDING"
         },
         {
+          "fieldPath": "searchFragments",
+          "arrayConfig": "CONTAINS"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "isDiscoverable",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "normalizedName",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "isDiscoverable",
+          "order": "ASCENDING"
+        },
+        {
           "fieldPath": "fullNameLowercase",
           "order": "ASCENDING"
         }
@@ -155,5 +183,21 @@
       ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "users",
+      "fieldPath": "searchFragments",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "phoneSearchKeys",
+      "indexes": [
+        {
+          "arrayConfig": "CONTAINS",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    }
+  ]
 }

@@ -11,17 +11,23 @@ import '../models/network_model.dart';
 /// Production network-quality presentation widget.
 ///
 /// Responsibilities:
-/// - Display current NetworkQuality state
-/// - Show quality-specific icon
-/// - Show optional quality label
-/// - Match JR CALL premium light / glass UI
+/// - Display current NetworkQuality state.
+/// - Show quality-specific icon/bars.
+/// - Show optional quality label.
+/// - Match JR CALL premium light / glass UI.
+/// - Provide concise accessibility semantics.
 ///
 /// Architecture:
-/// - Network state ownership remains outside this widget
-/// - No network polling
-/// - No connectivity logic
-/// - No CallService logic
-/// - Presentation only
+/// - Network state ownership remains outside this widget.
+/// - No network polling.
+/// - No connectivity listener.
+/// - No NetworkManager ownership.
+/// - No CallService ownership.
+/// - No WebRTC statistics ownership.
+/// - No recovery logic.
+/// - No bitrate adaptation.
+/// - No quality calculation.
+/// - Presentation only.
 ///
 /// Used by:
 /// - voice_call_screen.dart
@@ -35,7 +41,10 @@ class NetworkQualityWidget extends StatelessWidget {
     required this.quality,
     this.showLabel = true,
     this.iconSize = 20,
-  });
+  }) : assert(
+  iconSize > 0,
+  'NetworkQualityWidget iconSize must be greater than zero.',
+  );
 
   /// Current quality supplied by NetworkProvider /
   /// CallQualityMonitor presentation binding.
@@ -47,34 +56,75 @@ class NetworkQualityWidget extends StatelessWidget {
   /// Base icon size.
   final double iconSize;
 
+  // ===========================================================
+  // Safe Presentation Values
+  // ===========================================================
+
+  double get _safeIconSize {
+    final double value = iconSize;
+
+    if (!value.isFinite || value <= 0) {
+      return 20.0;
+    }
+
+    return value;
+  }
+
+  // ===========================================================
+  // Build
+  // ===========================================================
+
   @override
   Widget build(BuildContext context) {
     final Color accentColor = _qualityColor;
     final String qualityLabel = _qualityText;
+    final double effectiveIconSize = _safeIconSize;
 
     return Semantics(
+      container: true,
+      excludeSemantics: true,
       label: 'Network quality: $qualityLabel',
       child: Container(
-        constraints: const BoxConstraints(minHeight: 34),
+        constraints: const BoxConstraints(
+          minHeight: 34,
+        ),
         padding: EdgeInsets.symmetric(
           horizontal: showLabel ? 11 : 8,
           vertical: 6,
         ),
         decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.78),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: accentColor.withValues(alpha: 0.22)),
+          color: Colors.white.withValues(
+            alpha: 0.78,
+          ),
+          borderRadius: BorderRadius.circular(
+            999,
+          ),
+          border: Border.all(
+            color: accentColor.withValues(
+              alpha: 0.22,
+            ),
+          ),
           boxShadow: <BoxShadow>[
             BoxShadow(
-              color: accentColor.withValues(alpha: 0.10),
+              color: accentColor.withValues(
+                alpha: 0.10,
+              ),
               blurRadius: 16,
               spreadRadius: 1,
-              offset: const Offset(0, 5),
+              offset: const Offset(
+                0,
+                5,
+              ),
             ),
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.035),
+              color: Colors.black.withValues(
+                alpha: 0.035,
+              ),
               blurRadius: 10,
-              offset: const Offset(0, 4),
+              offset: const Offset(
+                0,
+                4,
+              ),
             ),
           ],
         ),
@@ -84,10 +134,13 @@ class NetworkQualityWidget extends StatelessWidget {
             _SignalIndicator(
               quality: quality,
               color: accentColor,
-              size: iconSize,
+              size: effectiveIconSize,
             ),
+
             if (showLabel) ...<Widget>[
-              const SizedBox(width: 7),
+              const SizedBox(
+                width: 7,
+              ),
               Text(
                 qualityLabel,
                 maxLines: 1,
@@ -106,41 +159,71 @@ class NetworkQualityWidget extends StatelessWidget {
     );
   }
 
+  // ===========================================================
+  // Quality Color
+  // ===========================================================
+
   Color get _qualityColor {
     switch (quality) {
       case NetworkQuality.excellent:
-        return const Color(0xFF00B884);
+        return const Color(
+          0xFF00B884,
+        );
 
       case NetworkQuality.good:
-        return const Color(0xFF15B8A6);
+        return const Color(
+          0xFF15B8A6,
+        );
 
       case NetworkQuality.fair:
-        return const Color(0xFFF59E0B);
+        return const Color(
+          0xFFF59E0B,
+        );
 
       case NetworkQuality.poor:
-        return const Color(0xFFF97316);
+        return const Color(
+          0xFFF97316,
+        );
 
       case NetworkQuality.offline:
-        return const Color(0xFFEF4444);
+        return const Color(
+          0xFFEF4444,
+        );
     }
   }
+
+  // ===========================================================
+  // Label Color
+  // ===========================================================
 
   Color get _labelColor {
     switch (quality) {
       case NetworkQuality.excellent:
       case NetworkQuality.good:
-        return const Color(0xFF0F766E);
+        return const Color(
+          0xFF0F766E,
+        );
 
       case NetworkQuality.fair:
-        return const Color(0xFFB45309);
+        return const Color(
+          0xFFB45309,
+        );
 
       case NetworkQuality.poor:
-        return const Color(0xFFC2410C);
+        return const Color(
+          0xFFC2410C,
+        );
 
       case NetworkQuality.offline:
-        return const Color(0xFFB91C1C);
+        return const Color(
+          0xFFB91C1C,
+        );
     }
   }
+
+  // ===========================================================
+  // Quality Text
+  // ===========================================================
 
   String get _qualityText {
     switch (quality) {
@@ -177,7 +260,9 @@ class _SignalIndicator extends StatelessWidget {
   });
 
   final NetworkQuality quality;
+
   final Color color;
+
   final double size;
 
   @override
@@ -202,32 +287,59 @@ class _SignalIndicator extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         mainAxisAlignment: MainAxisAlignment.center,
-        children: List<Widget>.generate(4, (int index) {
-          final bool active = index < activeBars;
+        children: List<Widget>.generate(
+          4,
+              (int index) {
+            final bool active =
+                index < activeBars;
 
-          final double barWidth = (size / 7).clamp(2.0, 4.0);
-          final double barHeight = size * (0.34 + (index * 0.18));
+            final double barWidth =
+            (size / 7)
+                .clamp(
+              2.0,
+              4.0,
+            )
+                .toDouble();
 
-          return AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
-            width: barWidth,
-            height: barHeight,
-            margin: EdgeInsets.only(right: index == 3 ? 0 : 2),
-            decoration: BoxDecoration(
-              color: active ? color : color.withValues(alpha: 0.18),
-              borderRadius: BorderRadius.circular(3),
-              boxShadow: active
-                  ? <BoxShadow>[
-                      BoxShadow(
-                        color: color.withValues(alpha: 0.15),
-                        blurRadius: 5,
-                      ),
-                    ]
-                  : null,
-            ),
-          );
-        }),
+            final double barHeight =
+                size *
+                    (0.34 + (index * 0.18));
+
+            return AnimatedContainer(
+              duration: const Duration(
+                milliseconds: 220,
+              ),
+              curve: Curves.easeOutCubic,
+              width: barWidth,
+              height: barHeight,
+              margin: EdgeInsets.only(
+                right: index == 3 ? 0 : 2,
+              ),
+              decoration: BoxDecoration(
+                color: active
+                    ? color
+                    : color.withValues(
+                  alpha: 0.18,
+                ),
+                borderRadius:
+                BorderRadius.circular(
+                  3,
+                ),
+                boxShadow: active
+                    ? <BoxShadow>[
+                  BoxShadow(
+                    color:
+                    color.withValues(
+                      alpha: 0.15,
+                    ),
+                    blurRadius: 5,
+                  ),
+                ]
+                    : null,
+              ),
+            );
+          },
+        ),
       ),
     );
   }

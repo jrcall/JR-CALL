@@ -1,24 +1,38 @@
-// ===============================================================
-// JR CALL
-// File: incoming_call_screen.dart
-// Location: lib/screens/incoming_call_screen.dart
-// Fixes: BUG 07, BUG 08
-// Production-safe replacement
-// Existing APIs preserved
-//
-// IMPORTANT:
-// - Incoming-call presentation only.
-// - No WebRTC ownership.
-// - No Firestore ownership.
-// - No ICE ownership.
-// - No signaling ownership.
-// - No fake CONNECTED state.
-// - Accept/Reject callbacks execute at most once after success.
-// ===============================================================
-
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
+/// ===============================================================
+/// JR CALL
+/// File: incoming_call_screen.dart
+/// Location: lib/screens/incoming_call_screen.dart
+///
+/// Production incoming-call presentation screen.
+///
+/// Responsibilities:
+/// - Display incoming caller identity.
+/// - Display incoming voice/video call state.
+/// - Forward Accept action to the parent/call layer.
+/// - Forward Decline action to the parent/call layer.
+/// - Prevent duplicate or contradictory actions.
+/// - Allow retry when an action callback fails.
+/// - Protect against accidental back dismissal.
+///
+/// Architecture:
+/// - Presentation only.
+/// - No CallService ownership.
+/// - No WebRTC ownership.
+/// - No Firestore ownership.
+/// - No signaling ownership.
+/// - No ICE ownership.
+/// - No recovery ownership.
+/// - No history ownership.
+/// - No local call timer.
+/// - No fake connected state.
+///
+/// Parent/provider/call layer remains authoritative for the
+/// actual call lifecycle.
+/// ===============================================================
 
 typedef IncomingCallAction = FutureOr<void> Function();
 
@@ -35,22 +49,28 @@ class IncomingCallScreen extends StatefulWidget {
   });
 
   final String callerName;
+
   final String? callerId;
+
   final String? callerPhotoUrl;
+
   final bool isVideoCall;
+
   final String? subtitle;
 
   final IncomingCallAction onAccept;
+
   final IncomingCallAction onReject;
 
   @override
-  State<IncomingCallScreen> createState() => _IncomingCallScreenState();
+  State<IncomingCallScreen> createState() =>
+      _IncomingCallScreenState();
 }
 
 class _IncomingCallScreenState extends State<IncomingCallScreen>
     with SingleTickerProviderStateMixin {
   // =============================================================
-  // DESIGN
+  // Design
   // =============================================================
 
   static const Color _background = Color(0xFFF5F8FE);
@@ -68,21 +88,23 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   static const Color _border = Color(0xFFDCE7F5);
 
   // =============================================================
-  // STATE
+  // State
   // =============================================================
 
   bool _isProcessing = false;
+
   bool _accepting = false;
 
-  /// Once Accept/Decline succeeds, the same incoming screen must
-  /// never fire another call action.
+  /// Once one action succeeds, this screen instance must never
+  /// execute another incoming-call action.
   bool _actionCompleted = false;
 
   late final AnimationController _pulseController;
+
   late final Animation<double> _pulseAnimation;
 
   // =============================================================
-  // LIFECYCLE
+  // Lifecycle
   // =============================================================
 
   @override
@@ -91,52 +113,74 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
 
     _pulseController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1450),
+      duration: const Duration(
+        milliseconds: 1450,
+      ),
     );
 
-    _pulseAnimation = Tween<double>(begin: 0.97, end: 1.035).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    _pulseAnimation = Tween<double>(
+      begin: 0.97,
+      end: 1.035,
+    ).animate(
+      CurvedAnimation(
+        parent: _pulseController,
+        curve: Curves.easeInOut,
+      ),
     );
 
-    _pulseController.repeat(reverse: true);
+    _pulseController.repeat(
+      reverse: true,
+    );
   }
 
   @override
   void dispose() {
     _pulseController.dispose();
+
     super.dispose();
   }
 
   // =============================================================
-  // SAFE DISPLAY DATA
+  // Safe Display Data
   // =============================================================
 
   String get _safeCallerName {
     final String value = widget.callerName.trim();
 
-    return value.isEmpty ? 'Unknown Caller' : value;
+    return value.isEmpty
+        ? 'Unknown Caller'
+        : value;
   }
 
   String? get _safeCallerPhotoUrl {
-    final String value = widget.callerPhotoUrl?.trim() ?? '';
+    final String value =
+        widget.callerPhotoUrl?.trim() ?? '';
 
-    return value.isEmpty ? null : value;
+    return value.isEmpty
+        ? null
+        : value;
   }
 
   String? get _safeCallerId {
-    final String value = widget.callerId?.trim() ?? '';
+    final String value =
+        widget.callerId?.trim() ?? '';
 
-    return value.isEmpty ? null : value;
+    return value.isEmpty
+        ? null
+        : value;
   }
 
   String get _callLabel {
-    final String customSubtitle = widget.subtitle?.trim() ?? '';
+    final String customSubtitle =
+        widget.subtitle?.trim() ?? '';
 
     if (customSubtitle.isNotEmpty) {
       return customSubtitle;
     }
 
-    return widget.isVideoCall ? 'Incoming Video Call' : 'Incoming Voice Call';
+    return widget.isVideoCall
+        ? 'Incoming Video Call'
+        : 'Incoming Voice Call';
   }
 
   String get _callerInitial {
@@ -150,11 +194,13 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   }
 
   // =============================================================
-  // ACCEPT CALL
+  // Accept Call
   // =============================================================
 
   Future<void> _acceptCall() async {
-    if (!mounted || _isProcessing || _actionCompleted) {
+    if (!mounted ||
+        _isProcessing ||
+        _actionCompleted) {
       return;
     }
 
@@ -166,19 +212,25 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     bool succeeded = false;
 
     try {
-      await Future<void>.sync(widget.onAccept);
+      await Future<void>.sync(
+        widget.onAccept,
+      );
 
       succeeded = true;
       _actionCompleted = true;
     } catch (error, stackTrace) {
-      _reportError(source: 'Accept call', error: error, stackTrace: stackTrace);
+      _reportError(
+        source: 'Accept call',
+        error: error,
+        stackTrace: stackTrace,
+      );
 
       if (mounted) {
-        _showActionError('Unable to accept the call. Please try again.');
+        _showActionError(
+          'Unable to accept the call. Please try again.',
+        );
       }
     } finally {
-      // Never return from finally.
-      // This keeps Dart analyzer clean and preserves thrown errors.
       if (mounted) {
         setState(() {
           _isProcessing = false;
@@ -192,11 +244,13 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   }
 
   // =============================================================
-  // REJECT CALL
+  // Decline Call
   // =============================================================
 
   Future<void> _rejectCall() async {
-    if (!mounted || _isProcessing || _actionCompleted) {
+    if (!mounted ||
+        _isProcessing ||
+        _actionCompleted) {
       return;
     }
 
@@ -206,17 +260,24 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     });
 
     try {
-      await Future<void>.sync(widget.onReject);
+      await Future<void>.sync(
+        widget.onReject,
+      );
 
       _actionCompleted = true;
     } catch (error, stackTrace) {
-      _reportError(source: 'Reject call', error: error, stackTrace: stackTrace);
+      _reportError(
+        source: 'Reject call',
+        error: error,
+        stackTrace: stackTrace,
+      );
 
       if (mounted) {
-        _showActionError('Unable to decline the call. Please try again.');
+        _showActionError(
+          'Unable to decline the call. Please try again.',
+        );
       }
     } finally {
-      // Never return from finally.
       if (mounted) {
         setState(() {
           _isProcessing = false;
@@ -226,10 +287,12 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   }
 
   // =============================================================
-  // ERROR HANDLING
+  // Error Handling
   // =============================================================
 
-  void _showActionError(String message) {
+  void _showActionError(
+      String message,
+      ) {
     if (!mounted) {
       return;
     }
@@ -237,7 +300,12 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(behavior: SnackBarBehavior.floating, content: Text(message)),
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(
+            message,
+          ),
+        ),
       );
   }
 
@@ -246,40 +314,50 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     required Object error,
     required StackTrace stackTrace,
   }) {
-    debugPrint('JR CALL [IncomingCallScreen/$source] error: $error');
+    debugPrint(
+      'JR CALL [IncomingCallScreen/$source] error: $error',
+    );
 
     debugPrintStack(
-      label: 'JR CALL [IncomingCallScreen/$source]',
-      stackTrace: stackTrace,
+      label:
+      'JR CALL [IncomingCallScreen/$source]',
+      stackTrace:
+      stackTrace,
     );
   }
 
   // =============================================================
-  // MAIN BUILD
+  // Main Build
   // =============================================================
 
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      // Incoming-call screen must be handled with Accept/Decline,
-      // preventing accidental system-back dismissal.
       canPop: false,
       child: Scaffold(
         backgroundColor: _background,
         body: SafeArea(
           child: LayoutBuilder(
-            builder: (BuildContext context, BoxConstraints constraints) {
-              final bool compact = constraints.maxHeight < 690;
+            builder: (
+                BuildContext context,
+                BoxConstraints constraints,
+                ) {
+              final bool compact =
+                  constraints.maxHeight < 690;
 
-              final double horizontalPadding = constraints.maxWidth < 360
+              final double horizontalPadding =
+              constraints.maxWidth < 360
                   ? 18
                   : 24;
 
               return Stack(
                 children: <Widget>[
-                  const Positioned.fill(child: _IncomingBackground()),
+                  const Positioned.fill(
+                    child: _IncomingBackground(),
+                  ),
                   SingleChildScrollView(
-                    physics: const BouncingScrollPhysics(),
+                    physics:
+                    const BouncingScrollPhysics(),
                     padding: EdgeInsets.fromLTRB(
                       horizontalPadding,
                       compact ? 14 : 20,
@@ -288,34 +366,59 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                     ),
                     child: ConstrainedBox(
                       constraints: BoxConstraints(
-                        minHeight: constraints.maxHeight - (compact ? 32 : 48),
+                        minHeight:
+                        constraints.maxHeight -
+                            (compact ? 32 : 48),
                       ),
                       child: Column(
                         children: <Widget>[
                           _buildBrandHeader(),
 
-                          SizedBox(height: compact ? 22 : 42),
+                          SizedBox(
+                            height:
+                            compact ? 22 : 42,
+                          ),
 
                           _buildIncomingBadge(),
 
-                          SizedBox(height: compact ? 20 : 34),
+                          SizedBox(
+                            height:
+                            compact ? 20 : 34,
+                          ),
 
-                          _buildCallerCard(compact: compact),
+                          _buildCallerCard(
+                            compact: compact,
+                          ),
 
-                          SizedBox(height: compact ? 22 : 34),
+                          SizedBox(
+                            height:
+                            compact ? 22 : 34,
+                          ),
 
                           _buildCallInformation(),
 
-                          SizedBox(height: compact ? 20 : 30),
-
-                          if (_isProcessing) _buildProcessingState(),
+                          SizedBox(
+                            height:
+                            compact ? 20 : 30,
+                          ),
 
                           if (_isProcessing)
-                            SizedBox(height: compact ? 16 : 24),
+                            _buildProcessingState(),
 
-                          _buildCallActions(compact: compact),
+                          if (_isProcessing)
+                            SizedBox(
+                              height:
+                              compact ? 16 : 24,
+                            ),
 
-                          SizedBox(height: compact ? 18 : 26),
+                          _buildCallActions(
+                            compact: compact,
+                          ),
+
+                          SizedBox(
+                            height:
+                            compact ? 18 : 26,
+                          ),
 
                           const _SecurityMessage(),
                         ],
@@ -332,7 +435,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   }
 
   // =============================================================
-  // JR CALL HEADER
+  // JR CALL Header
   // =============================================================
 
   Widget _buildBrandHeader() {
@@ -344,8 +447,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
           padding: const EdgeInsets.all(3),
           decoration: BoxDecoration(
             color: _surface,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: _border),
+            borderRadius:
+            BorderRadius.circular(16),
+            border:
+            Border.all(color: _border),
             boxShadow: const <BoxShadow>[
               BoxShadow(
                 color: Color(0x22087AF5),
@@ -355,57 +460,75 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
             ],
           ),
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(13),
+            borderRadius:
+            BorderRadius.circular(13),
             child: Image.asset(
               'assets/images/logo.png',
               fit: BoxFit.cover,
-              errorBuilder:
-                  (BuildContext context, Object error, StackTrace? stackTrace) {
-                    return const DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: <Color>[_primaryBlue, _deepBlue],
-                        ),
-                      ),
-                      child: Center(
-                        child: Icon(
-                          Icons.phone_in_talk_rounded,
-                          color: Colors.white,
-                          size: 27,
-                        ),
-                      ),
-                    );
-                  },
+              errorBuilder: (
+                  BuildContext context,
+                  Object error,
+                  StackTrace? stackTrace,
+                  ) {
+                return const DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin:
+                      Alignment.topLeft,
+                      end:
+                      Alignment.bottomRight,
+                      colors: <Color>[
+                        _primaryBlue,
+                        _deepBlue,
+                      ],
+                    ),
+                  ),
+                  child: Center(
+                    child: Icon(
+                      Icons.phone_in_talk_rounded,
+                      color: Colors.white,
+                      size: 27,
+                    ),
+                  ),
+                );
+              },
             ),
           ),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(
+          width: 12,
+        ),
         const Expanded(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment:
+            CrossAxisAlignment.start,
             children: <Widget>[
               Text(
                 'JR CALL',
                 maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+                overflow:
+                TextOverflow.ellipsis,
                 style: TextStyle(
                   color: _textPrimary,
                   fontSize: 22,
-                  fontWeight: FontWeight.w900,
+                  fontWeight:
+                  FontWeight.w900,
                   letterSpacing: 0.5,
                 ),
               ),
-              SizedBox(height: 2),
+              SizedBox(
+                height: 2,
+              ),
               Text(
                 'Incoming Call',
                 maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+                overflow:
+                TextOverflow.ellipsis,
                 style: TextStyle(
                   color: _textSecondary,
                   fontSize: 11.5,
-                  fontWeight: FontWeight.w500,
+                  fontWeight:
+                  FontWeight.w500,
                 ),
               ),
             ],
@@ -415,9 +538,12 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
           width: 42,
           height: 42,
           decoration: BoxDecoration(
-            color: _surface.withValues(alpha: 0.92),
+            color: _surface.withValues(
+              alpha: 0.92,
+            ),
             shape: BoxShape.circle,
-            border: Border.all(color: _border),
+            border:
+            Border.all(color: _border),
             boxShadow: const <BoxShadow>[
               BoxShadow(
                 color: Color(0x14087AF5),
@@ -427,7 +553,9 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
             ],
           ),
           child: Icon(
-            widget.isVideoCall ? Icons.videocam_rounded : Icons.call_rounded,
+            widget.isVideoCall
+                ? Icons.videocam_rounded
+                : Icons.call_rounded,
             color: _primaryBlue,
             size: 21,
           ),
@@ -437,16 +565,24 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   }
 
   // =============================================================
-  // INCOMING BADGE
+  // Incoming Badge
   // =============================================================
 
   Widget _buildIncomingBadge() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 16,
+        vertical: 9,
+      ),
       decoration: BoxDecoration(
-        color: _surface.withValues(alpha: 0.88),
-        borderRadius: BorderRadius.circular(40),
-        border: Border.all(color: const Color(0xFFBFEFE3)),
+        color: _surface.withValues(
+          alpha: 0.88,
+        ),
+        borderRadius:
+        BorderRadius.circular(40),
+        border: Border.all(
+          color: const Color(0xFFBFEFE3),
+        ),
         boxShadow: const <BoxShadow>[
           BoxShadow(
             color: Color(0x2200D99B),
@@ -461,30 +597,37 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
           Container(
             width: 9,
             height: 9,
-            decoration: const BoxDecoration(
+            decoration:
+            const BoxDecoration(
               color: _callGreen,
               shape: BoxShape.circle,
               boxShadow: <BoxShadow>[
                 BoxShadow(
-                  color: Color(0x6600D99B),
+                  color:
+                  Color(0x6600D99B),
                   blurRadius: 8,
                   spreadRadius: 2,
                 ),
               ],
             ),
           ),
-          const SizedBox(width: 9),
+          const SizedBox(
+            width: 9,
+          ),
           Flexible(
             child: Text(
               widget.isVideoCall
                   ? 'INCOMING VIDEO CALL'
                   : 'INCOMING VOICE CALL',
               maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+              overflow:
+              TextOverflow.ellipsis,
               style: const TextStyle(
-                color: Color(0xFF11745E),
+                color:
+                Color(0xFF11745E),
                 fontSize: 12.5,
-                fontWeight: FontWeight.w800,
+                fontWeight:
+                FontWeight.w800,
                 letterSpacing: 0.5,
               ),
             ),
@@ -495,11 +638,14 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   }
 
   // =============================================================
-  // CALLER CARD
+  // Caller Card
   // =============================================================
 
-  Widget _buildCallerCard({required bool compact}) {
-    final double avatarSize = compact ? 136 : 164;
+  Widget _buildCallerCard({
+    required bool compact,
+  }) {
+    final double avatarSize =
+    compact ? 136 : 164;
 
     return Container(
       width: double.infinity,
@@ -508,9 +654,13 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
         vertical: compact ? 22 : 30,
       ),
       decoration: BoxDecoration(
-        color: _surface.withValues(alpha: 0.82),
-        borderRadius: BorderRadius.circular(30),
-        border: Border.all(color: _border),
+        color: _surface.withValues(
+          alpha: 0.82,
+        ),
+        borderRadius:
+        BorderRadius.circular(30),
+        border:
+        Border.all(color: _border),
         boxShadow: const <BoxShadow>[
           BoxShadow(
             color: Color(0x1A087AF5),
@@ -528,91 +678,138 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
         children: <Widget>[
           ScaleTransition(
             scale: _pulseAnimation,
-            child: _buildCallerAvatar(size: avatarSize),
+            child: _buildCallerAvatar(
+              size: avatarSize,
+            ),
           ),
-          SizedBox(height: compact ? 18 : 24),
+          SizedBox(
+            height: compact ? 18 : 24,
+          ),
           Text(
             _safeCallerName,
             maxLines: 2,
-            overflow: TextOverflow.ellipsis,
+            overflow:
+            TextOverflow.ellipsis,
             textAlign: TextAlign.center,
             style: TextStyle(
               color: _textPrimary,
-              fontSize: compact ? 25 : 29,
-              fontWeight: FontWeight.w900,
+              fontSize:
+              compact ? 25 : 29,
+              fontWeight:
+              FontWeight.w900,
               height: 1.08,
             ),
           ),
-          if (_safeCallerId != null) ...<Widget>[
-            const SizedBox(height: 8),
-            Container(
-              constraints: const BoxConstraints(maxWidth: 270),
-              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF1F6FF),
-                borderRadius: BorderRadius.circular(22),
+          if (_safeCallerId != null)
+            ...<Widget>[
+              const SizedBox(
+                height: 8,
               ),
-              child: Text(
-                _safeCallerId!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: _deepBlue,
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700,
+              Container(
+                constraints:
+                const BoxConstraints(
+                  maxWidth: 270,
+                ),
+                padding:
+                const EdgeInsets.symmetric(
+                  horizontal: 13,
+                  vertical: 7,
+                ),
+                decoration:
+                BoxDecoration(
+                  color:
+                  const Color(
+                    0xFFF1F6FF,
+                  ),
+                  borderRadius:
+                  BorderRadius.circular(
+                    22,
+                  ),
+                ),
+                child: Text(
+                  _safeCallerId!,
+                  maxLines: 1,
+                  overflow:
+                  TextOverflow
+                      .ellipsis,
+                  textAlign:
+                  TextAlign.center,
+                  style:
+                  const TextStyle(
+                    color: _deepBlue,
+                    fontSize: 12.5,
+                    fontWeight:
+                    FontWeight.w700,
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
         ],
       ),
     );
   }
 
   // =============================================================
-  // CALLER AVATAR
+  // Caller Avatar
   // =============================================================
 
-  Widget _buildCallerAvatar({required double size}) {
+  Widget _buildCallerAvatar({
+    required double size,
+  }) {
     return Container(
       width: size,
       height: size,
       padding: const EdgeInsets.all(5),
-      decoration: const BoxDecoration(
+      decoration:
+      const BoxDecoration(
         shape: BoxShape.circle,
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: <Color>[_cyan, _primaryBlue, _callGreen],
+          colors: <Color>[
+            _cyan,
+            _primaryBlue,
+            _callGreen,
+          ],
         ),
         boxShadow: <BoxShadow>[
-          BoxShadow(color: Color(0x44087AF5), blurRadius: 30, spreadRadius: 3),
-          BoxShadow(color: Color(0x3300D99B), blurRadius: 40, spreadRadius: 3),
+          BoxShadow(
+            color: Color(0x44087AF5),
+            blurRadius: 30,
+            spreadRadius: 3,
+          ),
+          BoxShadow(
+            color: Color(0x3300D99B),
+            blurRadius: 40,
+            spreadRadius: 3,
+          ),
         ],
       ),
       child: Container(
         padding: const EdgeInsets.all(4),
-        decoration: const BoxDecoration(
+        decoration:
+        const BoxDecoration(
           shape: BoxShape.circle,
           color: Colors.white,
         ),
         child: ClipOval(
-          child: _safeCallerPhotoUrl == null
+          child: _safeCallerPhotoUrl ==
+              null
               ? _buildAvatarFallback()
               : Image.network(
-                  _safeCallerPhotoUrl!,
-                  fit: BoxFit.cover,
-                  filterQuality: FilterQuality.medium,
-                  errorBuilder:
-                      (
-                        BuildContext context,
-                        Object error,
-                        StackTrace? stackTrace,
-                      ) {
-                        return _buildAvatarFallback();
-                      },
-                ),
+            _safeCallerPhotoUrl!,
+            fit: BoxFit.cover,
+            filterQuality:
+            FilterQuality.medium,
+            errorBuilder: (
+                BuildContext context,
+                Object error,
+                StackTrace?
+                stackTrace,
+                ) {
+              return _buildAvatarFallback();
+            },
+          ),
         ),
       ),
     );
@@ -621,11 +818,15 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   Widget _buildAvatarFallback() {
     return Container(
       alignment: Alignment.center,
-      decoration: const BoxDecoration(
+      decoration:
+      const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: <Color>[Color(0xFFEAF5FF), Color(0xFFDDF9F4)],
+          colors: <Color>[
+            Color(0xFFEAF5FF),
+            Color(0xFFDDF9F4),
+          ],
         ),
       ),
       child: Text(
@@ -633,14 +834,15 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
         style: const TextStyle(
           color: _deepBlue,
           fontSize: 52,
-          fontWeight: FontWeight.w900,
+          fontWeight:
+          FontWeight.w900,
         ),
       ),
     );
   }
 
   // =============================================================
-  // CALL INFORMATION
+  // Call Information
   // =============================================================
 
   Widget _buildCallInformation() {
@@ -652,20 +854,21 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
           style: const TextStyle(
             color: _textPrimary,
             fontSize: 18,
-            fontWeight: FontWeight.w800,
+            fontWeight:
+            FontWeight.w800,
           ),
         ),
-        const SizedBox(height: 7),
-
-        // Do not claim connection before CallService/WebRTC
-        // actually reports CONNECTED.
+        const SizedBox(
+          height: 7,
+        ),
         const Text(
           'Choose Accept or Decline',
           textAlign: TextAlign.center,
           style: TextStyle(
             color: _textSecondary,
             fontSize: 13,
-            fontWeight: FontWeight.w500,
+            fontWeight:
+            FontWeight.w500,
           ),
         ),
       ],
@@ -673,16 +876,24 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   }
 
   // =============================================================
-  // PROCESSING
+  // Processing
   // =============================================================
 
   Widget _buildProcessingState() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      padding:
+      const EdgeInsets.symmetric(
+        horizontal: 16,
+        vertical: 10,
+      ),
       decoration: BoxDecoration(
-        color: _surface.withValues(alpha: 0.82),
-        borderRadius: BorderRadius.circular(30),
-        border: Border.all(color: _border),
+        color: _surface.withValues(
+          alpha: 0.82,
+        ),
+        borderRadius:
+        BorderRadius.circular(30),
+        border:
+        Border.all(color: _border),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -690,19 +901,25 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
           const SizedBox(
             width: 17,
             height: 17,
-            child: CircularProgressIndicator(
+            child:
+            CircularProgressIndicator(
               strokeWidth: 2.2,
               color: _primaryBlue,
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(
+            width: 10,
+          ),
           Flexible(
             child: Text(
-              _accepting ? 'Accepting call...' : 'Declining call...',
+              _accepting
+                  ? 'Accepting call...'
+                  : 'Declining call...',
               style: const TextStyle(
                 color: _textSecondary,
                 fontSize: 13,
-                fontWeight: FontWeight.w600,
+                fontWeight:
+                FontWeight.w600,
               ),
             ),
           ),
@@ -712,45 +929,60 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   }
 
   // =============================================================
-  // ACCEPT / REJECT
+  // Accept / Decline
   // =============================================================
 
-  Widget _buildCallActions({required bool compact}) {
-    final bool actionsEnabled = !_isProcessing && !_actionCompleted;
+  Widget _buildCallActions({
+    required bool compact,
+  }) {
+    final bool actionsEnabled =
+        !_isProcessing &&
+            !_actionCompleted;
 
     return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisAlignment:
+      MainAxisAlignment.center,
       children: <Widget>[
         Expanded(
           child: _PremiumCallAction(
-            semanticsLabel: 'Reject call',
+            semanticsLabel:
+            'Reject call',
             label: 'Decline',
-            icon: Icons.call_end_rounded,
+            icon:
+            Icons.call_end_rounded,
             foregroundColor: _danger,
             glowColor: _danger,
             enabled: actionsEnabled,
             compact: compact,
             onPressed: () {
-              unawaited(_rejectCall());
+              unawaited(
+                _rejectCall(),
+              );
             },
           ),
         ),
-        const SizedBox(width: 18),
+        const SizedBox(
+          width: 18,
+        ),
         Expanded(
           child: _PremiumCallAction(
-            semanticsLabel: widget.isVideoCall
+            semanticsLabel:
+            widget.isVideoCall
                 ? 'Accept video call'
                 : 'Accept voice call',
             label: 'Accept',
             icon: widget.isVideoCall
                 ? Icons.videocam_rounded
                 : Icons.call_rounded,
-            foregroundColor: _callGreen,
+            foregroundColor:
+            _callGreen,
             glowColor: _callGreen,
             enabled: actionsEnabled,
             compact: compact,
             onPressed: () {
-              unawaited(_acceptCall());
+              unawaited(
+                _acceptCall(),
+              );
             },
           ),
         ),
@@ -760,7 +992,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
 }
 
 // ===============================================================
-// PREMIUM INCOMING CALL ACTION
+// Premium Incoming Call Action
 // ===============================================================
 
 class _PremiumCallAction extends StatelessWidget {
@@ -776,17 +1008,25 @@ class _PremiumCallAction extends StatelessWidget {
   });
 
   final String semanticsLabel;
+
   final String label;
+
   final IconData icon;
+
   final Color foregroundColor;
+
   final Color glowColor;
+
   final bool enabled;
+
   final bool compact;
+
   final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
-    final double buttonSize = compact ? 68 : 76;
+    final double buttonSize =
+    compact ? 68 : 76;
 
     return Semantics(
       button: true,
@@ -794,53 +1034,82 @@ class _PremiumCallAction extends StatelessWidget {
       label: semanticsLabel,
       child: AnimatedOpacity(
         opacity: enabled ? 1 : 0.45,
-        duration: const Duration(milliseconds: 160),
+        duration: const Duration(
+          milliseconds: 160,
+        ),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisSize:
+          MainAxisSize.min,
           children: <Widget>[
             Material(
               color: Colors.transparent,
               child: InkWell(
-                customBorder: const CircleBorder(),
-                onTap: enabled ? onPressed : null,
+                customBorder:
+                const CircleBorder(),
+                onTap:
+                enabled
+                    ? onPressed
+                    : null,
                 child: Container(
                   width: buttonSize,
                   height: buttonSize,
-                  decoration: BoxDecoration(
+                  decoration:
+                  BoxDecoration(
                     color: Colors.white,
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: foregroundColor.withValues(alpha: 0.32),
+                      color:
+                      foregroundColor
+                          .withValues(
+                        alpha: 0.32,
+                      ),
                     ),
-                    boxShadow: <BoxShadow>[
+                    boxShadow:
+                    <BoxShadow>[
                       BoxShadow(
-                        color: glowColor.withValues(alpha: 0.24),
+                        color:
+                        glowColor
+                            .withValues(
+                          alpha: 0.24,
+                        ),
                         blurRadius: 23,
                         spreadRadius: 2,
                       ),
                       const BoxShadow(
-                        color: Color(0x18000000),
+                        color:
+                        Color(
+                          0x18000000,
+                        ),
                         blurRadius: 10,
-                        offset: Offset(0, 5),
+                        offset:
+                        Offset(0, 5),
                       ),
                     ],
                   ),
                   child: Icon(
                     icon,
-                    size: compact ? 29 : 33,
-                    color: foregroundColor,
+                    size:
+                    compact ? 29 : 33,
+                    color:
+                    foregroundColor,
                   ),
                 ),
               ),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(
+              height: 10,
+            ),
             Text(
               label,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: Color(0xFF101828),
+              textAlign:
+              TextAlign.center,
+              style:
+              const TextStyle(
+                color:
+                Color(0xFF101828),
                 fontSize: 13.5,
-                fontWeight: FontWeight.w800,
+                fontWeight:
+                FontWeight.w800,
               ),
             ),
           ],
@@ -851,7 +1120,7 @@ class _PremiumCallAction extends StatelessWidget {
 }
 
 // ===============================================================
-// BACKGROUND DECORATION
+// Background Decoration
 // ===============================================================
 
 class _IncomingBackground extends StatelessWidget {
@@ -876,12 +1145,20 @@ class _IncomingBackground extends StatelessWidget {
           Positioned(
             top: -90,
             right: -80,
-            child: _GlowOrb(size: 240, color: Color(0x20087AF5)),
+            child: _GlowOrb(
+              size: 240,
+              color:
+              Color(0x20087AF5),
+            ),
           ),
           Positioned(
             bottom: 90,
             left: -100,
-            child: _GlowOrb(size: 260, color: Color(0x1800D99B)),
+            child: _GlowOrb(
+              size: 260,
+              color:
+              Color(0x1800D99B),
+            ),
           ),
         ],
       ),
@@ -890,23 +1167,32 @@ class _IncomingBackground extends StatelessWidget {
 }
 
 class _GlowOrb extends StatelessWidget {
-  const _GlowOrb({required this.size, required this.color});
+  const _GlowOrb({
+    required this.size,
+    required this.color,
+  });
 
   final double size;
+
   final Color color;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    return IgnorePointer(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+        ),
+      ),
     );
   }
 }
 
 // ===============================================================
-// SECURITY MESSAGE
+// Call Engine Information
 // ===============================================================
 
 class _SecurityMessage extends StatelessWidget {
@@ -915,18 +1201,28 @@ class _SecurityMessage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const Row(
-      mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisAlignment:
+      MainAxisAlignment.center,
       children: <Widget>[
-        Icon(Icons.shield_outlined, size: 15, color: Color(0xFF728199)),
-        SizedBox(width: 6),
+        Icon(
+          Icons.shield_outlined,
+          size: 15,
+          color: Color(0xFF728199),
+        ),
+        SizedBox(
+          width: 6,
+        ),
         Flexible(
           child: Text(
             'Call transport is handled by JR CALL Call Engine',
-            textAlign: TextAlign.center,
+            textAlign:
+            TextAlign.center,
             style: TextStyle(
-              color: Color(0xFF728199),
+              color:
+              Color(0xFF728199),
               fontSize: 11.5,
-              fontWeight: FontWeight.w500,
+              fontWeight:
+              FontWeight.w500,
             ),
           ),
         ),
@@ -934,28 +1230,3 @@ class _SecurityMessage extends StatelessWidget {
     );
   }
 }
-
-// ===============================================================
-// END OF FILE
-//
-// FIXED: BUG 07, BUG 08
-//
-// ALSO FIXED:
-// - Analyzer warning: no return inside finally.
-// - Duplicate Accept blocked.
-// - Duplicate Decline blocked.
-// - Accept/Decline race blocked.
-// - Failed action safely unlocks UI for retry.
-// - Successful action cannot execute twice.
-// - No fake CONNECTED message before WebRTC connection.
-// - Existing constructor preserved.
-// - Existing callback signatures preserved.
-// - Existing incoming voice/video presentation preserved.
-// - Small-screen scroll/overflow protection preserved.
-// - No WebRTC/Firestore/ICE/signaling duplication.
-//
-// STATUS: READY FOR FORMAT + ANALYZE
-//
-// NEXT FILE: outgoing_call_screen.dart
-// Location: lib/screens/outgoing_call_screen.dart
-// ===============================================================

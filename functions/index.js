@@ -1,51 +1,89 @@
 'use strict';
 
+const { getMessaging } = require('firebase-admin/messaging');
+
+const { onDocumentUpdated } = require('firebase-functions/v2/firestore');
+
 // ===============================================================
 // JR CALL
 // File: index.js
 // Location: functions/index.js
-// Master Repair: FILE 02
 //
-// PURPOSE:
-// Production Firebase Cloud Functions backend.
+// OTP / AUTH MASTER FILE 09 / 09
+// MAIN CLOUD FUNCTIONS ENTRY
 //
-// OWNS:
-// - Existing Phone account lookup
-// - JR CALL secure Email OTP
-// - Email signup/login/change verification
-// - Link-free password recovery Email OTP
-// - TURN temporary credentials
+// ===============================================================
 //
-// PHONE OTP:
-// Flutter -> Firebase Authentication directly.
+// CURRENT JR CALL AUTH CONTRACT:
 //
-// EMAIL OTP:
-// Flutter -> Cloud Functions here.
+// ACCOUNT CREATION:
 //
-// SECURITY:
-// - Raw OTP is NEVER stored.
-// - Raw OTP is NEVER returned.
-// - OTP is HMAC-SHA256 hashed.
-// - Password reset password is NEVER stored.
-// - Firebase UID is canonical private account identity.
-// - TURN secrets remain server-side.
+// ✓ Firebase-verified Phone Number is mandatory.
+// ✓ Account cannot be completed without Phone verification.
+// ✓ All other optional profile fields may be skipped.
+// ✓ Email is optional.
+// ✓ If Email credential is added, Password belongs to the same UID.
 //
-// RESOURCE POLICY:
-// - Current project regional CPU quota is respected.
-// - Auth/OTP functions use maximum 10 instances.
-// - TURN endpoint uses maximum 5 instances.
-// - TURN configuration never blocks Auth/OTP.
+// PHONE:
+//
+// ✓ Phone Signup requires Firebase Phone OTP.
+// ✓ Phone Login requires Firebase Phone OTP.
+// ✓ Phone OTP is Firebase Authentication-owned.
+// ✓ This backend NEVER generates Phone OTP.
+// ✓ This backend NEVER verifies Phone OTP.
+// ✓ No custom Phone OTP.
+// ✓ No fake/local Phone OTP.
+// ✓ No Phone password authentication backend.
+//
+// EMAIL LOGIN:
+//
+// ✓ Email + Password Login is direct Firebase Authentication.
+// ✓ Normal Email Login requires NO Email OTP.
+// ✓ Normal Email Login requires NO Email verification gate here.
+// ✓ Existing Email OTP callable remains compatibility-only.
+//
+// PASSWORD RECOVERY:
+//
+// ✓ Existing Email recovery OTP preserved.
+// ✓ OTP verification + password reset preserved.
+// ✓ Refresh-token revocation remains recovery-only.
+//
+// MULTI-DEVICE:
+//
+// ✓ Normal Login does not revoke other sessions here.
+// ✓ Same Firebase account can remain authenticated on multiple
+//   supported devices subject to Firebase client/session behavior.
+//
+// OTP BACKEND SPLIT:
+//
+// managers/otp_manager.js
+//   -> sendEmailOtpHandler
+//
+// managers/otp_manager_part2.js
+//   -> verifyEmailOtpHandler
+//   -> sendPasswordRecoveryOtpHandler
+//   -> verifyPasswordRecoveryOtpHandler
+//
+// PROTECTED:
+//
+// ✓ Call Engine untouched.
+// ✓ WebRTC untouched.
+// ✓ Signaling untouched.
+// ✓ Message Engine untouched.
 // ===============================================================
 
 const crypto = require('crypto');
 
-const { initializeApp } = require('firebase-admin/app');
+const {
+  initializeApp,
+} = require('firebase-admin/app');
 
-const { getAuth } = require('firebase-admin/auth');
+const {
+  getAuth,
+} = require('firebase-admin/auth');
 
 const {
   getFirestore,
-  FieldValue,
   Timestamp,
 } = require('firebase-admin/firestore');
 
@@ -61,135 +99,139 @@ const {
 } = require('firebase-functions/params');
 
 // ===============================================================
-// FIREBASE ADMIN
+// FIREBASE INITIALIZATION
 // ===============================================================
 
 initializeApp();
 
-const db = getFirestore();
+const db =
+  getFirestore();
 
 // ===============================================================
-// REGION
+// OTP MANAGER — PART 1
 // ===============================================================
 
-const FUNCTIONS_REGION = 'us-central1';
+const {
+  sendEmailOtpHandler,
+} = require(
+  './managers/otp_manager',
+);
 
 // ===============================================================
-// CLOUD RESOURCE POLICY
-// ===============================================================
-//
-// IMPORTANT:
-//
-// 256MiB 2nd-gen Functions may be provisioned with approximately
-// 1 vCPU per instance.
-//
-// The current Google Cloud regional CPU quota previously rejected:
-//
-// maxInstances: 50
-//
-// because that requested:
-// 50,000 mCPU
-//
-// while the project currently allows:
-// 20,000 mCPU.
-//
-// These values deliberately stay below that limit.
-//
+// OTP MANAGER — PART 2
 // ===============================================================
 
-const CALLABLE_MAX_INSTANCES = 10;
+const {
+  verifyEmailOtpHandler,
+  sendPasswordRecoveryOtpHandler,
+  verifyPasswordRecoveryOtpHandler,
+} = require(
+  './managers/otp_manager_part2',
+);
 
-const TURN_MAX_INSTANCES = 5;
+// ===============================================================
+// FUNCTION-BOUND SECRETS
+//
+// Firebase 2nd-gen secrets must be explicitly bound to every
+// function that requires runtime access.
+// ===============================================================
+
+const RESEND_API_KEY =
+  defineSecret(
+    'RESEND_API_KEY',
+  );
+
+const EMAIL_OTP_HASH_SECRET =
+  defineSecret(
+    'EMAIL_OTP_HASH_SECRET',
+  );
+
+// ===============================================================
+// REGION / RESOURCE POLICY
+// ===============================================================
+
+const FUNCTIONS_REGION =
+  'us-central1';
+
+const CALLABLE_MAX_INSTANCES =
+  10;
+
+const TURN_MAX_INSTANCES =
+  5;
 
 // ===============================================================
 // COLLECTIONS
 // ===============================================================
 
-const USERS_COLLECTION = 'users';
-
-const EMAIL_OTP_COLLECTION = 'email_otp_challenges';
-
-const EMAIL_OTP_RATE_COLLECTION = 'email_otp_rate_limits';
-
-const PASSWORD_RECOVERY_RATE_COLLECTION =
-  'password_recovery_rate_limits';
+const USERS_COLLECTION =
+  'users';
 
 const PHONE_LOOKUP_RATE_COLLECTION =
   'phone_lookup_rate_limits';
 
 // ===============================================================
-// EMAIL CONFIGURATION
+// PHONE LOOKUP POLICY
+//
+// Compatibility-only endpoint.
+//
+// IMPORTANT:
+//
+// Phone Signup/Login MUST use Firebase Authentication Phone
+// verification as the authoritative authentication operation.
+//
+// This lookup:
+//
+// ✓ Does NOT send SMS.
+// ✓ Does NOT verify OTP.
+// ✓ Does NOT authenticate a user.
+// ✓ Does NOT create an account.
+// ✓ Must never replace Firebase Phone verification.
 // ===============================================================
 
-const RESEND_API_KEY =
-  defineSecret('RESEND_API_KEY');
+const PHONE_LOOKUP_WINDOW_SECONDS =
+  10 * 60;
 
-const EMAIL_OTP_HASH_SECRET =
-  defineSecret('EMAIL_OTP_HASH_SECRET');
-
-const EMAIL_OTP_FROM =
-  defineString('EMAIL_OTP_FROM', {
-    default: '',
-  });
+const PHONE_LOOKUP_MAX_REQUESTS =
+  30;
 
 // ===============================================================
-// TURN CONFIGURATION
+// TURN CONFIG
 // ===============================================================
 
 const TURN_SHARED_SECRET =
-  defineSecret('TURN_SHARED_SECRET');
+  defineSecret(
+    'TURN_SHARED_SECRET',
+  );
 
 const TURN_PRIMARY_HOST =
-  defineString('TURN_PRIMARY_HOST', {
-    default: '',
-  });
+  defineString(
+    'TURN_PRIMARY_HOST',
+    {
+      default:
+        '',
+    },
+  );
 
 const TURN_BACKUP_HOST =
-  defineString('TURN_BACKUP_HOST', {
-    default: '',
-  });
+  defineString(
+    'TURN_BACKUP_HOST',
+    {
+      default:
+        '',
+    },
+  );
 
 const TURN_TTL_SECONDS =
-  defineString('TURN_TTL_SECONDS', {
-    default: '3600',
-  });
+  defineString(
+    'TURN_TTL_SECONDS',
+    {
+      default:
+        '3600',
+    },
+  );
 
 // ===============================================================
-// OTP POLICY
-// ===============================================================
-
-const OTP_LENGTH = 6;
-
-const OTP_EXPIRY_SECONDS = 5 * 60;
-
-const OTP_RESEND_COOLDOWN_SECONDS = 60;
-
-const OTP_RATE_WINDOW_SECONDS = 15 * 60;
-
-const OTP_MAX_SENDS_PER_WINDOW = 5;
-
-const OTP_MAX_VERIFY_ATTEMPTS = 5;
-
-const AUTHENTICATED_EMAIL_OTP_PURPOSES =
-  new Set([
-    'emailSignUp',
-    'emailLogin',
-    'emailChange',
-  ]);
-
-const PASSWORD_RECOVERY_PURPOSE =
-  'passwordRecovery';
-
-// ===============================================================
-// PHONE LOOKUP POLICY
-// ===============================================================
-
-const PHONE_LOOKUP_WINDOW_SECONDS = 10 * 60;
-
-const PHONE_LOOKUP_MAX_REQUESTS = 30;
-
-// ===============================================================
-// NORMALIZATION
+// BASIC HELPERS
 // ===============================================================
 
 function cleanString(value) {
@@ -198,58 +240,80 @@ function cleanString(value) {
     : '';
 }
 
-function normalizeEmail(value) {
-  return cleanString(value).toLowerCase();
+function sha256(value) {
+  return crypto
+    .createHash(
+      'sha256',
+    )
+    .update(
+      String(value),
+    )
+    .digest(
+      'hex',
+    );
 }
 
-function normalizePurpose(value) {
-  return cleanString(value);
-}
+// ===============================================================
+// CALLABLE DATA
+// ===============================================================
 
-function normalizeChallengeId(value) {
-  return cleanString(value);
-}
-
-function normalizeOtp(value) {
+function callableData(request) {
   if (
-    typeof value !== 'string' &&
-    typeof value !== 'number'
+    request &&
+    request.data &&
+    typeof request.data === 'object' &&
+    !Array.isArray(
+      request.data,
+    )
   ) {
-    return '';
+    return request.data;
   }
 
-  return String(value)
-    .trim()
-    .replace(/\s+/g, '');
+  return {};
 }
 
+// ===============================================================
+// PHONE NORMALIZATION
+// ===============================================================
+
 function normalizePhoneNumber(value) {
-  if (typeof value !== 'string') {
+  if (
+    typeof value !== 'string'
+  ) {
     return '';
   }
 
   return value
     .trim()
-    .replace(/[\s()\-.]/g, '');
+    .replace(
+      /[\s()\-.]/g,
+      '',
+    );
 }
 
 function normalizePhoneForSearch(value) {
-  const normalized =
-    normalizePhoneNumber(value);
+  const phone =
+    normalizePhoneNumber(
+      value,
+    );
 
-  if (normalized === '') {
+  if (
+    phone === ''
+  ) {
     return '';
   }
 
-  if (!normalized.startsWith('+')) {
-    return normalized.replace(
+  if (
+    !phone.startsWith('+')
+  ) {
+    return phone.replace(
       /[^0-9]/g,
       '',
     );
   }
 
   const digits =
-    normalized
+    phone
       .substring(1)
       .replace(
         /[^0-9]/g,
@@ -261,178 +325,20 @@ function normalizePhoneForSearch(value) {
     : `+${digits}`;
 }
 
-// ===============================================================
-// VALIDATION
-// ===============================================================
-
-function isValidEmail(value) {
-  return (
-    typeof value === 'string' &&
-    value.length > 3 &&
-    value.length <= 254 &&
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
-  );
-}
-
-function isValidOtp(value) {
-  return new RegExp(
-    `^\\d{${OTP_LENGTH}}$`,
-  ).test(value);
-}
-
 function isValidE164Phone(value) {
-  return /^\+[1-9][0-9]{7,14}$/.test(value);
-}
-
-function isValidPassword(value) {
-  return (
-    typeof value === 'string' &&
-    value.length >= 6 &&
-    value.length <= 4096
+  return /^\+[1-9][0-9]{7,14}$/.test(
+    value,
   );
 }
 
 // ===============================================================
-// TIMESTAMP HELPERS
+// TIMESTAMP
 // ===============================================================
-
-function isTimestamp(value) {
-  return value instanceof Timestamp;
-}
 
 function timestampToMillis(value) {
-  return isTimestamp(value)
+  return value instanceof Timestamp
     ? value.toMillis()
     : 0;
-}
-
-function secondsFromNow(seconds) {
-  return Timestamp.fromMillis(
-    Date.now() + seconds * 1000,
-  );
-}
-
-// ===============================================================
-// HASH / RANDOM
-// ===============================================================
-
-function sha256(value) {
-  return crypto
-    .createHash('sha256')
-    .update(String(value))
-    .digest('hex');
-}
-
-function createChallengeId() {
-  return crypto.randomUUID();
-}
-
-function createSixDigitOtp() {
-  return crypto
-    .randomInt(0, 1000000)
-    .toString()
-    .padStart(
-      OTP_LENGTH,
-      '0',
-    );
-}
-
-function createOtpHash({
-  challengeId,
-  uid,
-  email,
-  purpose,
-  otp,
-  secret,
-}) {
-  const payload = [
-    challengeId,
-    uid,
-    email,
-    purpose,
-    otp,
-  ].join('|');
-
-  return crypto
-    .createHmac(
-      'sha256',
-      secret,
-    )
-    .update(payload)
-    .digest('hex');
-}
-
-function timingSafeHashEquals(
-  storedHash,
-  suppliedHash,
-) {
-  if (
-    typeof storedHash !== 'string' ||
-    typeof suppliedHash !== 'string' ||
-    !/^[a-f0-9]{64}$/i.test(storedHash) ||
-    !/^[a-f0-9]{64}$/i.test(suppliedHash)
-  ) {
-    return false;
-  }
-
-  const stored =
-    Buffer.from(
-      storedHash,
-      'hex',
-    );
-
-  const supplied =
-    Buffer.from(
-      suppliedHash,
-      'hex',
-    );
-
-  if (
-    stored.length === 0 ||
-    stored.length !== supplied.length
-  ) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(
-    stored,
-    supplied,
-  );
-}
-
-// ===============================================================
-// CALLABLE HELPERS
-// ===============================================================
-
-function callableData(request) {
-  if (
-    request &&
-    request.data &&
-    typeof request.data === 'object' &&
-    !Array.isArray(request.data)
-  ) {
-    return request.data;
-  }
-
-  return {};
-}
-
-function requireCallableUid(request) {
-  const uid =
-    request &&
-    request.auth &&
-    typeof request.auth.uid === 'string'
-      ? request.auth.uid.trim()
-      : '';
-
-  if (uid === '') {
-    throw new HttpsError(
-      'unauthenticated',
-      'Firebase Authentication is required.',
-    );
-  }
-
-  return uid;
 }
 
 // ===============================================================
@@ -441,18 +347,14 @@ function requireCallableUid(request) {
 
 function resolveClientIp(request) {
   const rawRequest =
-    request &&
-    request.rawRequest
-      ? request.rawRequest
-      : null;
+    request?.rawRequest;
 
   if (!rawRequest) {
     return 'unknown';
   }
 
   const forwarded =
-    rawRequest.headers &&
-    typeof rawRequest.headers[
+    typeof rawRequest.headers?.[
       'x-forwarded-for'
     ] === 'string'
       ? rawRequest.headers[
@@ -460,63 +362,30 @@ function resolveClientIp(request) {
         ]
       : '';
 
-  if (forwarded !== '') {
+  if (
+    forwarded !== ''
+  ) {
     return forwarded
       .split(',')[0]
       .trim()
-      .substring(0, 128);
+      .substring(
+        0,
+        128,
+      );
   }
 
-  const ip =
-    typeof rawRequest.ip === 'string'
+  const requestIp =
+    typeof rawRequest.ip ===
+      'string'
       ? rawRequest.ip.trim()
       : '';
 
-  return ip === ''
+  return requestIp === ''
     ? 'unknown'
-    : ip.substring(0, 128);
-}
-
-// ===============================================================
-// EMAIL BACKEND CONFIGURATION
-// ===============================================================
-
-function requireEmailBackendConfiguration() {
-  const resendApiKey =
-    RESEND_API_KEY
-      .value()
-      .trim();
-
-  const hashSecret =
-    EMAIL_OTP_HASH_SECRET
-      .value()
-      .trim();
-
-  const emailFrom =
-    EMAIL_OTP_FROM
-      .value()
-      .trim();
-
-  if (
-    resendApiKey === '' ||
-    hashSecret === '' ||
-    emailFrom === ''
-  ) {
-    console.error(
-      'JR CALL Email OTP backend configuration is incomplete.',
-    );
-
-    throw new HttpsError(
-      'failed-precondition',
-      'Email OTP service is not completely configured.',
-    );
-  }
-
-  return {
-    resendApiKey,
-    hashSecret,
-    emailFrom,
-  };
+    : requestIp.substring(
+        0,
+        128,
+      );
 }
 
 // ===============================================================
@@ -528,15 +397,19 @@ async function enforcePhoneLookupRateLimit(
 ) {
   const ipHash =
     sha256(
-      resolveClientIp(request),
+      resolveClientIp(
+        request,
+      ),
     );
 
-  const reference =
+  const ref =
     db
       .collection(
         PHONE_LOOKUP_RATE_COLLECTION,
       )
-      .doc(ipHash);
+      .doc(
+        ipHash,
+      );
 
   const now =
     Timestamp.now();
@@ -545,23 +418,30 @@ async function enforcePhoneLookupRateLimit(
     async (transaction) => {
       const snapshot =
         await transaction.get(
-          reference,
+          ref,
         );
 
-      let count = 0;
+      let count =
+        0;
 
       let windowStartedAt =
         now;
 
-      if (snapshot.exists) {
+      if (
+        snapshot.exists
+      ) {
         const data =
-          snapshot.data() || {};
+          snapshot.data() ||
+          {};
 
         const storedCount =
           Number.isInteger(
             data.count,
           )
-            ? data.count
+            ? Math.max(
+                data.count,
+                0,
+              )
             : 0;
 
         const startMillis =
@@ -571,21 +451,22 @@ async function enforcePhoneLookupRateLimit(
 
         const expired =
           startMillis === 0 ||
-          (
-            now.toMillis() -
-            startMillis
-          ) >=
-          (
+          now.toMillis() -
+              startMillis >=
             PHONE_LOOKUP_WINDOW_SECONDS *
-            1000
-          );
+              1000;
 
         if (!expired) {
           count =
             storedCount;
 
-          windowStartedAt =
-            data.windowStartedAt;
+          if (
+            data.windowStartedAt instanceof
+            Timestamp
+          ) {
+            windowStartedAt =
+              data.windowStartedAt;
+          }
         }
       }
 
@@ -595,12 +476,12 @@ async function enforcePhoneLookupRateLimit(
       ) {
         throw new HttpsError(
           'resource-exhausted',
-          'Too many verification requests. Please try again later.',
+          'Too many requests. Please try again later.',
         );
       }
 
       transaction.set(
-        reference,
+        ref,
         {
           ipHash,
 
@@ -613,7 +494,8 @@ async function enforcePhoneLookupRateLimit(
             now,
         },
         {
-          merge: true,
+          merge:
+            true,
         },
       );
     },
@@ -621,7 +503,26 @@ async function enforcePhoneLookupRateLimit(
 }
 
 // ===============================================================
-// CHECK EXISTING PHONE ACCOUNT
+// PHONE ACCOUNT LOOKUP
+//
+// COMPATIBILITY-ONLY.
+//
+// AUTHORITATIVE PHONE FLOW:
+//
+// Flutter / supported Firebase client
+//
+//   -> Firebase Phone Authentication
+//   -> SMS verification
+//   -> Phone credential
+//   -> Firebase Authentication session
+//   -> JR CALL profile/account logic
+//
+// This callable:
+//
+// ✓ Does not send OTP.
+// ✓ Does not verify OTP.
+// ✓ Does not authenticate.
+// ✓ Does not bypass Phone verification.
 // ===============================================================
 
 exports.checkPhoneAccountExists =
@@ -642,7 +543,9 @@ exports.checkPhoneAccountExists =
 
     async (request) => {
       const data =
-        callableData(request);
+        callableData(
+          request,
+        );
 
       const phoneNumber =
         normalizePhoneNumber(
@@ -674,17 +577,77 @@ exports.checkPhoneAccountExists =
             );
       } catch (error) {
         if (
-          error &&
-          error.code ===
-            'auth/user-not-found'
+          error?.code ===
+          'auth/user-not-found'
         ) {
           return {
-            exists: false,
+            exists:
+              false,
           };
         }
 
         console.error(
-          'JR CALL Phone Auth lookup failed:',
+          'JR CALL Phone account lookup failed:',
+          error,
+        );
+
+        throw new HttpsError(
+          'unavailable',
+          'Phone account verification is temporarily unavailable.',
+        );
+      }
+
+      const uid =
+        cleanString(
+          firebaseUser?.uid,
+        );
+
+      if (
+        uid === ''
+      ) {
+        return {
+          exists:
+            false,
+        };
+      }
+
+      const authPhone =
+        normalizePhoneForSearch(
+          firebaseUser.phoneNumber ||
+          '',
+        );
+
+      const requestedPhone =
+        normalizePhoneForSearch(
+          phoneNumber,
+        );
+
+      if (
+        authPhone === '' ||
+        authPhone !==
+          requestedPhone
+      ) {
+        return {
+          exists:
+            false,
+        };
+      }
+
+      let snapshot;
+
+      try {
+        snapshot =
+          await db
+            .collection(
+              USERS_COLLECTION,
+            )
+            .doc(
+              uid,
+            )
+            .get();
+      } catch (error) {
+        console.error(
+          'JR CALL Phone profile lookup failed:',
           error,
         );
 
@@ -695,41 +658,25 @@ exports.checkPhoneAccountExists =
       }
 
       if (
-        !firebaseUser ||
-        cleanString(
-          firebaseUser.uid,
-        ) === ''
+        !snapshot.exists
       ) {
         return {
-          exists: false,
-        };
-      }
-
-      const userSnapshot =
-        await db
-          .collection(
-            USERS_COLLECTION,
-          )
-          .doc(
-            firebaseUser.uid,
-          )
-          .get();
-
-      if (!userSnapshot.exists) {
-        return {
-          exists: false,
+          exists:
+            false,
         };
       }
 
       const profile =
-        userSnapshot.data() || {};
+        snapshot.data() ||
+        {};
 
       if (
         profile.isDeleted === true ||
         profile.isBlocked === true
       ) {
         return {
-          exists: false,
+          exists:
+            false,
         };
       }
 
@@ -741,776 +688,40 @@ exports.checkPhoneAccountExists =
           '',
         );
 
-      const requestedPhone =
-        normalizePhoneForSearch(
-          phoneNumber,
-        );
-
       if (
         storedPhone !== '' &&
-        storedPhone !== requestedPhone
+        storedPhone !==
+          requestedPhone
       ) {
         return {
-          exists: false,
+          exists:
+            false,
         };
       }
 
       return {
-        exists: true,
+        exists:
+          true,
       };
     },
   );
 
 // ===============================================================
-// OTP RATE DOCUMENT
-// ===============================================================
-
-function buildOtpRateDocumentId({
-  namespace,
-  uid,
-  email,
-  purpose,
-  ipHash,
-}) {
-  return sha256(
-    [
-      namespace,
-      uid,
-      purpose,
-      email,
-      ipHash || '',
-    ].join('|'),
-  );
-}
-
-// ===============================================================
-// OTP CHALLENGE RESERVATION
-// ===============================================================
-
-async function reserveOtpChallenge({
-  uid,
-  email,
-  purpose,
-  challengeId,
-  otpHash,
-  rateCollection,
-  rateNamespace,
-  ipHash = '',
-}) {
-  const now =
-    Timestamp.now();
-
-  const expiresAt =
-    secondsFromNow(
-      OTP_EXPIRY_SECONDS,
-    );
-
-  const challengeRef =
-    db
-      .collection(
-        EMAIL_OTP_COLLECTION,
-      )
-      .doc(
-        challengeId,
-      );
-
-  const rateRef =
-    db
-      .collection(
-        rateCollection,
-      )
-      .doc(
-        buildOtpRateDocumentId({
-          namespace:
-            rateNamespace,
-
-          uid,
-
-          email,
-
-          purpose,
-
-          ipHash,
-        }),
-      );
-
-  await db.runTransaction(
-    async (transaction) => {
-      const rateSnapshot =
-        await transaction.get(
-          rateRef,
-        );
-
-      let sendCount = 0;
-
-      let windowStartedAt =
-        now;
-
-      let lastSentAt = null;
-
-      if (rateSnapshot.exists) {
-        const rateData =
-          rateSnapshot.data() || {};
-
-        const storedCount =
-          Number.isInteger(
-            rateData.sendCount,
-          )
-            ? rateData.sendCount
-            : 0;
-
-        const windowStartMillis =
-          timestampToMillis(
-            rateData.windowStartedAt,
-          );
-
-        const windowExpired =
-          windowStartMillis === 0 ||
-          (
-            now.toMillis() -
-            windowStartMillis
-          ) >=
-          (
-            OTP_RATE_WINDOW_SECONDS *
-            1000
-          );
-
-        if (!windowExpired) {
-          sendCount =
-            storedCount;
-
-          windowStartedAt =
-            rateData.windowStartedAt;
-        }
-
-        if (
-          isTimestamp(
-            rateData.lastSentAt,
-          )
-        ) {
-          lastSentAt =
-            rateData.lastSentAt;
-        }
-      }
-
-      if (
-        lastSentAt !== null
-      ) {
-        const elapsed =
-          now.toMillis() -
-          lastSentAt.toMillis();
-
-        const cooldownMillis =
-          OTP_RESEND_COOLDOWN_SECONDS *
-          1000;
-
-        if (
-          elapsed <
-          cooldownMillis
-        ) {
-          const retryAfterSeconds =
-            Math.ceil(
-              (
-                cooldownMillis -
-                elapsed
-              ) /
-              1000,
-            );
-
-          throw new HttpsError(
-            'resource-exhausted',
-            'Please wait before requesting another Email OTP.',
-            {
-              retryAfterSeconds,
-            },
-          );
-        }
-      }
-
-      if (
-        sendCount >=
-        OTP_MAX_SENDS_PER_WINDOW
-      ) {
-        throw new HttpsError(
-          'resource-exhausted',
-          'Too many Email OTP requests. Please try again later.',
-        );
-      }
-
-      transaction.set(
-        challengeRef,
-        {
-          challengeId,
-
-          uid,
-
-          email,
-
-          emailHash:
-            sha256(email),
-
-          purpose,
-
-          otpHash,
-
-          attempts:
-            0,
-
-          maxAttempts:
-            OTP_MAX_VERIFY_ATTEMPTS,
-
-          used:
-            false,
-
-          deliveryStatus:
-            'pending',
-
-          verificationStatus:
-            'pending',
-
-          createdAt:
-            now,
-
-          expiresAt,
-
-          verifiedAt:
-            null,
-
-          usedAt:
-            null,
-
-          deliveryMessageId:
-            null,
-
-          ipHash:
-            ipHash || null,
-        },
-      );
-
-      transaction.set(
-        rateRef,
-        {
-          uidHash:
-            sha256(uid),
-
-          emailHash:
-            sha256(email),
-
-          purpose,
-
-          ipHash:
-            ipHash || null,
-
-          sendCount:
-            sendCount + 1,
-
-          windowStartedAt,
-
-          lastSentAt:
-            now,
-
-          updatedAt:
-            now,
-        },
-        {
-          merge:
-            true,
-        },
-      );
-    },
-  );
-
-  return {
-    challengeRef,
-    expiresAt,
-  };
-}
-
-// ===============================================================
-// EMAIL LABEL
-// ===============================================================
-
-function otpPurposeLabel(purpose) {
-  switch (purpose) {
-    case 'emailLogin':
-      return 'login';
-
-    case 'emailSignUp':
-      return 'account verification';
-
-    case 'emailChange':
-      return 'email change verification';
-
-    case PASSWORD_RECOVERY_PURPOSE:
-      return 'password recovery';
-
-    default:
-      return 'verification';
-  }
-}
-
-// ===============================================================
-// SEND EMAIL THROUGH RESEND
-// ===============================================================
-
-async function sendOtpEmail({
-  apiKey,
-  from,
-  email,
-  otp,
-  purpose,
-}) {
-  const purposeLabel =
-    otpPurposeLabel(
-      purpose,
-    );
-
-  const subject =
-    purpose ===
-    PASSWORD_RECOVERY_PURPOSE
-      ? 'Your JR CALL password recovery code'
-      : 'Your JR CALL verification code';
-
-  const text = [
-    'JR CALL',
-    '',
-    `Your ${purposeLabel} code is ${otp}.`,
-    '',
-    'This code expires in 5 minutes.',
-    '',
-    'If you did not request this code, you can safely ignore this email.',
-  ].join('\n');
-
-  const html = `
-<!doctype html>
-<html>
-<body style="
-  margin:0;
-  padding:0;
-  background:#F6F8FC;
-  font-family:Arial,Helvetica,sans-serif;
-  color:#111827;
-">
-<div style="
-  max-width:560px;
-  margin:0 auto;
-  padding:32px 18px;
-">
-<div style="
-  background:#FFFFFF;
-  border:1px solid #E3E8F1;
-  border-radius:24px;
-  padding:32px 24px;
-  box-shadow:0 12px 34px rgba(17,24,39,0.06);
-">
-<div style="
-  font-size:26px;
-  font-weight:800;
-  text-align:center;
-">
-JR CALL
-</div>
-
-<div style="
-  margin-top:8px;
-  text-align:center;
-  color:#68758C;
-  font-size:14px;
-">
-Secure Email Verification
-</div>
-
-<div style="
-  margin-top:30px;
-  text-align:center;
-  color:#374151;
-  font-size:15px;
-">
-Your ${purposeLabel} code is:
-</div>
-
-<div style="
-  margin:22px auto;
-  padding:20px 16px;
-  border-radius:18px;
-  background:#EFF6FF;
-  color:#1769F5;
-  font-size:34px;
-  font-weight:800;
-  letter-spacing:9px;
-  text-align:center;
-">
-${otp}
-</div>
-
-<div style="
-  text-align:center;
-  color:#68758C;
-  font-size:14px;
-">
-This code expires in
-<strong>5 minutes</strong>.
-</div>
-
-<div style="
-  margin-top:24px;
-  padding-top:20px;
-  border-top:1px solid #EEF1F5;
-  text-align:center;
-  color:#8A94A6;
-  font-size:12px;
-">
-If you did not request this code,
-you can safely ignore this email.
-</div>
-
-</div>
-</div>
-</body>
-</html>
-`;
-
-  const response =
-    await fetch(
-      'https://api.resend.com/emails',
-      {
-        method:
-          'POST',
-
-        headers: {
-          Authorization:
-            `Bearer ${apiKey}`,
-
-          'Content-Type':
-            'application/json',
-
-          'User-Agent':
-            'JR-CALL-Firebase-Functions/1.0',
-        },
-
-        body:
-          JSON.stringify({
-            from,
-
-            to: [
-              email,
-            ],
-
-            subject,
-
-            text,
-
-            html,
-          }),
-      },
-    );
-
-  let responseData = null;
-
-  try {
-    responseData =
-      await response.json();
-  } catch (_) {
-    responseData = null;
-  }
-
-  if (!response.ok) {
-    console.error(
-      'JR CALL Email delivery rejected:',
-      {
-        status:
-          response.status,
-
-        response:
-          responseData,
-      },
-    );
-
-    throw new Error(
-      'EMAIL_DELIVERY_FAILED',
-    );
-  }
-
-  const messageId =
-    responseData &&
-    typeof responseData.id ===
-      'string'
-      ? responseData.id.trim()
-      : '';
-
-  return {
-    messageId:
-      messageId === ''
-        ? null
-        : messageId,
-  };
-}
-
-// ===============================================================
-// OTP DELIVERY STATUS
-// ===============================================================
-
-async function markOtpDelivered({
-  challengeRef,
-  messageId,
-}) {
-  await challengeRef.update({
-    deliveryStatus:
-      'sent',
-
-    deliveryMessageId:
-      messageId,
-
-    deliveredAt:
-      FieldValue.serverTimestamp(),
-  });
-}
-
-async function markOtpDeliveryFailed({
-  challengeRef,
-}) {
-  try {
-    await challengeRef.update({
-      deliveryStatus:
-        'failed',
-
-      verificationStatus:
-        'delivery_failed',
-
-      failedAt:
-        FieldValue.serverTimestamp(),
-    });
-  } catch (error) {
-    console.error(
-      'JR CALL failed to mark OTP delivery failure:',
-      error,
-    );
-  }
-}
-
-// ===============================================================
-// EMAIL AVAILABILITY
-// ===============================================================
-
-async function ensureEmailAvailableForUid(
-  email,
-  uid,
-) {
-  try {
-    const existingUser =
-      await getAuth()
-        .getUserByEmail(
-          email,
-        );
-
-    if (
-      existingUser.uid !== uid
-    ) {
-      throw new HttpsError(
-        'already-exists',
-        'This Email is already linked to another account.',
-      );
-    }
-  } catch (error) {
-    if (
-      error instanceof HttpsError
-    ) {
-      throw error;
-    }
-
-    if (
-      error &&
-      error.code ===
-        'auth/user-not-found'
-    ) {
-      return;
-    }
-
-    console.error(
-      'JR CALL Email uniqueness lookup failed:',
-      error,
-    );
-
-    throw new HttpsError(
-      'unavailable',
-      'Email availability could not be verified right now.',
-    );
-  }
-}
-
-// ===============================================================
-// RESOLVE AUTHENTICATED EMAIL OTP TARGET
-// ===============================================================
-
-async function resolveAuthenticatedOtpEmail({
-  uid,
-  requestedEmail,
-  purpose,
-}) {
-  let firebaseUser;
-
-  try {
-    firebaseUser =
-      await getAuth()
-        .getUser(uid);
-  } catch (error) {
-    console.error(
-      'JR CALL failed to load authenticated Firebase user:',
-      error,
-    );
-
-    throw new HttpsError(
-      'unauthenticated',
-      'The authenticated Firebase account could not be verified.',
-    );
-  }
-
-  if (
-    firebaseUser.disabled === true
-  ) {
-    throw new HttpsError(
-      'permission-denied',
-      'This account is unavailable.',
-    );
-  }
-
-  const currentEmail =
-    normalizeEmail(
-      firebaseUser.email,
-    );
-
-  // =============================================================
-  // EMAIL LOGIN
-  // =============================================================
-
-  if (
-    purpose === 'emailLogin'
-  ) {
-    if (
-      currentEmail === '' ||
-      currentEmail !== requestedEmail
-    ) {
-      throw new HttpsError(
-        'permission-denied',
-        'Requested Email does not match the authenticated Firebase account.',
-      );
-    }
-
-    const profileSnapshot =
-      await db
-        .collection(
-          USERS_COLLECTION,
-        )
-        .doc(uid)
-        .get();
-
-    if (!profileSnapshot.exists) {
-      throw new HttpsError(
-        'failed-precondition',
-        'This Firebase account does not have an existing JR CALL profile.',
-      );
-    }
-
-    const profile =
-      profileSnapshot.data() || {};
-
-    if (
-      profile.isDeleted === true ||
-      profile.isBlocked === true
-    ) {
-      throw new HttpsError(
-        'permission-denied',
-        'This JR CALL account is unavailable.',
-      );
-    }
-
-    const profileEmail =
-      normalizeEmail(
-        profile.emailNormalized ||
-        profile.email ||
-        '',
-      );
-
-    if (
-      profileEmail !== '' &&
-      profileEmail !== currentEmail
-    ) {
-      throw new HttpsError(
-        'failed-precondition',
-        'JR CALL profile Email does not match Firebase Authentication.',
-      );
-    }
-
-    return {
-      firebaseUser,
-      email: currentEmail,
-    };
-  }
-
-  // =============================================================
-  // EMAIL SIGNUP
-  // =============================================================
-
-  if (
-    purpose === 'emailSignUp'
-  ) {
-    if (
-      currentEmail !== '' &&
-      currentEmail !== requestedEmail
-    ) {
-      throw new HttpsError(
-        'failed-precondition',
-        'A different Email is already linked to this Firebase account.',
-      );
-    }
-
-    await ensureEmailAvailableForUid(
-      requestedEmail,
-      uid,
-    );
-
-    return {
-      firebaseUser,
-      email: requestedEmail,
-    };
-  }
-
-  // =============================================================
-  // EMAIL CHANGE
-  // =============================================================
-
-  if (
-    purpose === 'emailChange'
-  ) {
-    if (
-      currentEmail !== '' &&
-      currentEmail === requestedEmail
-    ) {
-      throw new HttpsError(
-        'failed-precondition',
-        'The new Email must be different from the current Email.',
-      );
-    }
-
-    await ensureEmailAvailableForUid(
-      requestedEmail,
-      uid,
-    );
-
-    return {
-      firebaseUser,
-      email: requestedEmail,
-    };
-  }
-
-  throw new HttpsError(
-    'invalid-argument',
-    'Unsupported Email OTP purpose.',
-  );
-}
-
-// ===============================================================
-// SEND AUTHENTICATED EMAIL OTP
+// EMAIL OTP — SEND
+//
+// PART 1
+//
+// IMPORTANT:
+//
+// Normal Email + Password Login does NOT require this callable.
+//
+// This callable remains for supported Email OTP operations and
+// compatibility with the existing OTP manager contract.
+//
+// REQUIRED SECRETS:
+//
+// RESEND_API_KEY
+// EMAIL_OTP_HASH_SECRET
 // ===============================================================
 
 exports.sendEmailOtp =
@@ -1535,512 +746,27 @@ exports.sendEmailOtp =
     },
 
     async (request) => {
-      const uid =
-        requireCallableUid(
-          request,
-        );
-
-      const data =
-        callableData(request);
-
-      const requestedEmail =
-        normalizeEmail(
-          data.email,
-        );
-
-      const purpose =
-        normalizePurpose(
-          data.purpose,
-        );
-
-      if (
-        !isValidEmail(
-          requestedEmail,
-        )
-      ) {
-        throw new HttpsError(
-          'invalid-argument',
-          'A valid Email address is required.',
-        );
-      }
-
-      if (
-        !AUTHENTICATED_EMAIL_OTP_PURPOSES
-          .has(purpose)
-      ) {
-        throw new HttpsError(
-          'invalid-argument',
-          'Unsupported Email OTP purpose.',
-        );
-      }
-
-      const {
-        resendApiKey,
-        hashSecret,
-        emailFrom,
-      } =
-        requireEmailBackendConfiguration();
-
-      const resolved =
-        await resolveAuthenticatedOtpEmail({
-          uid,
-          requestedEmail,
-          purpose,
-        });
-
-      const email =
-        resolved.email;
-
-      const challengeId =
-        createChallengeId();
-
-      const otp =
-        createSixDigitOtp();
-
-      const otpHash =
-        createOtpHash({
-          challengeId,
-          uid,
-          email,
-          purpose,
-          otp,
-          secret:
-            hashSecret,
-        });
-
-      const reservation =
-        await reserveOtpChallenge({
-          uid,
-          email,
-          purpose,
-          challengeId,
-          otpHash,
-
-          rateCollection:
-            EMAIL_OTP_RATE_COLLECTION,
-
-          rateNamespace:
-            'authenticated-email-otp',
-        });
-
-      try {
-        const delivery =
-          await sendOtpEmail({
-            apiKey:
-              resendApiKey,
-
-            from:
-              emailFrom,
-
-            email,
-
-            otp,
-
-            purpose,
-          });
-
-        await markOtpDelivered({
-          challengeRef:
-            reservation.challengeRef,
-
-          messageId:
-            delivery.messageId,
-        });
-      } catch (error) {
-        await markOtpDeliveryFailed({
-          challengeRef:
-            reservation.challengeRef,
-        });
-
-        console.error(
-          'JR CALL Email OTP delivery failed:',
-          error,
-        );
-
-        throw new HttpsError(
-          'unavailable',
-          'Email OTP could not be delivered. Please try again.',
-        );
-      }
-
-      return {
-        success: true,
-
-        challengeId,
-
-        expiresIn:
-          OTP_EXPIRY_SECONDS,
-
-        resendAfter:
-          OTP_RESEND_COOLDOWN_SECONDS,
-      };
+      return sendEmailOtpHandler(
+        request,
+      );
     },
   );
 
 // ===============================================================
-// OTP TRANSACTION VERIFIER
-// ===============================================================
-
-async function verifyOtpChallengeTransaction({
-  challengeId,
-  otp,
-  suppliedPurpose,
-  hashSecret,
-  expectedUid = null,
-}) {
-  const challengeRef =
-    db
-      .collection(
-        EMAIL_OTP_COLLECTION,
-      )
-      .doc(
-        challengeId,
-      );
-
-  return db.runTransaction(
-    async (transaction) => {
-      const snapshot =
-        await transaction.get(
-          challengeRef,
-        );
-
-      if (!snapshot.exists) {
-        throw new HttpsError(
-          'not-found',
-          'Email OTP challenge was not found.',
-        );
-      }
-
-      const challenge =
-        snapshot.data() || {};
-
-      const challengeUid =
-        cleanString(
-          challenge.uid,
-        );
-
-      const challengeEmail =
-        normalizeEmail(
-          challenge.email,
-        );
-
-      const challengePurpose =
-        normalizePurpose(
-          challenge.purpose,
-        );
-
-      const storedHash =
-        cleanString(
-          challenge.otpHash,
-        );
-
-      const attempts =
-        Number.isInteger(
-          challenge.attempts,
-        )
-          ? challenge.attempts
-          : 0;
-
-      const maxAttempts =
-        Number.isInteger(
-          challenge.maxAttempts,
-        )
-          ? challenge.maxAttempts
-          : OTP_MAX_VERIFY_ATTEMPTS;
-
-      const used =
-        challenge.used === true;
-
-      const deliveryStatus =
-        cleanString(
-          challenge.deliveryStatus,
-        );
-
-      const expiresAt =
-        challenge.expiresAt;
-
-      if (
-        challengeUid === ''
-      ) {
-        throw new HttpsError(
-          'failed-precondition',
-          'Email OTP challenge owner is invalid.',
-        );
-      }
-
-      if (
-        expectedUid !== null &&
-        challengeUid !== expectedUid
-      ) {
-        throw new HttpsError(
-          'permission-denied',
-          'This Email OTP challenge does not belong to the authenticated user.',
-        );
-      }
-
-      if (
-        !isValidEmail(
-          challengeEmail,
-        )
-      ) {
-        throw new HttpsError(
-          'failed-precondition',
-          'Email OTP challenge Email is invalid.',
-        );
-      }
-
-      if (
-        challengePurpose !==
-        suppliedPurpose
-      ) {
-        throw new HttpsError(
-          'permission-denied',
-          'Email OTP purpose does not match the challenge.',
-        );
-      }
-
-      if (
-        deliveryStatus !== 'sent'
-      ) {
-        throw new HttpsError(
-          'failed-precondition',
-          'Email OTP was not successfully delivered.',
-        );
-      }
-
-      if (used) {
-        throw new HttpsError(
-          'failed-precondition',
-          'This Email OTP has already been used.',
-        );
-      }
-
-      if (
-        attempts >= maxAttempts
-      ) {
-        throw new HttpsError(
-          'resource-exhausted',
-          'Too many incorrect Email OTP attempts.',
-        );
-      }
-
-      if (
-        !isTimestamp(
-          expiresAt,
-        )
-      ) {
-        throw new HttpsError(
-          'failed-precondition',
-          'Email OTP expiry information is invalid.',
-        );
-      }
-
-      if (
-        expiresAt.toMillis() <=
-        Date.now()
-      ) {
-        transaction.update(
-          challengeRef,
-          {
-            verificationStatus:
-              'expired',
-
-            expiredAt:
-              FieldValue.serverTimestamp(),
-          },
-        );
-
-        return {
-          status:
-            'expired',
-
-          uid:
-            challengeUid,
-
-          email:
-            challengeEmail,
-
-          purpose:
-            challengePurpose,
-
-          attemptsRemaining:
-            Math.max(
-              maxAttempts -
-              attempts,
-              0,
-            ),
-        };
-      }
-
-      const suppliedHash =
-        createOtpHash({
-          challengeId,
-
-          uid:
-            challengeUid,
-
-          email:
-            challengeEmail,
-
-          purpose:
-            challengePurpose,
-
-          otp,
-
-          secret:
-            hashSecret,
-        });
-
-      const valid =
-        timingSafeHashEquals(
-          storedHash,
-          suppliedHash,
-        );
-
-      if (!valid) {
-        const nextAttempts =
-          attempts + 1;
-
-        const remaining =
-          Math.max(
-            maxAttempts -
-            nextAttempts,
-            0,
-          );
-
-        transaction.update(
-          challengeRef,
-          {
-            attempts:
-              nextAttempts,
-
-            lastAttemptAt:
-              FieldValue.serverTimestamp(),
-
-            verificationStatus:
-              remaining === 0
-                ? 'locked'
-                : 'pending',
-          },
-        );
-
-        return {
-          status:
-            remaining === 0
-              ? 'locked'
-              : 'invalid',
-
-          uid:
-            challengeUid,
-
-          email:
-            challengeEmail,
-
-          purpose:
-            challengePurpose,
-
-          attemptsRemaining:
-            remaining,
-        };
-      }
-
-      transaction.update(
-        challengeRef,
-        {
-          used:
-            true,
-
-          verificationStatus:
-            'verified',
-
-          verifiedAt:
-            FieldValue.serverTimestamp(),
-
-          usedAt:
-            FieldValue.serverTimestamp(),
-
-          verifiedUid:
-            challengeUid,
-        },
-      );
-
-      return {
-        status:
-          'verified',
-
-        uid:
-          challengeUid,
-
-        email:
-          challengeEmail,
-
-        purpose:
-          challengePurpose,
-
-        attemptsRemaining:
-          Math.max(
-            maxAttempts -
-            attempts,
-            0,
-          ),
-      };
-    },
-  );
-}
-
-// ===============================================================
-// OTP RESULT MAPPING
-// ===============================================================
-
-function throwForVerificationStatus(
-  result,
-) {
-  if (
-    result.status === 'expired'
-  ) {
-    throw new HttpsError(
-      'deadline-exceeded',
-      'Email OTP has expired. Request a new code.',
-    );
-  }
-
-  if (
-    result.status === 'locked'
-  ) {
-    throw new HttpsError(
-      'resource-exhausted',
-      'Too many incorrect Email OTP attempts. Request a new code.',
-      {
-        attemptsRemaining: 0,
-      },
-    );
-  }
-
-  if (
-    result.status === 'invalid'
-  ) {
-    throw new HttpsError(
-      'invalid-argument',
-      'Email OTP is incorrect.',
-      {
-        attemptsRemaining:
-          result.attemptsRemaining,
-      },
-    );
-  }
-
-  if (
-    result.status !== 'verified'
-  ) {
-    throw new HttpsError(
-      'internal',
-      'Email OTP verification did not complete.',
-    );
-  }
-}
-
-// ===============================================================
-// VERIFY AUTHENTICATED EMAIL OTP
+// EMAIL OTP — VERIFY
+//
+// PART 2
+//
+// IMPORTANT:
+//
+// Normal Email + Password Login does NOT require Email OTP.
+//
+// emailLogin OTP support remains compatibility-only inside the
+// manager so older/transitional callers are not broken.
+//
+// REQUIRED SECRET:
+//
+// EMAIL_OTP_HASH_SECRET
 // ===============================================================
 
 exports.verifyEmailOtp =
@@ -2064,289 +790,23 @@ exports.verifyEmailOtp =
     },
 
     async (request) => {
-      const uid =
-        requireCallableUid(
-          request,
-        );
-
-      const data =
-        callableData(request);
-
-      const challengeId =
-        normalizeChallengeId(
-          data.challengeId,
-        );
-
-      const otp =
-        normalizeOtp(
-          data.otp ??
-          data.code,
-        );
-
-      const purpose =
-        normalizePurpose(
-          data.purpose,
-        );
-
-      if (
-        challengeId === ''
-      ) {
-        throw new HttpsError(
-          'invalid-argument',
-          'Email OTP challengeId is required.',
-        );
-      }
-
-      if (
-        !isValidOtp(
-          otp,
-        )
-      ) {
-        throw new HttpsError(
-          'invalid-argument',
-          'A valid 6-digit Email OTP is required.',
-        );
-      }
-
-      if (
-        !AUTHENTICATED_EMAIL_OTP_PURPOSES
-          .has(purpose)
-      ) {
-        throw new HttpsError(
-          'invalid-argument',
-          'Unsupported Email OTP purpose.',
-        );
-      }
-
-      const hashSecret =
-        EMAIL_OTP_HASH_SECRET
-          .value()
-          .trim();
-
-      if (
-        hashSecret === ''
-      ) {
-        throw new HttpsError(
-          'failed-precondition',
-          'Email OTP verification service is not configured.',
-        );
-      }
-
-      let verificationResult;
-
-      try {
-        verificationResult =
-          await verifyOtpChallengeTransaction({
-            challengeId,
-
-            otp,
-
-            suppliedPurpose:
-              purpose,
-
-            hashSecret,
-
-            expectedUid:
-              uid,
-          });
-      } catch (error) {
-        if (
-          error instanceof HttpsError
-        ) {
-          throw error;
-        }
-
-        console.error(
-          'JR CALL Email OTP transaction failed:',
-          error,
-        );
-
-        throw new HttpsError(
-          'internal',
-          'Email OTP verification could not be completed.',
-        );
-      }
-
-      throwForVerificationStatus(
-        verificationResult,
+      return verifyEmailOtpHandler(
+        request,
       );
-
-      let firebaseUser;
-
-      try {
-        firebaseUser =
-          await getAuth()
-            .getUser(uid);
-      } catch (error) {
-        console.error(
-          'JR CALL Firebase user reload failed:',
-          error,
-        );
-
-        throw new HttpsError(
-          'internal',
-          'Email OTP was verified but the Firebase account could not be finalized.',
-        );
-      }
-
-      if (
-        firebaseUser.disabled === true
-      ) {
-        throw new HttpsError(
-          'permission-denied',
-          'This account is unavailable.',
-        );
-      }
-
-      const currentEmail =
-        normalizeEmail(
-          firebaseUser.email,
-        );
-
-      const verifiedEmail =
-        verificationResult.email;
-
-      try {
-        // =======================================================
-        // EMAIL LOGIN
-        // =======================================================
-
-        if (
-          purpose === 'emailLogin'
-        ) {
-          if (
-            currentEmail === '' ||
-            currentEmail !== verifiedEmail
-          ) {
-            throw new HttpsError(
-              'failed-precondition',
-              'Firebase Email changed during OTP verification.',
-            );
-          }
-
-          if (
-            firebaseUser.emailVerified !== true
-          ) {
-            firebaseUser =
-              await getAuth()
-                .updateUser(
-                  uid,
-                  {
-                    emailVerified: true,
-                  },
-                );
-          }
-        }
-
-        // =======================================================
-        // EMAIL SIGNUP / EMAIL CHANGE
-        // =======================================================
-
-        else {
-          await ensureEmailAvailableForUid(
-            verifiedEmail,
-            uid,
-          );
-
-          firebaseUser =
-            await getAuth()
-              .updateUser(
-                uid,
-                {
-                  email:
-                    verifiedEmail,
-
-                  emailVerified:
-                    true,
-                },
-              );
-        }
-      } catch (error) {
-        if (
-          error instanceof HttpsError
-        ) {
-          throw error;
-        }
-
-        console.error(
-          'JR CALL Firebase Email finalization failed:',
-          error,
-        );
-
-        throw new HttpsError(
-          'internal',
-          'Email OTP was verified but account verification could not be finalized.',
-        );
-      }
-
-      // =========================================================
-      // EXISTING PROFILE SYNC
-      // =========================================================
-      //
-      // Never create an incomplete user profile here.
-      //
-      // =========================================================
-
-      try {
-        const userRef =
-          db
-            .collection(
-              USERS_COLLECTION,
-            )
-            .doc(uid);
-
-        const snapshot =
-          await userRef.get();
-
-        if (snapshot.exists) {
-          await userRef.update({
-            email:
-              verifiedEmail,
-
-            emailNormalized:
-              verifiedEmail,
-
-            emailVerified:
-              true,
-
-            updatedAt:
-              FieldValue.serverTimestamp(),
-          });
-        }
-      } catch (error) {
-        console.error(
-          'JR CALL Email profile sync skipped:',
-          error,
-        );
-      }
-
-      return {
-        success: true,
-
-        verified: true,
-
-        challengeId,
-
-        purpose,
-
-        email:
-          verifiedEmail,
-      };
     },
   );
 
 // ===============================================================
 // PASSWORD RECOVERY OTP — SEND
-// ===============================================================
 //
-// Flutter INPUT:
+// PART 2
 //
-// {
-//   email: 'name@example.com'
-// }
+// Existing recovery behavior is preserved.
 //
-// This does NOT use Firebase Email reset links.
+// REQUIRED SECRETS:
 //
+// RESEND_API_KEY
+// EMAIL_OTP_HASH_SECRET
 // ===============================================================
 
 exports.sendPasswordRecoveryOtp =
@@ -2371,243 +831,25 @@ exports.sendPasswordRecoveryOtp =
     },
 
     async (request) => {
-      const data =
-        callableData(request);
-
-      const email =
-        normalizeEmail(
-          data.email,
-        );
-
-      if (
-        !isValidEmail(
-          email,
-        )
-      ) {
-        throw new HttpsError(
-          'invalid-argument',
-          'A valid Email address is required.',
-        );
-      }
-
-      const {
-        resendApiKey,
-        hashSecret,
-        emailFrom,
-      } =
-        requireEmailBackendConfiguration();
-
-      let firebaseUser;
-
-      try {
-        firebaseUser =
-          await getAuth()
-            .getUserByEmail(
-              email,
-            );
-      } catch (error) {
-        if (
-          error &&
-          error.code ===
-            'auth/user-not-found'
-        ) {
-          // Do not reveal account existence.
-          return {
-            success: true,
-
-            challengeId: null,
-
-            expiresIn:
-              OTP_EXPIRY_SECONDS,
-
-            resendAfter:
-              OTP_RESEND_COOLDOWN_SECONDS,
-          };
-        }
-
-        console.error(
-          'JR CALL password recovery lookup failed:',
-          error,
-        );
-
-        throw new HttpsError(
-          'unavailable',
-          'Password recovery is temporarily unavailable.',
-        );
-      }
-
-      if (
-        firebaseUser.disabled === true
-      ) {
-        return {
-          success: true,
-
-          challengeId: null,
-
-          expiresIn:
-            OTP_EXPIRY_SECONDS,
-
-          resendAfter:
-            OTP_RESEND_COOLDOWN_SECONDS,
-        };
-      }
-
-      const providerIds =
-        new Set(
-          (
-            firebaseUser.providerData ||
-            []
-          ).map(
-            (provider) =>
-              provider.providerId,
-          ),
-        );
-
-      if (
-        !providerIds.has(
-          'password',
-        )
-      ) {
-        return {
-          success: true,
-
-          challengeId: null,
-
-          expiresIn:
-            OTP_EXPIRY_SECONDS,
-
-          resendAfter:
-            OTP_RESEND_COOLDOWN_SECONDS,
-        };
-      }
-
-      const uid =
-        firebaseUser.uid;
-
-      const challengeId =
-        createChallengeId();
-
-      const otp =
-        createSixDigitOtp();
-
-      const ipHash =
-        sha256(
-          resolveClientIp(
-            request,
-          ),
-        );
-
-      const otpHash =
-        createOtpHash({
-          challengeId,
-
-          uid,
-
-          email,
-
-          purpose:
-            PASSWORD_RECOVERY_PURPOSE,
-
-          otp,
-
-          secret:
-            hashSecret,
-        });
-
-      const reservation =
-        await reserveOtpChallenge({
-          uid,
-
-          email,
-
-          purpose:
-            PASSWORD_RECOVERY_PURPOSE,
-
-          challengeId,
-
-          otpHash,
-
-          rateCollection:
-            PASSWORD_RECOVERY_RATE_COLLECTION,
-
-          rateNamespace:
-            'password-recovery',
-
-          ipHash,
-        });
-
-      try {
-        const delivery =
-          await sendOtpEmail({
-            apiKey:
-              resendApiKey,
-
-            from:
-              emailFrom,
-
-            email,
-
-            otp,
-
-            purpose:
-              PASSWORD_RECOVERY_PURPOSE,
-          });
-
-        await markOtpDelivered({
-          challengeRef:
-            reservation.challengeRef,
-
-          messageId:
-            delivery.messageId,
-        });
-      } catch (error) {
-        await markOtpDeliveryFailed({
-          challengeRef:
-            reservation.challengeRef,
-        });
-
-        console.error(
-          'JR CALL password recovery OTP delivery failed:',
-          error,
-        );
-
-        throw new HttpsError(
-          'unavailable',
-          'Password recovery code could not be delivered. Please try again.',
-        );
-      }
-
-      return {
-        success: true,
-
-        challengeId,
-
-        expiresIn:
-          OTP_EXPIRY_SECONDS,
-
-        resendAfter:
-          OTP_RESEND_COOLDOWN_SECONDS,
-      };
+      return sendPasswordRecoveryOtpHandler(
+        request,
+      );
     },
   );
 
 // ===============================================================
-// PASSWORD RECOVERY OTP — VERIFY + RESET PASSWORD
-// ===============================================================
+// PASSWORD RECOVERY OTP — VERIFY
 //
-// Flutter INPUT:
+// PART 2
 //
-// {
-//   challengeId: '...',
-//   otp: '123456',
-//   newPassword: 'new secure password'
-// }
+// ✓ OTP verification remains server-owned.
+// ✓ New password exists only in request memory.
+// ✓ Firebase Admin performs password update.
+// ✓ Successful password recovery may revoke refresh tokens.
 //
-// Password exists only in request memory long enough to call
-// Firebase Admin updateUser().
+// REQUIRED SECRET:
 //
-// Password is never written to Firestore.
-//
+// EMAIL_OTP_HASH_SECRET
 // ===============================================================
 
 exports.verifyPasswordRecoveryOtp =
@@ -2631,210 +873,9 @@ exports.verifyPasswordRecoveryOtp =
     },
 
     async (request) => {
-      const data =
-        callableData(request);
-
-      const challengeId =
-        normalizeChallengeId(
-          data.challengeId,
-        );
-
-      const otp =
-        normalizeOtp(
-          data.otp ??
-          data.code,
-        );
-
-      const newPassword =
-        typeof data.newPassword ===
-          'string'
-          ? data.newPassword
-          : '';
-
-      if (
-        challengeId === ''
-      ) {
-        throw new HttpsError(
-          'invalid-argument',
-          'Password recovery challengeId is required.',
-        );
-      }
-
-      if (
-        !isValidOtp(
-          otp,
-        )
-      ) {
-        throw new HttpsError(
-          'invalid-argument',
-          'A valid 6-digit recovery OTP is required.',
-        );
-      }
-
-      if (
-        !isValidPassword(
-          newPassword,
-        )
-      ) {
-        throw new HttpsError(
-          'invalid-argument',
-          'Password must contain at least 6 characters.',
-        );
-      }
-
-      const hashSecret =
-        EMAIL_OTP_HASH_SECRET
-          .value()
-          .trim();
-
-      if (
-        hashSecret === ''
-      ) {
-        throw new HttpsError(
-          'failed-precondition',
-          'Password recovery service is not configured.',
-        );
-      }
-
-      let verificationResult;
-
-      try {
-        verificationResult =
-          await verifyOtpChallengeTransaction({
-            challengeId,
-
-            otp,
-
-            suppliedPurpose:
-              PASSWORD_RECOVERY_PURPOSE,
-
-            hashSecret,
-
-            expectedUid:
-              null,
-          });
-      } catch (error) {
-        if (
-          error instanceof HttpsError
-        ) {
-          throw error;
-        }
-
-        console.error(
-          'JR CALL password recovery OTP transaction failed:',
-          error,
-        );
-
-        throw new HttpsError(
-          'internal',
-          'Password recovery verification could not be completed.',
-        );
-      }
-
-      throwForVerificationStatus(
-        verificationResult,
+      return verifyPasswordRecoveryOtpHandler(
+        request,
       );
-
-      let firebaseUser;
-
-      try {
-        firebaseUser =
-          await getAuth()
-            .getUser(
-              verificationResult.uid,
-            );
-      } catch (error) {
-        console.error(
-          'JR CALL password recovery user reload failed:',
-          error,
-        );
-
-        throw new HttpsError(
-          'failed-precondition',
-          'The account is no longer available.',
-        );
-      }
-
-      if (
-        firebaseUser.disabled === true ||
-        normalizeEmail(
-          firebaseUser.email,
-        ) !== verificationResult.email
-      ) {
-        throw new HttpsError(
-          'failed-precondition',
-          'The account changed during password recovery.',
-        );
-      }
-
-      const providerIds =
-        new Set(
-          (
-            firebaseUser.providerData ||
-            []
-          ).map(
-            (provider) =>
-              provider.providerId,
-          ),
-        );
-
-      if (
-        !providerIds.has(
-          'password',
-        )
-      ) {
-        throw new HttpsError(
-          'failed-precondition',
-          'This account does not use Email/Password sign-in.',
-        );
-      }
-
-      try {
-        await getAuth()
-          .updateUser(
-            firebaseUser.uid,
-            {
-              password:
-                newPassword,
-            },
-          );
-      } catch (error) {
-        console.error(
-          'JR CALL password update failed:',
-          error,
-        );
-
-        throw new HttpsError(
-          'internal',
-          'The new password could not be saved.',
-        );
-      }
-
-      // =========================================================
-      // SECURITY
-      // =========================================================
-      //
-      // Revoke old refresh tokens after password recovery.
-      //
-      // =========================================================
-
-      try {
-        await getAuth()
-          .revokeRefreshTokens(
-            firebaseUser.uid,
-          );
-      } catch (error) {
-        console.error(
-          'JR CALL refresh-token revocation skipped:',
-          error,
-        );
-      }
-
-      return {
-        success: true,
-
-        passwordReset: true,
-      };
     },
   );
 
@@ -2897,10 +938,14 @@ function normalizeTurnHost(value) {
       .trim();
 
   if (
-    normalized.startsWith('[')
+    normalized.startsWith(
+      '[',
+    )
   ) {
     const closeIndex =
-      normalized.indexOf(']');
+      normalized.indexOf(
+        ']',
+      );
 
     return closeIndex > 0
       ? normalized.substring(
@@ -2911,7 +956,9 @@ function normalizeTurnHost(value) {
   }
 
   const colonIndex =
-    normalized.indexOf(':');
+    normalized.indexOf(
+      ':',
+    );
 
   if (
     colonIndex > 0 &&
@@ -2959,21 +1006,21 @@ function resolveTurnTtl(value) {
 }
 
 // ===============================================================
-// TURN AUTH
+// TURN AUTHENTICATION
 // ===============================================================
 
 async function authenticateTurnRequest(
   request,
 ) {
   const authorization =
-    request &&
-    request.headers
-      ? request.headers.authorization ||
-        ''
+    typeof request?.headers
+      ?.authorization ===
+      'string'
+      ? request.headers
+          .authorization
       : '';
 
   if (
-    typeof authorization !== 'string' ||
     !authorization.startsWith(
       'Bearer ',
     )
@@ -3014,7 +1061,8 @@ function createTurnCredential({
 }) {
   const expiresAt =
     Math.floor(
-      Date.now() / 1000,
+      Date.now() /
+        1000,
     ) +
     ttlSeconds;
 
@@ -3084,6 +1132,10 @@ function buildTurnUrls(host) {
 
 // ===============================================================
 // TURN CREDENTIAL ENDPOINT
+//
+// PROTECTED CALL INFRASTRUCTURE.
+//
+// Existing behavior is preserved.
 // ===============================================================
 
 exports.getTurnCredentials =
@@ -3115,7 +1167,8 @@ exports.getTurnCredentials =
       );
 
       if (
-        request.method === 'OPTIONS'
+        request.method ===
+        'OPTIONS'
       ) {
         response
           .status(204)
@@ -3125,12 +1178,14 @@ exports.getTurnCredentials =
       }
 
       if (
-        request.method !== 'GET'
+        request.method !==
+        'GET'
       ) {
         response
           .status(405)
           .json({
-            success: false,
+            success:
+              false,
 
             error:
               'METHOD_NOT_ALLOWED',
@@ -3156,7 +1211,8 @@ exports.getTurnCredentials =
           response
             .status(401)
             .json({
-              success: false,
+              success:
+                false,
 
               error:
                 'INVALID_AUTHENTICATION',
@@ -3182,33 +1238,19 @@ exports.getTurnCredentials =
               .value(),
           );
 
-        // =======================================================
-        // TURN IS OPTIONAL FOR AUTHENTICATION
-        // =======================================================
-        //
-        // TURN absence must never block:
-        // - Login
-        // - Signup
-        // - Phone OTP
-        // - Email OTP
-        // - Profile
-        //
-        // Flutter Call Engine may use STUN fallback.
-        //
-        // =======================================================
-
         if (
           sharedSecret === '' ||
           primaryHost === ''
         ) {
           console.warn(
-            'JR CALL TURN backend is not configured; client will use STUN fallback.',
+            'JR CALL TURN is not configured; client may use STUN fallback.',
           );
 
           response
             .status(503)
             .json({
-              success: false,
+              success:
+                false,
 
               error:
                 'TURN_NOT_CONFIGURED',
@@ -3236,7 +1278,8 @@ exports.getTurnCredentials =
             sharedSecret,
           });
 
-        const iceServers = [];
+        const iceServers =
+          [];
 
         const primaryUrls =
           buildTurnUrls(
@@ -3258,7 +1301,8 @@ exports.getTurnCredentials =
 
         if (
           backupHost !== '' &&
-          backupHost !== primaryHost
+          backupHost !==
+            primaryHost
         ) {
           const backupUrls =
             buildTurnUrls(
@@ -3285,7 +1329,8 @@ exports.getTurnCredentials =
           response
             .status(503)
             .json({
-              success: false,
+              success:
+                false,
 
               error:
                 'TURN_NOT_CONFIGURED',
@@ -3295,10 +1340,10 @@ exports.getTurnCredentials =
         }
 
         const requestedRegion =
-          request.query &&
-          typeof request.query.region ===
-            'string'
-            ? request.query.region
+          typeof request.query
+            ?.region === 'string'
+            ? request.query
+                .region
                 .trim()
                 .substring(
                   0,
@@ -3309,7 +1354,8 @@ exports.getTurnCredentials =
         response
           .status(200)
           .json({
-            success: true,
+            success:
+              true,
 
             region:
               requestedRegion ||
@@ -3331,7 +1377,8 @@ exports.getTurnCredentials =
           response
             .status(401)
             .json({
-              success: false,
+              success:
+                false,
 
               error:
                 'AUTHORIZATION_REQUIRED',
@@ -3348,7 +1395,8 @@ exports.getTurnCredentials =
           response
             .status(401)
             .json({
-              success: false,
+              success:
+                false,
 
               error:
                 'INVALID_AUTHENTICATION',
@@ -3358,14 +1406,15 @@ exports.getTurnCredentials =
         }
 
         console.error(
-          'JR CALL getTurnCredentials failure:',
+          'JR CALL TURN credential failure:',
           error,
         );
 
         response
           .status(401)
           .json({
-            success: false,
+            success:
+              false,
 
             error:
               'INVALID_AUTHENTICATION',
@@ -3376,4 +1425,718 @@ exports.getTurnCredentials =
 
 // ===============================================================
 // END OF FILE
+//
+// OTP / AUTH MASTER FILE 09 / 09
+//
+// BACKEND MODULE CONTRACT:
+//
+// ✓ otp_manager.js preserved.
+// ✓ otp_manager_part2.js preserved.
+// ✓ sendEmailOtp callable preserved.
+// ✓ verifyEmailOtp callable preserved.
+// ✓ sendPasswordRecoveryOtp callable preserved.
+// ✓ verifyPasswordRecoveryOtp callable preserved.
+// ✓ checkPhoneAccountExists callable preserved.
+// ✓ getTurnCredentials endpoint preserved.
+//
+// PHONE:
+//
+// ✓ Phone Number remains mandatory account identity by client flow.
+// ✓ Phone Signup must use Firebase Phone OTP.
+// ✓ Phone Login must use Firebase Phone OTP.
+// ✓ Phone OTP remains Firebase Authentication-owned.
+// ✓ Backend does not generate Phone SMS OTP.
+// ✓ Backend does not verify Phone SMS OTP.
+// ✓ No fake/local Phone OTP.
+// ✓ No custom Phone OTP database.
+// ✓ Phone lookup is compatibility-only.
+// ✓ Phone lookup cannot authenticate.
+// ✓ Phone lookup cannot bypass OTP.
+//
+// EMAIL:
+//
+// ✓ Email remains optional account credential.
+// ✓ Normal Email + Password Login requires NO Email OTP.
+// ✓ Normal Email Login requires NO Email verification gate here.
+// ✓ Legacy Email OTP callable compatibility preserved.
+// ✓ Email credential remains attached to canonical Firebase UID.
+//
+// PASSWORD RECOVERY:
+//
+// ✓ Recovery OTP send preserved.
+// ✓ Recovery OTP verification preserved.
+// ✓ Firebase Admin password reset preserved.
+// ✓ Raw password never persisted here.
+// ✓ Recovery refresh-token revocation remains manager-owned.
+//
+// MULTI-DEVICE:
+//
+// ✓ Normal Login does not revoke sessions in this entry file.
+// ✓ No single-device restriction introduced.
+//
+// FIREBASE:
+//
+// ✓ Firebase UID remains canonical.
+// ✓ Firebase Admin initialization preserved.
+// ✓ Firebase 2nd-gen functions preserved.
+// ✓ us-central1 preserved.
+// ✓ Required secrets explicitly bound.
+// ✓ Existing callable names preserved.
+//
+// SECURITY:
+//
+// ✓ RESEND_API_KEY remains server-side.
+// ✓ EMAIL_OTP_HASH_SECRET remains server-side.
+// ✓ TURN_SHARED_SECRET remains server-side.
+// ✓ Phone lookup remains rate-limited.
+// ✓ TURN authentication remains Firebase ID-token protected.
+//
+// PROTECTED:
+//
+// ✓ Call Engine untouched.
+// ✓ WebRTC untouched.
+// ✓ Signaling untouched.
+// ✓ Message Engine untouched.
+//
+// SAVE:
+//
+// functions/index.js
+// ===============================================================
+
+
+// ===============================================================
+// INCOMING CALL PUSH DELIVERY
+//
+// Firestore call document is created first, then the initial
+// WebRTC offer is published.
+//
+// The push is therefore sent only when offerRevision changes
+// from 0 -> 1. This prevents waking the receiver before the
+// initial SDP offer is actually available.
+//
+// Android receives a DATA-ONLY high-priority FCM message.
+// Existing JR CALL ownership remains:
+//
+// FCM
+//   -> main.dart background/foreground messaging handler
+//   -> BackgroundCallService
+//   -> MainActivity.showIncomingCall
+//   -> ringtone / call notification / full-screen presentation
+//
+// No WebRTC / ICE / signaling ownership is moved here.
+// ===============================================================
+
+function jrCallPushString(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value.trim();
+}
+
+function jrCallPushProfileName(data) {
+  if (!data || typeof data !== 'object') {
+    return '';
+  }
+
+  return (
+    jrCallPushString(data.name) ||
+    jrCallPushString(data.fullName) ||
+    jrCallPushString(data.displayName)
+  );
+}
+
+function jrCallPushProfilePhoto(data) {
+  if (!data || typeof data !== 'object') {
+    return '';
+  }
+
+  return (
+    jrCallPushString(data.photoUrl) ||
+    jrCallPushString(data.profilePhotoUrl)
+  );
+}
+
+exports.sendIncomingCallNotification =
+  onDocumentUpdated(
+    {
+      document:
+        'calls/{callId}',
+
+      region:
+        FUNCTIONS_REGION,
+
+      memory:
+        '256MiB',
+
+      timeoutSeconds:
+        30,
+    },
+    async (event) => {
+      const change =
+        event.data;
+
+      if (!change) {
+        return;
+      }
+
+      const before =
+        change.before.data() || {};
+
+      const after =
+        change.after.data() || {};
+
+      const callId =
+        jrCallPushString(
+          event.params?.callId,
+        );
+
+      if (!callId) {
+        return;
+      }
+
+      const beforeOfferRevision =
+        Number.isInteger(
+          before.offerRevision,
+        )
+          ? before.offerRevision
+          : 0;
+
+      const afterOfferRevision =
+        Number.isInteger(
+          after.offerRevision,
+        )
+          ? after.offerRevision
+          : 0;
+
+      // Initial SDP offer only.
+      //
+      // ICE-restart offers use later revisions and must never
+      // create another incoming-call notification.
+      if (
+        beforeOfferRevision !== 0 ||
+        afterOfferRevision !== 1
+      ) {
+        return;
+      }
+
+      const offer =
+        after.offer;
+
+      if (
+        !offer ||
+        typeof offer !== 'object' ||
+        Array.isArray(offer) ||
+        jrCallPushString(
+          offer.type,
+        ).toLowerCase() !== 'offer' ||
+        !jrCallPushString(
+          offer.sdp,
+        )
+      ) {
+        console.warn(
+          `[JR CALL][FCM] Initial offer is invalid for call ${callId}.`,
+        );
+
+        return;
+      }
+
+      const callerId =
+        jrCallPushString(
+          after.callerId,
+        );
+
+      const receiverId =
+        jrCallPushString(
+          after.receiverId,
+        );
+
+      if (
+        !callerId ||
+        !receiverId ||
+        callerId === receiverId
+      ) {
+        console.warn(
+          `[JR CALL][FCM] Invalid participants for call ${callId}.`,
+        );
+
+        return;
+      }
+
+      // Read latest call state before waking the receiver.
+      // Do not surface an already-ended/cancelled call.
+      const latestCallSnapshot =
+        await change.after.ref.get();
+
+      if (!latestCallSnapshot.exists) {
+        return;
+      }
+
+      const latestCall =
+        latestCallSnapshot.data() || {};
+
+      const latestStatus =
+        jrCallPushString(
+          latestCall.status,
+        ).toLowerCase();
+
+      if (
+        latestStatus !== 'calling' &&
+        latestStatus !== 'ringing'
+      ) {
+        return;
+      }
+
+      const receiverRef =
+        db.collection('users')
+          .doc(receiverId);
+
+      const callerRef =
+        db.collection('users')
+          .doc(callerId);
+
+      const [
+        receiverSnapshot,
+        callerSnapshot,
+      ] = await Promise.all([
+        receiverRef.get(),
+        callerRef.get(),
+      ]);
+
+      if (!receiverSnapshot.exists) {
+        console.warn(
+          `[JR CALL][FCM] Receiver profile is missing for call ${callId}.`,
+        );
+
+        return;
+      }
+
+      const receiver =
+        receiverSnapshot.data() || {};
+
+      const token =
+        jrCallPushString(
+          receiver.deviceToken,
+        ) ||
+        jrCallPushString(
+          receiver.fcmToken,
+        );
+
+      const dispatchRef =
+        db.collection(
+          'call_push_dispatches',
+        ).doc(callId);
+
+      if (!token) {
+        // JR_CALL_RINGING_AFTER_PUSH
+        try {
+          const callRef =
+            db.collection('calls').doc(callId);
+
+          await db.runTransaction(
+            async (transaction) => {
+              const snapshot =
+                await transaction.get(callRef);
+
+              if (!snapshot.exists) {
+                return;
+              }
+
+              const current =
+                snapshot.data() || {};
+
+              const currentStatus =
+                jrCallPushString(
+                  current.status,
+                ).toLowerCase();
+
+              if (
+                currentStatus !== 'calling'
+              ) {
+                return;
+              }
+
+              transaction.update(
+                callRef,
+                {
+                  status:
+                    'ringing',
+
+                  ringingAt:
+                    Timestamp.now(),
+
+                  updatedAt:
+                    Timestamp.now(),
+                },
+              );
+            },
+          );
+        } catch (ringingError) {
+          console.error(
+            `[JR CALL][FCM] Ringing acknowledgement failed. call=${callId}`,
+            ringingError,
+          );
+        }
+
+        await dispatchRef.set(
+          {
+            callId,
+            receiverId,
+            state:
+              'no_token',
+            completedAt:
+              Timestamp.now(),
+          },
+          {
+            merge: true,
+          },
+        );
+
+        console.warn(
+          `[JR CALL][FCM] Receiver has no device token for call ${callId}.`,
+        );
+
+        return;
+      }
+
+      // ---------------------------------------------------------
+      // IDEMPOTENT DELIVERY LEASE
+      //
+      // Firestore events can occasionally be delivered more than
+      // once. The short lease prevents duplicate ringing while
+      // still allowing another invocation after an interrupted
+      // dispatch.
+      // ---------------------------------------------------------
+
+      let claimed =
+        false;
+
+      await db.runTransaction(
+        async (transaction) => {
+          const dispatchSnapshot =
+            await transaction.get(
+              dispatchRef,
+            );
+
+          const dispatch =
+            dispatchSnapshot.exists
+              ? dispatchSnapshot.data() || {}
+              : {};
+
+          if (
+            dispatch.state === 'sent'
+          ) {
+            return;
+          }
+
+          const leaseUntilMillis =
+            dispatch.leaseUntil &&
+            typeof dispatch.leaseUntil.toMillis === 'function'
+              ? dispatch.leaseUntil.toMillis()
+              : 0;
+
+          const now =
+            Date.now();
+
+          if (
+            dispatch.state === 'sending' &&
+            leaseUntilMillis > now
+          ) {
+            return;
+          }
+
+          transaction.set(
+            dispatchRef,
+            {
+              callId,
+              callerId,
+              receiverId,
+
+              state:
+                'sending',
+
+              eventId:
+                jrCallPushString(
+                  event.id,
+                ),
+
+              startedAt:
+                Timestamp.now(),
+
+              leaseUntil:
+                Timestamp.fromMillis(
+                  now + 15000,
+                ),
+            },
+            {
+              merge: true,
+            },
+          );
+
+          claimed =
+            true;
+        },
+      );
+
+      if (!claimed) {
+        return;
+      }
+
+      const caller =
+        callerSnapshot.exists
+          ? callerSnapshot.data() || {}
+          : {};
+
+      const callerName =
+        jrCallPushString(
+          latestCall.callerName,
+        ) ||
+        jrCallPushProfileName(
+          caller,
+        ) ||
+        'JR CALL User';
+
+      const callerPhoto =
+        jrCallPushString(
+          latestCall.callerPhoto,
+        ) ||
+        jrCallPushProfilePhoto(
+          caller,
+        );
+
+      const isVideoCall =
+        latestCall.isVideoCall === true ||
+        latestCall.video === true;
+
+      try {
+        const messageId =
+          await getMessaging().send(
+            {
+              token,
+
+              // DATA-ONLY payload:
+              // JR CALL already owns notification/full-screen UI.
+              data: {
+                type:
+                  'incoming_call',
+
+                event:
+                  'incoming_call',
+
+                action:
+                  'incoming_call',
+
+                notificationType:
+                  'incoming_call',
+
+                callId,
+
+                callerId,
+
+                receiverId,
+
+                callerName,
+
+                callerPhoto,
+
+                callerPhotoUrl:
+                  callerPhoto,
+
+                isVideoCall:
+                  isVideoCall
+                    ? 'true'
+                    : 'false',
+
+                video:
+                  isVideoCall
+                    ? 'true'
+                    : 'false',
+
+                callType:
+                  isVideoCall
+                    ? 'video'
+                    : 'voice',
+
+                sentAt:
+                  String(
+                    Date.now(),
+                  ),
+              },
+
+              android: {
+                priority:
+                  'high',
+
+                ttl:
+                  45000,
+              },
+            },
+          );
+
+        // JR_CALL_RINGING_AFTER_PUSH
+        try {
+          const callRef =
+            db.collection('calls').doc(callId);
+
+          await db.runTransaction(
+            async (transaction) => {
+              const snapshot =
+                await transaction.get(callRef);
+
+              if (!snapshot.exists) {
+                return;
+              }
+
+              const current =
+                snapshot.data() || {};
+
+              const currentStatus =
+                jrCallPushString(
+                  current.status,
+                ).toLowerCase();
+
+              if (
+                currentStatus !== 'calling'
+              ) {
+                return;
+              }
+
+              transaction.update(
+                callRef,
+                {
+                  status:
+                    'ringing',
+
+                  ringingAt:
+                    Timestamp.now(),
+
+                  updatedAt:
+                    Timestamp.now(),
+                },
+              );
+            },
+          );
+        } catch (ringingError) {
+          console.error(
+            `[JR CALL][FCM] Ringing acknowledgement failed. call=${callId}`,
+            ringingError,
+          );
+        }
+
+        await dispatchRef.set(
+          {
+            state:
+              'sent',
+
+            messageId,
+
+            sentAt:
+              Timestamp.now(),
+
+            leaseUntil:
+              Timestamp.fromMillis(0),
+          },
+          {
+            merge: true,
+          },
+        );
+
+        console.log(
+          `[JR CALL][FCM] Incoming call push sent. call=${callId} receiver=${receiverId}`,
+        );
+      } catch (error) {
+        const errorCode =
+          jrCallPushString(
+            error?.code,
+          );
+
+        const errorMessage =
+          jrCallPushString(
+            error?.message,
+          ).slice(
+            0,
+            500,
+          );
+
+        // JR_CALL_RINGING_AFTER_PUSH
+        try {
+          const callRef =
+            db.collection('calls').doc(callId);
+
+          await db.runTransaction(
+            async (transaction) => {
+              const snapshot =
+                await transaction.get(callRef);
+
+              if (!snapshot.exists) {
+                return;
+              }
+
+              const current =
+                snapshot.data() || {};
+
+              const currentStatus =
+                jrCallPushString(
+                  current.status,
+                ).toLowerCase();
+
+              if (
+                currentStatus !== 'calling'
+              ) {
+                return;
+              }
+
+              transaction.update(
+                callRef,
+                {
+                  status:
+                    'ringing',
+
+                  ringingAt:
+                    Timestamp.now(),
+
+                  updatedAt:
+                    Timestamp.now(),
+                },
+              );
+            },
+          );
+        } catch (ringingError) {
+          console.error(
+            `[JR CALL][FCM] Ringing acknowledgement failed. call=${callId}`,
+            ringingError,
+          );
+        }
+
+        await dispatchRef.set(
+          {
+            state:
+              'failed',
+
+            errorCode,
+
+            errorMessage,
+
+            failedAt:
+              Timestamp.now(),
+
+            leaseUntil:
+              Timestamp.fromMillis(0),
+          },
+          {
+            merge: true,
+          },
+        );
+
+        console.error(
+          `[JR CALL][FCM] Incoming call push failed. call=${callId} code=${errorCode || 'unknown'}`,
+        );
+
+        throw error;
+      }
+    },
+  );
+
+// ===============================================================
+// END INCOMING CALL PUSH DELIVERY
 // ===============================================================

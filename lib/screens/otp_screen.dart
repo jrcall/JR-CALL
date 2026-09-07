@@ -3,13 +3,81 @@
 // File: otp_screen.dart
 // Location: lib/screens/otp_screen.dart
 //
-// FINAL LOGIN BEHAVIOUR:
-// - Phone OTP autofill supported.
-// - Complete 6 digits -> verification starts automatically.
-// - Manual VERIFY OTP remains available.
-// - Email OTP -> JR CALL Cloud Function through AuthService.
-// - Phone OTP -> Firebase Auth through AuthService.
-// - Successful Login -> HomeScreen immediately.
+// OTP / AUTH MASTER FILE 06 / 09
+//
+// PRODUCTION OTP ENTRY / VERIFY / RESEND COORDINATOR
+//
+// FINAL JR CALL CONTRACT:
+//
+// PHONE SIGNUP:
+//
+// Phone Number
+//      ↓
+// Firebase Phone Authentication
+//      ↓
+// Manual / Automatic verification
+//      ↓
+// Firebase UID
+//      ↓
+// Return TRUE to CreateAccountScreen
+//      ↓
+// CreateAccountScreen finalizes profile / optional Email linking
+//
+// PHONE LOGIN:
+//
+// Phone Number
+//      ↓
+// LoginOtpManager
+//      ↓
+// AuthService
+//      ↓
+// Firebase Phone Authentication
+//      ↓
+// Firebase UID
+//      ↓
+// Existing profile / profile setup
+//
+// EMAIL LOGIN:
+//
+// Normal Email + Password Login does NOT use this screen.
+// Email Login OTP mode remains compatibility-only.
+//
+// EMAIL SIGNUP / CHANGE:
+//
+// Authenticated Firebase UID
+//      ↓
+// JR CALL backend Email OTP
+//      ↓
+// verification result
+//
+// PASSWORD RECOVERY:
+//
+// ForgotPasswordScreen
+//      ↓
+// OtpScreen
+//      ↓
+// AuthService.verifyPasswordRecoveryOtp()
+//      ↓
+// Backend password reset
+//
+// IMPORTANT:
+//
+// ✓ Phone Signup always requires Firebase Phone verification.
+// ✓ Phone Login always requires Firebase Phone verification.
+// ✓ Phone Number never authenticates by Password.
+// ✓ Email + Password normal Login requires NO Email OTP.
+// ✓ No fake/local OTP.
+// ✓ No OTP persistence.
+// ✓ No Password persistence.
+// ✓ No account-exists pre-login blocker.
+// ✓ No Firebase security bypass.
+// ✓ Native automatic verification supported.
+// ✓ Manual six-digit verification supported.
+// ✓ Web manual Phone OTP supported through AuthService.
+// ✓ Resend supported.
+// ✓ Call Engine untouched.
+// ✓ Message Engine untouched.
+// ✓ WebRTC untouched.
 // ===============================================================
 
 import 'dart:async';
@@ -19,13 +87,19 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:pin_code_fields/pin_code_fields.dart';
-import 'package:uuid/uuid.dart';
 
 import '../core/theme/jr_colors.dart';
 import '../models/user_model.dart';
 import '../services/auth_service.dart';
 import '../services/firebase/firestore_service.dart';
+import '../services/profile_service.dart';
+import 'create_profile_setup_screen.dart';
 import 'home_screen.dart';
+import 'login_otp_manager.dart';
+
+// ===============================================================
+// OTP MODE
+// ===============================================================
 
 enum OtpMode {
   phoneSignUp,
@@ -34,7 +108,12 @@ enum OtpMode {
   emailSignUp,
   emailLogin,
   emailChange,
+  passwordRecovery,
 }
+
+// ===============================================================
+// OTP SCREEN
+// ===============================================================
 
 class OtpScreen extends StatefulWidget {
   const OtpScreen({
@@ -47,54 +126,119 @@ class OtpScreen extends StatefulWidget {
   });
 
   final String verificationId;
+
   final String phoneNumber;
+
   final String? email;
+
+  /// Used only by Password Recovery.
+  ///
+  /// Memory-only. Never persisted by this screen.
   final String? password;
+
   final String? provider;
 
   @override
   State<OtpScreen> createState() => _OtpScreenState();
 }
 
+// ===============================================================
+// STATE
+// ===============================================================
+
 class _OtpScreenState extends State<OtpScreen> {
+  // =============================================================
+  // SERVICES
+  // =============================================================
+
   final AuthService _authService = AuthService.instance;
 
-  final FirestoreService _firestoreService = FirestoreService.instance;
+  final FirestoreService _firestoreService =
+      FirestoreService.instance;
 
-  final TextEditingController _otpController = TextEditingController();
+  final ProfileService _profileService =
+      ProfileService.instance;
+
+  late final LoginOtpManager _loginOtpManager;
+
+  // =============================================================
+  // CONTROLLER
+  // =============================================================
+
+  final TextEditingController _otpController =
+  TextEditingController();
+
+  // =============================================================
+  // CONSTANTS
+  // =============================================================
 
   static const int _otpLength = 6;
-  static const int _resendCooldownSeconds = 60;
-  static const int _maximumJrCallIdAttempts = 8;
-  static const Uuid _uuid = Uuid();
+
+  static const int _defaultResendCooldownSeconds = 60;
+
+  // =============================================================
+  // MODE / SESSION
+  // =============================================================
 
   late OtpMode _mode;
+
   late String _verificationId;
 
   String? _emailChallengeId;
 
+  // =============================================================
+  // TIMER
+  // =============================================================
+
   Timer? _resendTimer;
 
-  int _resendRemaining = _resendCooldownSeconds;
+  int _resendCooldownSeconds =
+      _defaultResendCooldownSeconds;
+
+  int _resendRemaining =
+      _defaultResendCooldownSeconds;
+
+  // =============================================================
+  // STATE
+  // =============================================================
 
   bool _loading = false;
+
   bool _resending = false;
+
   bool _completed = false;
+
   bool _automaticVerificationRunning = false;
+
   bool _routeArgumentsResolved = false;
 
-  Map<String, dynamic> _routeData = const <String, dynamic>{};
+  Map<String, dynamic> _routeData =
+  const <String, dynamic>{};
+
+  // =============================================================
+  // LIFECYCLE
+  // =============================================================
 
   @override
   void initState() {
     super.initState();
 
-    _verificationId = widget.verificationId.trim();
+    _loginOtpManager = LoginOtpManager(
+      authService: _authService,
+      firestoreService: _firestoreService,
+    );
 
-    _mode = _modeFromProvider(widget.provider);
+    _verificationId =
+        widget.verificationId.trim();
 
-    if (_isEmailMode && _verificationId.isNotEmpty) {
-      _emailChallengeId = _verificationId;
+    _mode = _modeFromProvider(
+      widget.provider,
+    );
+
+    if (_usesBackendEmailChallenge &&
+        _verificationId.isNotEmpty) {
+      _emailChallengeId =
+          _verificationId;
     }
 
     _startResendTimer();
@@ -110,94 +254,78 @@ class _OtpScreenState extends State<OtpScreen> {
 
     _routeArgumentsResolved = true;
 
-    final Object? rawArguments = ModalRoute.of(context)?.settings.arguments;
+    final Object? rawArguments =
+        ModalRoute.of(context)?.settings.arguments;
 
-    if (rawArguments is Map) {
-      _routeData = Map<String, dynamic>.from(rawArguments);
+    if (rawArguments is! Map) {
+      return;
+    }
 
-      _resolveRouteMode();
+    _routeData =
+    Map<String, dynamic>.from(
+      rawArguments,
+    );
 
-      final String? challengeId = _readString(
-        _routeData['emailOtpChallengeId'],
-      );
+    _resolveRouteMode();
 
-      if (challengeId != null) {
-        _emailChallengeId = challengeId;
-        _verificationId = challengeId;
-      }
+    final String? emailChallengeId =
+    _readString(
+      _routeData['emailOtpChallengeId'],
+    );
+
+    final String? recoveryChallengeId =
+    _readString(
+      _routeData['passwordRecoveryChallengeId'],
+    );
+
+    final String? genericChallengeId =
+    _readString(
+      _routeData['challengeId'],
+    );
+
+    final String? resolvedChallengeId =
+        recoveryChallengeId ??
+            emailChallengeId ??
+            genericChallengeId;
+
+    if (resolvedChallengeId != null) {
+      _emailChallengeId =
+          resolvedChallengeId;
+
+      _verificationId =
+          resolvedChallengeId;
+    }
+
+    final Object? resendAfter =
+    _routeData['resendAfterSeconds'];
+
+    if (resendAfter is int &&
+        resendAfter > 0) {
+      _resendCooldownSeconds =
+          resendAfter;
+
+      _restartResendTimer();
     }
   }
 
   @override
   void dispose() {
+    _loginOtpManager.cancel();
+
     _resendTimer?.cancel();
+
     _otpController.dispose();
 
     super.dispose();
   }
 
   // =============================================================
-  // ROUTE PROFILE DATA
-  // =============================================================
-
-  String get _fullName {
-    return _readString(_routeData['fullName']) ??
-        _readString(_routeData['name']) ??
-        '';
-  }
-
-  String? get _username {
-    return _normalizeUsername(_readString(_routeData['username']));
-  }
-
-  String? get _country => _readString(_routeData['country']);
-
-  String? get _countryCode =>
-      _readString(_routeData['countryCode'])?.toUpperCase();
-
-  String? get _bio => _readString(_routeData['bio']);
-
-  DateTime? get _dateOfBirth {
-    final Object? value = _routeData['dateOfBirth'];
-
-    if (value is DateTime) {
-      return DateTime(value.year, value.month, value.day);
-    }
-
-    if (value is String) {
-      final DateTime? parsed = DateTime.tryParse(value);
-
-      if (parsed == null) {
-        return null;
-      }
-
-      return DateTime(parsed.year, parsed.month, parsed.day);
-    }
-
-    return null;
-  }
-
-  String? get _jrCallIdCandidate {
-    final String? value = _readString(_routeData['jrCallUserIdCandidate']);
-
-    if (value == null) {
-      return null;
-    }
-
-    final String normalized = value.toLowerCase();
-
-    if (!RegExp(r'^[a-z0-9._-]{3,64}$').hasMatch(normalized)) {
-      return null;
-    }
-
-    return normalized;
-  }
-
-  // =============================================================
   // MODE
   // =============================================================
 
-  OtpMode _modeFromProvider(String? provider) {
+  OtpMode _modeFromProvider(
+      String? provider,
+      ) {
     switch (provider?.trim().toLowerCase()) {
       case 'phone_login':
       case 'phonelogin':
@@ -207,6 +335,11 @@ class _OtpScreenState extends State<OtpScreen> {
       case 'phonechange':
         return OtpMode.phoneChange;
 
+      case 'email_signup':
+      case 'emailsignup':
+      case 'email_otp':
+        return OtpMode.emailSignUp;
+
       case 'email_login':
       case 'emaillogin':
         return OtpMode.emailLogin;
@@ -215,50 +348,80 @@ class _OtpScreenState extends State<OtpScreen> {
       case 'emailchange':
         return OtpMode.emailChange;
 
-      case 'email_signup':
-      case 'emailsignup':
-      case 'email_otp':
-        return OtpMode.emailSignUp;
+      case 'password_recovery':
+      case 'passwordrecovery':
+      case 'password_recovery_otp':
+      case 'forgot_password':
+        return OtpMode.passwordRecovery;
 
+      case 'phone_signup':
+      case 'phonesignup':
       default:
         return OtpMode.phoneSignUp;
     }
   }
 
   void _resolveRouteMode() {
-    final String? value = _readString(_routeData['mode']);
+    final String? value =
+    _readString(
+      _routeData['mode'],
+    );
 
     switch (value) {
       case 'phoneSignUp':
         _mode = OtpMode.phoneSignUp;
-        break;
+        return;
 
       case 'phoneLogin':
         _mode = OtpMode.phoneLogin;
-        break;
+        return;
 
       case 'phoneChange':
         _mode = OtpMode.phoneChange;
-        break;
+        return;
 
       case 'emailSignUp':
         _mode = OtpMode.emailSignUp;
-        break;
+        return;
 
       case 'emailLogin':
         _mode = OtpMode.emailLogin;
-        break;
+        return;
 
       case 'emailChange':
         _mode = OtpMode.emailChange;
-        break;
+        return;
+
+      case 'passwordRecovery':
+      case 'password_recovery':
+        _mode = OtpMode.passwordRecovery;
+        return;
     }
   }
 
   bool get _isEmailMode {
     return _mode == OtpMode.emailSignUp ||
         _mode == OtpMode.emailLogin ||
+        _mode == OtpMode.emailChange ||
+        _mode == OtpMode.passwordRecovery;
+  }
+
+  bool get _usesBackendEmailChallenge {
+    return _isEmailMode;
+  }
+
+  bool get _isSignUpMode {
+    return _mode == OtpMode.phoneSignUp ||
+        _mode == OtpMode.emailSignUp;
+  }
+
+  bool get _isChangeMode {
+    return _mode == OtpMode.phoneChange ||
         _mode == OtpMode.emailChange;
+  }
+
+  bool get _isPasswordRecovery {
+    return _mode == OtpMode.passwordRecovery;
   }
 
   // =============================================================
@@ -266,14 +429,20 @@ class _OtpScreenState extends State<OtpScreen> {
   // =============================================================
 
   Future<void> _verifyOtp() async {
-    if (_loading || _resending || _completed || _automaticVerificationRunning) {
+    if (_loading ||
+        _resending ||
+        _completed ||
+        _automaticVerificationRunning) {
       return;
     }
 
-    final String otp = _otpController.text.trim();
+    final String otp =
+    _otpController.text.trim();
 
     if (!RegExp(r'^\d{6}$').hasMatch(otp)) {
-      _showMessage('Enter the complete 6-digit verification code.');
+      _showMessage(
+        'Enter the complete 6-digit verification code.',
+      );
 
       return;
     }
@@ -285,298 +454,317 @@ class _OtpScreenState extends State<OtpScreen> {
     try {
       switch (_mode) {
         case OtpMode.phoneSignUp:
-          await _verifyPhoneSignUp(otp);
-          break;
+          await _verifyPhoneSignUp(
+            otp,
+          );
+          return;
 
         case OtpMode.phoneLogin:
-          await _verifyPhoneLogin(otp);
-          break;
+          await _verifyPhoneLogin(
+            otp,
+          );
+          return;
 
         case OtpMode.phoneChange:
-          await _verifyPhoneChange(otp);
-          break;
+          await _verifyPhoneChange(
+            otp,
+          );
+          return;
 
         case OtpMode.emailSignUp:
           await _verifyEmailOtp(
             otp: otp,
-            purpose: AuthService.emailSignUpPurpose,
+            purpose:
+            AuthService.emailSignUpPurpose,
           );
-          break;
+          return;
 
         case OtpMode.emailLogin:
           await _verifyEmailOtp(
             otp: otp,
-            purpose: AuthService.emailLoginPurpose,
+            purpose:
+            AuthService.emailLoginPurpose,
           );
-          break;
+          return;
 
         case OtpMode.emailChange:
           await _verifyEmailOtp(
             otp: otp,
-            purpose: AuthService.emailChangePurpose,
+            purpose:
+            AuthService.emailChangePurpose,
           );
-          break;
+          return;
+
+        case OtpMode.passwordRecovery:
+          await _verifyPasswordRecoveryOtp(
+            otp,
+          );
+          return;
       }
     } on FirebaseAuthException catch (error) {
-      _showMessage(_firebaseAuthMessage(error));
+      _showMessage(
+        _firebaseAuthMessage(error),
+      );
     } on FirebaseFunctionsException catch (error) {
-      _showMessage(_functionsMessage(error));
+      _showMessage(
+        _functionsMessage(error),
+      );
     } on StateError catch (error) {
-      _showMessage(error.message);
+      _showMessage(
+        error.message,
+      );
     } on ArgumentError catch (error) {
       _showMessage(
-        error.message?.toString() ?? 'Invalid verification information.',
+        error.message?.toString() ??
+            'Invalid verification information.',
       );
     } catch (error, stackTrace) {
-      debugPrint('JR CALL OTP verification error: $error');
+      debugPrint(
+        'JR CALL OTP verification error: $error',
+      );
 
       debugPrintStack(
         label: 'JR CALL OTP verification',
         stackTrace: stackTrace,
       );
 
-      _showMessage('Verification could not be completed. Please try again.');
+      _showMessage(
+        'Verification could not be completed. Please try again.',
+      );
     } finally {
-      if (mounted && !_completed && !_automaticVerificationRunning) {
+      if (mounted &&
+          !_completed &&
+          !_automaticVerificationRunning) {
         _setLoading(false);
       }
     }
   }
 
-  PhoneAuthCredential _createPhoneCredential(String otp) {
-    return _authService.createPhoneCredential(
-      verificationId: _verificationId,
+  // =============================================================
+  // PHONE SIGNUP — MANUAL OTP
+  //
+  // IMPORTANT:
+  //
+  // OtpScreen authenticates the Phone only.
+  //
+  // CreateAccountScreen owns:
+  //
+  // - Optional Email/Password linking.
+  // - Firestore profile finalization.
+  // - Profile media.
+  // - Final Signup routing.
+  // =============================================================
+
+  Future<void> _verifyPhoneSignUp(
+      String otp,
+      ) async {
+    final String verificationId =
+    _requirePhoneVerificationId();
+
+    final UserCredential result =
+    await _authService.signInWithOtp(
+      verificationId: verificationId,
       smsCode: otp,
+    );
+
+    await _completeVerifiedPhoneSignup(
+      result,
     );
   }
 
   // =============================================================
-  // PHONE SIGNUP
+  // PHONE SIGNUP — AUTOMATIC NATIVE CREDENTIAL
   // =============================================================
 
-  Future<void> _verifyPhoneSignUp(String otp) async {
-    final PhoneAuthCredential credential = _createPhoneCredential(otp);
-
-    await _completePhoneSignup(credential);
-  }
-
-  Future<void> _completePhoneSignup(PhoneAuthCredential credential) async {
-    final UserCredential result = await _authService.signInWithPhoneCredential(
+  Future<void> _completeAutomaticPhoneSignup(
+      PhoneAuthCredential credential,
+      ) async {
+    final UserCredential result =
+    await _authService
+        .signInWithPhoneCredential(
       credential,
     );
 
-    final User? user = result.user ?? _authService.currentUser;
+    await _completeVerifiedPhoneSignup(
+      result,
+    );
+  }
 
-    if (user == null) {
-      throw StateError('The verified Firebase user is unavailable.');
+  // =============================================================
+  // PHONE SIGNUP — AUTH RESULT
+  // =============================================================
+
+  Future<void> _completeVerifiedPhoneSignup(
+      UserCredential result,
+      ) async {
+    final User? user =
+        result.user ??
+            _authService.currentUser;
+
+    if (user == null ||
+        user.uid.trim().isEmpty) {
+      throw StateError(
+        'The verified Firebase user is unavailable.',
+      );
     }
 
-    final bool firebaseCreatedUser =
-        result.additionalUserInfo?.isNewUser == true;
+    final String verifiedPhone =
+        user.phoneNumber?.trim() ?? '';
 
-    final UserModel? existing = await _firestoreService.getUser(user.uid);
+    if (verifiedPhone.isEmpty) {
+      throw StateError(
+        'Firebase did not return the verified Phone Number.',
+      );
+    }
 
-    if (!firebaseCreatedUser && existing != null) {
+    final bool isNewFirebaseUser =
+        result.additionalUserInfo?.isNewUser ==
+            true;
+
+    if (!isNewFirebaseUser) {
       await _safeSignOut();
 
       throw StateError(
-        'An account already exists with this Phone Number. Use Login instead.',
+        'An account already exists with this Phone Number. '
+            'Use Login instead.',
       );
     }
-
-    if (existing == null) {
-      await _createMinimumSignupProfile(user);
-    }
-
-    await _firestoreService.syncAuthenticationProfile(
-      uid: user.uid,
-      email: user.email ?? _normalizedOptionalEmail,
-      phoneNumber: user.phoneNumber ?? widget.phoneNumber.trim(),
-      emailVerified: user.emailVerified,
-      phoneVerified: true,
-      signInProviders: _authService.linkedProviderIds,
-    );
 
     _completeWithSuccess();
-  }
-
-  Future<void> _createMinimumSignupProfile(User user) async {
-    final String phoneNumber = user.phoneNumber?.trim().isNotEmpty == true
-        ? user.phoneNumber!.trim()
-        : widget.phoneNumber.trim();
-
-    if (phoneNumber.isEmpty) {
-      throw StateError('The verified Phone Number is unavailable.');
-    }
-
-    final DateTime now = DateTime.now();
-
-    for (int attempt = 0; attempt < _maximumJrCallIdAttempts; attempt++) {
-      final String publicId = attempt == 0 && _jrCallIdCandidate != null
-          ? _jrCallIdCandidate!
-          : _generateJrCallUserId();
-
-      final UserModel model = UserModel(
-        uid: user.uid,
-        name: _fullName,
-        phone: phoneNumber,
-        email: user.email ?? _normalizedOptionalEmail,
-        username: _username,
-        userAddress: publicId,
-        photoUrl: null,
-        coverPhoto: null,
-        bio: _bio,
-        country: _country,
-        countryCode: _countryCode,
-        dateOfBirth: _dateOfBirth,
-        online: true,
-        verified: true,
-        createdAt: now,
-        updatedAt: now,
-        lastSeen: now,
-        lastLogin: now,
-        provider: 'phone',
-        isBlocked: false,
-        isDeleted: false,
-      );
-
-      try {
-        await _firestoreService.createUser(model);
-
-        return;
-      } on StateError catch (error) {
-        if (error.message.toLowerCase().contains('jr call user address')) {
-          continue;
-        }
-
-        rethrow;
-      }
-    }
-
-    throw StateError('A unique JR CALL User ID could not be created.');
-  }
-
-  String _generateJrCallUserId() {
-    final String randomPart = _uuid
-        .v4()
-        .replaceAll('-', '')
-        .substring(0, 12)
-        .toLowerCase();
-
-    return 'jrcall_$randomPart';
   }
 
   // =============================================================
   // PHONE LOGIN
   // =============================================================
 
-  Future<void> _verifyPhoneLogin(String otp) async {
-    final PhoneAuthCredential credential = _createPhoneCredential(otp);
+  Future<void> _verifyPhoneLogin(
+      String otp,
+      ) async {
+    final LoginOtpResult result =
+    await _loginOtpManager
+        .signInWithManualOtp(
+      verificationId:
+      _requirePhoneVerificationId(),
+      smsCode: otp,
+      fallbackPhoneNumber:
+      widget.phoneNumber.trim(),
+    );
 
-    await _completePhoneLogin(credential);
+    await _completePhoneLoginResult(
+      result,
+    );
   }
 
-  Future<void> _completePhoneLogin(PhoneAuthCredential credential) async {
-    final UserCredential result = await _authService.signInWithPhoneCredential(
-      credential,
-    );
+  Future<void> _completePhoneLoginResult(
+      LoginOtpResult result,
+      ) async {
+    if (result.hasExistingProfile) {
+      _completeWithSuccess();
 
-    final User? user = result.user ?? _authService.currentUser;
-
-    if (user == null) {
-      throw StateError('The authenticated Firebase user is unavailable.');
+      return;
     }
 
-    if (result.additionalUserInfo?.isNewUser == true) {
-      try {
-        await user.delete();
-      } catch (_) {
-        await _safeSignOut();
+    if (result.requiresProfileSetup) {
+      await _profileService
+          .ensureCurrentProfile(
+        generateJrCallUserId: true,
+      );
+
+      if (!mounted) {
+        return;
       }
 
-      throw StateError(
-        'No existing JR CALL account was found for this Phone Number.',
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (
+              BuildContext context,
+              ) =>
+          const CreateProfileSetupScreen(),
+        ),
       );
+
+      if (!mounted) {
+        return;
+      }
+
+      if (!_completed) {
+        _completeWithSuccess();
+      }
+
+      return;
     }
 
-    final UserModel? profile = await _firestoreService.getUser(user.uid);
-
-    if (profile == null) {
-      await _safeSignOut();
-
-      throw StateError(
-        'This account does not have an existing JR CALL profile.',
-      );
-    }
-
-    if (profile.isDeleted || profile.isBlocked) {
-      await _safeSignOut();
-
-      throw StateError('This JR CALL account is currently unavailable.');
-    }
-
-    final DateTime now = DateTime.now();
-
-    await _firestoreService.updateUser(
-      profile.copyWith(
-        phone: user.phoneNumber ?? profile.phone,
-        email: user.email ?? profile.email,
-        online: true,
-        verified: true,
-        updatedAt: now,
-        lastSeen: now,
-        lastLogin: now,
-      ),
+    throw StateError(
+      'Phone authentication state is invalid.',
     );
-
-    await _firestoreService.syncAuthenticationProfile(
-      uid: user.uid,
-      email: user.email,
-      phoneNumber: user.phoneNumber,
-      emailVerified: user.emailVerified,
-      phoneVerified: true,
-      signInProviders: _authService.linkedProviderIds,
-    );
-
-    _completeWithSuccess();
   }
 
   // =============================================================
   // PHONE CHANGE
   // =============================================================
 
-  Future<void> _verifyPhoneChange(String otp) async {
-    final PhoneAuthCredential credential = _createPhoneCredential(otp);
+  Future<void> _verifyPhoneChange(
+      String otp,
+      ) async {
+    final PhoneAuthCredential credential =
+    _authService.createPhoneCredential(
+      verificationId:
+      _requirePhoneVerificationId(),
+      smsCode: otp,
+    );
 
-    await _completePhoneChange(credential);
+    await _completePhoneChange(
+      credential,
+    );
   }
 
-  Future<void> _completePhoneChange(PhoneAuthCredential credential) async {
+  Future<void> _completePhoneChange(
+      PhoneAuthCredential credential,
+      ) async {
     _requireCurrentUser();
 
-    await _authService.updatePhoneNumber(credential);
+    await _authService.updatePhoneNumber(
+      credential,
+    );
 
-    final User user = _requireCurrentUser();
+    final User user =
+    _requireCurrentUser();
 
-    final UserModel? profile = await _firestoreService.getUser(user.uid);
+    final String verifiedPhone =
+        user.phoneNumber?.trim() ?? '';
+
+    if (verifiedPhone.isEmpty) {
+      throw StateError(
+        'The verified Phone Number is unavailable.',
+      );
+    }
+
+    final UserModel? profile =
+    await _firestoreService.getUser(
+      user.uid,
+    );
 
     if (profile != null) {
       await _firestoreService.updateUser(
         profile.copyWith(
-          phone: user.phoneNumber ?? widget.phoneNumber.trim(),
+          phone: verifiedPhone,
           verified: true,
+          phoneVerified: true,
           updatedAt: DateTime.now(),
         ),
       );
     }
 
-    await _firestoreService.syncAuthenticationProfile(
+    await _firestoreService
+        .syncAuthenticationProfile(
       uid: user.uid,
       email: user.email,
-      phoneNumber: user.phoneNumber,
-      emailVerified: user.emailVerified,
+      phoneNumber: verifiedPhone,
+      emailVerified:
+      user.emailVerified,
       phoneVerified: true,
-      signInProviders: _authService.linkedProviderIds,
+      signInProviders:
+      _authService.linkedProviderIds,
     );
 
     _completeWithSuccess();
@@ -584,39 +772,60 @@ class _OtpScreenState extends State<OtpScreen> {
 
   // =============================================================
   // EMAIL OTP
+  //
+  // Normal Email Login does NOT use this path.
+  //
+  // emailLogin remains compatibility-only.
   // =============================================================
 
   Future<void> _verifyEmailOtp({
     required String otp,
     required String purpose,
   }) async {
-    final String challengeId = (_emailChallengeId ?? _verificationId).trim();
+    final String challengeId =
+    (_emailChallengeId ??
+        _verificationId)
+        .trim();
 
     if (challengeId.isEmpty) {
-      throw StateError('No Email verification challenge is available.');
+      throw StateError(
+        'No Email verification challenge is available.',
+      );
     }
 
-    final EmailOtpVerificationResult result = await _authService.verifyEmailOtp(
+    final EmailOtpVerificationResult result =
+    await _authService.verifyEmailOtp(
       challengeId: challengeId,
       otp: otp,
       purpose: purpose,
     );
 
-    if (!result.success || !result.verified) {
-      throw StateError('Email verification failed.');
+    if (!result.success ||
+        !result.verified) {
+      throw StateError(
+        'Email verification failed.',
+      );
     }
 
-    final User user = _requireCurrentUser();
+    final User user =
+    _requireCurrentUser();
 
-    final UserModel? profile = await _firestoreService.getUser(user.uid);
+    final UserModel? profile =
+    await _firestoreService.getUser(
+      user.uid,
+    );
 
     if (profile != null) {
-      final DateTime now = DateTime.now();
+      final DateTime now =
+      DateTime.now();
 
       await _firestoreService.updateUser(
         profile.copyWith(
-          email: user.email ?? profile.email,
+          email:
+          user.email ??
+              profile.email,
           verified: true,
+          emailVerified: true,
           online: true,
           updatedAt: now,
           lastSeen: now,
@@ -625,16 +834,101 @@ class _OtpScreenState extends State<OtpScreen> {
       );
     }
 
-    await _firestoreService.syncAuthenticationProfile(
+    final String? authenticatedPhone =
+    _cleanNullable(
+      user.phoneNumber,
+    );
+
+    await _firestoreService
+        .syncAuthenticationProfile(
       uid: user.uid,
-      email: user.email ?? _normalizedOptionalEmail,
-      phoneNumber: user.phoneNumber,
+      email:
+      user.email ??
+          _normalizedOptionalEmail,
+      phoneNumber:
+      authenticatedPhone,
       emailVerified: true,
-      phoneVerified: user.phoneNumber?.trim().isNotEmpty == true,
-      signInProviders: _authService.linkedProviderIds,
+      phoneVerified:
+      authenticatedPhone != null,
+      signInProviders:
+      _authService.linkedProviderIds,
     );
 
     _completeWithSuccess();
+  }
+
+  // =============================================================
+  // PASSWORD RECOVERY
+  // =============================================================
+
+  Future<void> _verifyPasswordRecoveryOtp(
+      String otp,
+      ) async {
+    final String challengeId =
+    (_emailChallengeId ??
+        _verificationId)
+        .trim();
+
+    if (challengeId.isEmpty) {
+      throw StateError(
+        'Password recovery session is unavailable. '
+            'Request a new recovery code.',
+      );
+    }
+
+    final String newPassword =
+    _resolveRecoveryPassword();
+
+    if (newPassword.length < 6) {
+      throw ArgumentError.value(
+        newPassword,
+        'newPassword',
+        'Password must contain at least 6 characters.',
+      );
+    }
+
+    await _authService
+        .verifyPasswordRecoveryOtp(
+      challengeId: challengeId,
+      otp: otp,
+      newPassword: newPassword,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    _completeWithSuccess();
+  }
+
+  String _resolveRecoveryPassword() {
+    final String widgetPassword =
+        widget.password ?? '';
+
+    if (widgetPassword.isNotEmpty) {
+      return widgetPassword;
+    }
+
+    final Object? routePassword =
+    _routeData['newPassword'];
+
+    if (routePassword is String &&
+        routePassword.isNotEmpty) {
+      return routePassword;
+    }
+
+    final Object? fallbackPassword =
+    _routeData['password'];
+
+    if (fallbackPassword is String &&
+        fallbackPassword.isNotEmpty) {
+      return fallbackPassword;
+    }
+
+    throw StateError(
+      'The new password is unavailable. '
+          'Restart password recovery.',
+    );
   }
 
   // =============================================================
@@ -661,7 +955,8 @@ class _OtpScreenState extends State<OtpScreen> {
         await _resendPhoneOtp();
       }
 
-      if (!mounted || _completed) {
+      if (!mounted ||
+          _completed) {
         return;
       }
 
@@ -669,15 +964,42 @@ class _OtpScreenState extends State<OtpScreen> {
 
       _restartResendTimer();
 
-      _showMessage('A new verification code has been sent.');
+      _showMessage(
+        'A new verification code has been sent.',
+      );
     } on FirebaseAuthException catch (error) {
-      _showMessage(_firebaseAuthMessage(error));
+      _showMessage(
+        _firebaseAuthMessage(error),
+      );
     } on FirebaseFunctionsException catch (error) {
-      _showMessage(_functionsMessage(error));
+      _showMessage(
+        _functionsMessage(error),
+      );
     } on StateError catch (error) {
-      _showMessage(error.message);
+      _showMessage(
+        error.message,
+      );
+    } on ArgumentError catch (error) {
+      _showMessage(
+        error.message?.toString() ??
+            'Invalid verification information.',
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL OTP resend error: $error',
+      );
+
+      debugPrintStack(
+        label: 'JR CALL OTP resend',
+        stackTrace: stackTrace,
+      );
+
+      _showMessage(
+        'A new verification code could not be sent.',
+      );
     } finally {
-      if (mounted && !_completed) {
+      if (mounted &&
+          !_completed) {
         setState(() {
           _resending = false;
         });
@@ -685,71 +1007,354 @@ class _OtpScreenState extends State<OtpScreen> {
     }
   }
 
+  // =============================================================
+  // EMAIL / RECOVERY RESEND
+  // =============================================================
+
   Future<void> _resendEmailOtp() async {
-    final String email = widget.email?.trim().isNotEmpty == true
+    final String email =
+    widget.email?.trim().isNotEmpty ==
+        true
         ? widget.email!.trim()
-        : _authService.currentEmail ?? '';
+        : _authService.currentEmail ??
+        '';
 
     if (email.isEmpty) {
-      throw StateError('No Email address is available.');
+      throw StateError(
+        'No Email address is available.',
+      );
+    }
+
+    if (_mode ==
+        OtpMode.passwordRecovery) {
+      final PasswordRecoveryChallenge
+      challenge =
+      await _authService
+          .sendPasswordRecoveryOtp(
+        email: email,
+      );
+
+      final String? challengeId =
+      _cleanNullable(
+        challenge.challengeId,
+      );
+
+      if (challengeId == null) {
+        throw StateError(
+          'Password recovery session is no longer available.',
+        );
+      }
+
+      _emailChallengeId =
+          challengeId;
+
+      _verificationId =
+          challengeId;
+
+      _resendCooldownSeconds =
+      challenge.resendAfterSeconds > 0
+          ? challenge.resendAfterSeconds
+          : _defaultResendCooldownSeconds;
+
+      return;
     }
 
     final EmailOtpChallenge challenge;
 
     switch (_mode) {
       case OtpMode.emailSignUp:
-        challenge = await _authService.sendEmailSignUpOtp(email: email);
+        challenge =
+        await _authService
+            .sendEmailSignUpOtp(
+          email: email,
+        );
         break;
 
       case OtpMode.emailLogin:
-        challenge = await _authService.sendEmailLoginOtp(email: email);
+        challenge =
+        await _authService
+            .sendEmailLoginOtp(
+          email: email,
+        );
         break;
 
       case OtpMode.emailChange:
-        challenge = await _authService.sendEmailChangeOtp(email: email);
+        challenge =
+        await _authService
+            .sendEmailChangeOtp(
+          email: email,
+        );
         break;
 
-      default:
-        throw StateError('Email resend is not available in Phone mode.');
+      case OtpMode.phoneSignUp:
+      case OtpMode.phoneLogin:
+      case OtpMode.phoneChange:
+        throw StateError(
+          'Email resend is not available in Phone mode.',
+        );
+
+      case OtpMode.passwordRecovery:
+        throw StateError(
+          'Password recovery resend state is invalid.',
+        );
     }
 
-    _emailChallengeId = challenge.challengeId;
+    final String challengeId =
+    challenge.challengeId.trim();
 
-    _verificationId = challenge.challengeId;
+    if (challengeId.isEmpty) {
+      throw StateError(
+        'Email verification session could not be created.',
+      );
+    }
+
+    _emailChallengeId =
+        challengeId;
+
+    _verificationId =
+        challengeId;
+
+    _resendCooldownSeconds =
+    challenge.resendAfterSeconds > 0
+        ? challenge.resendAfterSeconds
+        : _defaultResendCooldownSeconds;
   }
 
-  Future<void> _resendPhoneOtp() async {
-    final String phoneNumber = widget.phoneNumber.trim();
+  // =============================================================
+  // PHONE RESEND
+  // =============================================================
 
-    await _authService.resendPhoneVerificationCode(
+  Future<void> _resendPhoneOtp() async {
+    final String phoneNumber =
+    widget.phoneNumber.trim();
+
+    if (phoneNumber.isEmpty) {
+      throw StateError(
+        'No Phone Number is available.',
+      );
+    }
+
+    // -----------------------------------------------------------
+    // LOGIN RESEND
+    // -----------------------------------------------------------
+
+    if (_mode ==
+        OtpMode.phoneLogin) {
+      await _loginOtpManager.resendPhoneOtp(
+        phoneNumber: phoneNumber,
+        onCodeSent: (
+            String verificationId,
+            ) {
+          _updatePhoneVerificationId(
+            verificationId,
+          );
+        },
+        onAutomaticVerified: (
+            LoginOtpResult result,
+            ) {
+          if (!mounted ||
+              _completed ||
+              _automaticVerificationRunning) {
+            return;
+          }
+
+          _automaticVerificationRunning =
+          true;
+
+          unawaited(
+            _handleAutomaticLoginResult(
+              result,
+            ),
+          );
+        },
+        onVerificationFailed: (
+            FirebaseAuthException error,
+            ) {
+          if (!mounted ||
+              _completed) {
+            return;
+          }
+
+          _showMessage(
+            _firebaseAuthMessage(
+              error,
+            ),
+          );
+        },
+        onAutoRetrievalTimeout: (
+            String verificationId,
+            ) {
+          _updatePhoneVerificationId(
+            verificationId,
+          );
+        },
+      );
+
+      return;
+    }
+
+    // -----------------------------------------------------------
+    // SIGNUP / PHONE CHANGE RESEND
+    // -----------------------------------------------------------
+
+    await _authService
+        .resendPhoneVerificationCode(
       phoneNumber: phoneNumber,
-      verificationCompleted: (PhoneAuthCredential credential) {
-        if (_completed || _automaticVerificationRunning) {
+      verificationCompleted: (
+          PhoneAuthCredential credential,
+          ) {
+        if (!mounted ||
+            _completed ||
+            _automaticVerificationRunning) {
           return;
         }
 
-        _automaticVerificationRunning = true;
+        _automaticVerificationRunning =
+        true;
 
-        unawaited(_handleAutomaticCredential(credential));
+        unawaited(
+          _handleAutomaticCredential(
+            credential,
+          ),
+        );
       },
-      verificationFailed: (FirebaseAuthException error) {
-        _showMessage(_firebaseAuthMessage(error));
+      verificationFailed: (
+          FirebaseAuthException error,
+          ) {
+        if (!mounted ||
+            _completed) {
+          return;
+        }
+
+        _showMessage(
+          _firebaseAuthMessage(
+            error,
+          ),
+        );
       },
-      codeSent: (String verificationId) {
-        _verificationId = verificationId.trim();
+      codeSent: (
+          String verificationId,
+          ) {
+        _updatePhoneVerificationId(
+          verificationId,
+        );
       },
-      codeAutoRetrievalTimeout: (String verificationId) {
-        _verificationId = verificationId.trim();
+      codeAutoRetrievalTimeout: (
+          String verificationId,
+          ) {
+        _updatePhoneVerificationId(
+          verificationId,
+        );
       },
-      codeSentWithToken: (String verificationId, int? resendToken) {
-        _verificationId = verificationId.trim();
+      codeSentWithToken: (
+          String verificationId,
+          int? resendToken,
+          ) {
+        _updatePhoneVerificationId(
+          verificationId,
+        );
       },
     );
   }
 
+  void _updatePhoneVerificationId(
+      String verificationId,
+      ) {
+    final String normalizedId =
+    verificationId.trim();
+
+    if (normalizedId.isEmpty) {
+      return;
+    }
+
+    _verificationId =
+        normalizedId;
+  }
+
+  // =============================================================
+  // AUTOMATIC LOGIN RESULT
+  // =============================================================
+
+  Future<void> _handleAutomaticLoginResult(
+      LoginOtpResult result,
+      ) async {
+    if (_completed) {
+      _automaticVerificationRunning =
+      false;
+
+      return;
+    }
+
+    if (mounted) {
+      _setLoading(true);
+    }
+
+    try {
+      await _completePhoneLoginResult(
+        result,
+      );
+    } on FirebaseAuthException catch (error) {
+      if (mounted) {
+        _showMessage(
+          _firebaseAuthMessage(
+            error,
+          ),
+        );
+      }
+    } on StateError catch (error) {
+      if (mounted) {
+        _showMessage(
+          error.message,
+        );
+      }
+    } on ArgumentError catch (error) {
+      if (mounted) {
+        _showMessage(
+          error.message?.toString() ??
+              'Invalid verification information.',
+        );
+      }
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL automatic Login OTP error: $error',
+      );
+
+      debugPrintStack(
+        label:
+        'JR CALL automatic Login OTP',
+        stackTrace: stackTrace,
+      );
+
+      if (mounted) {
+        _showMessage(
+          'Phone verification could not be completed.',
+        );
+      }
+    } finally {
+      _automaticVerificationRunning =
+      false;
+
+      if (mounted &&
+          !_completed) {
+        _setLoading(false);
+      }
+    }
+  }
+
+  // =============================================================
+  // AUTOMATIC PHONE CREDENTIAL
+  // =============================================================
+
   Future<void> _handleAutomaticCredential(
-    PhoneAuthCredential credential,
-  ) async {
+      PhoneAuthCredential credential,
+      ) async {
+    if (_completed) {
+      _automaticVerificationRunning =
+      false;
+
+      return;
+    }
+
     if (mounted) {
       _setLoading(true);
     }
@@ -757,28 +1362,70 @@ class _OtpScreenState extends State<OtpScreen> {
     try {
       switch (_mode) {
         case OtpMode.phoneSignUp:
-          await _completePhoneSignup(credential);
-          break;
-
-        case OtpMode.phoneLogin:
-          await _completePhoneLogin(credential);
-          break;
+          await _completeAutomaticPhoneSignup(
+            credential,
+          );
+          return;
 
         case OtpMode.phoneChange:
-          await _completePhoneChange(credential);
-          break;
+          await _completePhoneChange(
+            credential,
+          );
+          return;
 
-        default:
+        case OtpMode.phoneLogin:
+          throw StateError(
+            'Phone Login automatic verification must use LoginOtpManager.',
+          );
+
+        case OtpMode.emailSignUp:
+        case OtpMode.emailLogin:
+        case OtpMode.emailChange:
+        case OtpMode.passwordRecovery:
           return;
       }
-    } catch (error) {
+    } on FirebaseAuthException catch (error) {
       if (mounted) {
-        _showMessage(error.toString());
+        _showMessage(
+          _firebaseAuthMessage(
+            error,
+          ),
+        );
+      }
+    } on StateError catch (error) {
+      if (mounted) {
+        _showMessage(
+          error.message,
+        );
+      }
+    } on ArgumentError catch (error) {
+      if (mounted) {
+        _showMessage(
+          error.message?.toString() ??
+              'Invalid verification information.',
+        );
+      }
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL automatic OTP error: $error',
+      );
+
+      debugPrintStack(
+        label: 'JR CALL automatic OTP',
+        stackTrace: stackTrace,
+      );
+
+      if (mounted) {
+        _showMessage(
+          'Phone verification could not be completed.',
+        );
       }
     } finally {
-      _automaticVerificationRunning = false;
+      _automaticVerificationRunning =
+      false;
 
-      if (mounted && !_completed) {
+      if (mounted &&
+          !_completed) {
         _setLoading(false);
       }
     }
@@ -791,28 +1438,36 @@ class _OtpScreenState extends State<OtpScreen> {
   void _startResendTimer() {
     _resendTimer?.cancel();
 
-    _resendRemaining = _resendCooldownSeconds;
+    _resendRemaining =
+        _resendCooldownSeconds;
 
-    _resendTimer = Timer.periodic(const Duration(seconds: 1), (Timer timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
+    _resendTimer = Timer.periodic(
+      const Duration(
+        seconds: 1,
+      ),
+          (
+          Timer timer,
+          ) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
 
-      if (_resendRemaining <= 1) {
-        timer.cancel();
+        if (_resendRemaining <= 1) {
+          timer.cancel();
+
+          setState(() {
+            _resendRemaining = 0;
+          });
+
+          return;
+        }
 
         setState(() {
-          _resendRemaining = 0;
+          _resendRemaining--;
         });
-
-        return;
-      }
-
-      setState(() {
-        _resendRemaining--;
-      });
-    });
+      },
+    );
   }
 
   void _restartResendTimer() {
@@ -820,11 +1475,12 @@ class _OtpScreenState extends State<OtpScreen> {
   }
 
   // =============================================================
-  // SUCCESS -> HOME
+  // SUCCESS
   // =============================================================
 
   void _completeWithSuccess() {
-    if (!mounted || _completed) {
+    if (!mounted ||
+        _completed) {
       return;
     }
 
@@ -832,13 +1488,70 @@ class _OtpScreenState extends State<OtpScreen> {
 
     _resendTimer?.cancel();
 
-    TextInput.finishAutofillContext(shouldSave: false);
+    TextInput.finishAutofillContext(
+      shouldSave: false,
+    );
 
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute<void>(builder: (_) => const HomeScreen()),
-      (Route<dynamic> route) => false,
+    // -----------------------------------------------------------
+    // PASSWORD RECOVERY
+    // -----------------------------------------------------------
+
+    if (_isPasswordRecovery) {
+      Navigator.of(context).pop<bool>(
+        true,
+      );
+
+      return;
+    }
+
+    // -----------------------------------------------------------
+    // SIGNUP
+    //
+    // CreateAccountScreen owns final profile/account completion.
+    // -----------------------------------------------------------
+
+    if (_isSignUpMode) {
+      Navigator.of(context).pop<bool>(
+        true,
+      );
+
+      return;
+    }
+
+    // -----------------------------------------------------------
+    // ACCOUNT CHANGE
+    // -----------------------------------------------------------
+
+    if (_isChangeMode) {
+      Navigator.of(context).pop<bool>(
+        true,
+      );
+
+      return;
+    }
+
+    // -----------------------------------------------------------
+    // LOGIN
+    // -----------------------------------------------------------
+
+    Navigator.of(context)
+        .pushAndRemoveUntil(
+      MaterialPageRoute<void>(
+        builder: (
+            BuildContext context,
+            ) =>
+        const HomeScreen(),
+      ),
+          (
+          Route<dynamic> route,
+          ) =>
+      false,
     );
   }
+
+  // =============================================================
+  // CANCEL
+  // =============================================================
 
   void _cancelVerification() {
     if (!mounted ||
@@ -849,26 +1562,54 @@ class _OtpScreenState extends State<OtpScreen> {
       return;
     }
 
+    _loginOtpManager.cancel();
+
     _resendTimer?.cancel();
 
-    Navigator.of(context).pop<bool>(false);
+    Navigator.of(context).pop<bool>(
+      false,
+    );
   }
 
   // =============================================================
   // HELPERS
   // =============================================================
 
-  String? get _normalizedOptionalEmail {
-    final String value = widget.email?.trim().toLowerCase() ?? '';
+  String _requirePhoneVerificationId() {
+    final String verificationId =
+    _verificationId.trim();
 
-    return value.isEmpty ? null : value;
+    if (verificationId.isEmpty) {
+      throw StateError(
+        'Phone verification session is unavailable. '
+            'Request a new OTP.',
+      );
+    }
+
+    return verificationId;
+  }
+
+  String? get _normalizedOptionalEmail {
+    final String value =
+        widget.email
+            ?.trim()
+            .toLowerCase() ??
+            '';
+
+    return value.isEmpty
+        ? null
+        : value;
   }
 
   User _requireCurrentUser() {
-    final User? user = _authService.currentUser;
+    final User? user =
+        _authService.currentUser;
 
-    if (user == null) {
-      throw StateError('The authenticated Firebase user is unavailable.');
+    if (user == null ||
+        user.uid.trim().isEmpty) {
+      throw StateError(
+        'The authenticated Firebase user is unavailable.',
+      );
     }
 
     return user;
@@ -877,11 +1618,31 @@ class _OtpScreenState extends State<OtpScreen> {
   Future<void> _safeSignOut() async {
     try {
       await _authService.signOut();
-    } catch (_) {}
+    } catch (_) {
+      // Best-effort cleanup.
+    }
   }
 
-  void _setLoading(bool value) {
-    if (!mounted || _loading == value) {
+  String? _cleanNullable(
+      String? value,
+      ) {
+    if (value == null) {
+      return null;
+    }
+
+    final String normalized =
+    value.trim();
+
+    return normalized.isEmpty
+        ? null
+        : normalized;
+  }
+
+  void _setLoading(
+      bool value,
+      ) {
+    if (!mounted ||
+        _loading == value) {
       return;
     }
 
@@ -890,7 +1651,9 @@ class _OtpScreenState extends State<OtpScreen> {
     });
   }
 
-  void _showMessage(String message) {
+  void _showMessage(
+      String message,
+      ) {
     if (!mounted) {
       return;
     }
@@ -898,35 +1661,38 @@ class _OtpScreenState extends State<OtpScreen> {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+        SnackBar(
+          content: Text(
+            message,
+          ),
+          behavior:
+          SnackBarBehavior.floating,
+        ),
       );
   }
 
-  String? _readString(Object? value) {
+  String? _readString(
+      Object? value,
+      ) {
     if (value is! String) {
       return null;
     }
 
-    final String normalized = value.trim();
+    final String normalized =
+    value.trim();
 
-    return normalized.isEmpty ? null : normalized;
+    return normalized.isEmpty
+        ? null
+        : normalized;
   }
 
-  String? _normalizeUsername(String? value) {
-    if (value == null) {
-      return null;
-    }
+  // =============================================================
+  // AUTH ERROR
+  // =============================================================
 
-    String normalized = value.trim().toLowerCase();
-
-    if (normalized.startsWith('@')) {
-      normalized = normalized.substring(1);
-    }
-
-    return normalized.isEmpty ? null : normalized;
-  }
-
-  String _firebaseAuthMessage(FirebaseAuthException error) {
+  String _firebaseAuthMessage(
+      FirebaseAuthException error,
+      ) {
     switch (error.code) {
       case 'invalid-verification-code':
         return 'The verification code is incorrect.';
@@ -961,15 +1727,46 @@ class _OtpScreenState extends State<OtpScreen> {
       case 'captcha-check-failed':
         return 'Firebase security verification failed.';
 
+      case 'credential-already-in-use':
+      case 'phone-number-already-exists':
+        return 'This Phone Number already belongs to another account.';
+
+      case 'verification-in-progress':
+        return 'Phone verification is already in progress.';
+
+      case 'phone-login-state-error':
+      case 'phone-verification-state-error':
+        return error.message ??
+            'Phone authentication state is invalid.';
+
+      case 'phone-login-invalid-argument':
+        return error.message ??
+            'Phone authentication information is invalid.';
+
+      case 'phone-verification-failed':
+        return error.message ??
+            'Phone verification could not be completed.';
+
+      case 'weak-password':
+        return 'The new password is too weak.';
+
       default:
-        return error.message ?? 'Verification failed.';
+        return error.message ??
+            'Verification failed.';
     }
   }
 
-  String _functionsMessage(FirebaseFunctionsException error) {
+  // =============================================================
+  // FUNCTIONS ERROR
+  // =============================================================
+
+  String _functionsMessage(
+      FirebaseFunctionsException error,
+      ) {
     switch (error.code) {
       case 'invalid-argument':
-        return error.message ?? 'The OTP request is invalid.';
+        return error.message ??
+            'The OTP request is invalid.';
 
       case 'not-found':
         return 'The OTP challenge was not found or has expired.';
@@ -978,13 +1775,16 @@ class _OtpScreenState extends State<OtpScreen> {
         return 'The OTP has expired. Request a new code.';
 
       case 'permission-denied':
-        return error.message ?? 'OTP verification was not authorized.';
+        return error.message ??
+            'OTP verification was not authorized.';
 
       case 'resource-exhausted':
-        return error.message ?? 'Too many OTP attempts were made.';
+        return error.message ??
+            'Too many OTP attempts were made.';
 
       case 'failed-precondition':
-        return error.message ?? 'OTP verification cannot continue right now.';
+        return error.message ??
+            'OTP verification cannot continue right now.';
 
       case 'unauthenticated':
         return 'The authentication session expired.';
@@ -995,16 +1795,29 @@ class _OtpScreenState extends State<OtpScreen> {
       case 'internal':
         return 'The Email OTP service encountered an internal error.';
 
+      case 'already-exists':
+        return error.message ??
+            'This information is already used by another account.';
+
       default:
-        return error.message ?? 'Email OTP verification failed.';
+        return error.message ??
+            'Email OTP verification failed.';
     }
   }
 
+  // =============================================================
+  // DISPLAY
+  // =============================================================
+
   String get _destination {
     if (_isEmailMode) {
-      return widget.email?.trim().isNotEmpty == true
+      return widget.email
+          ?.trim()
+          .isNotEmpty ==
+          true
           ? widget.email!.trim()
-          : _authService.currentEmail ?? 'your Email';
+          : _authService.currentEmail ??
+          'your Email';
     }
 
     return widget.phoneNumber.trim();
@@ -1029,225 +1842,441 @@ class _OtpScreenState extends State<OtpScreen> {
 
       case OtpMode.emailChange:
         return 'Verify New Email';
+
+      case OtpMode.passwordRecovery:
+        return 'Verify Recovery Code';
     }
   }
 
-  String get _screenSubtitle => 'Enter the 6-digit code sent to $_destination';
+  String get _screenSubtitle {
+    if (_isPasswordRecovery) {
+      return 'Enter the 6-digit recovery code sent to $_destination';
+    }
+
+    return 'Enter the 6-digit code sent to $_destination';
+  }
+
+  String get _securityText {
+    if (_isPasswordRecovery) {
+      return 'Password recovery is securely verified by JR CALL. '
+          'Your OTP and new password are never stored on this screen.';
+    }
+
+    if (_isEmailMode) {
+      return 'Email verification is securely processed by JR CALL.';
+    }
+
+    return 'SMS verification is securely processed by Firebase Authentication.';
+  }
 
   // =============================================================
   // UI
   // =============================================================
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+      BuildContext context,
+      ) {
     final bool actionBusy =
-        _loading || _resending || _automaticVerificationRunning;
+        _loading ||
+            _resending ||
+            _automaticVerificationRunning;
 
-    final double screenWidth = MediaQuery.sizeOf(context).width;
+    final double screenWidth =
+        MediaQuery.sizeOf(
+          context,
+        ).width;
 
-    final double availableWidth = (screenWidth - 92).clamp(240.0, 430.0);
+    final double availableWidth =
+    (screenWidth - 92).clamp(
+      240.0,
+      430.0,
+    );
 
-    final double fieldWidth = ((availableWidth - 50) / 6).clamp(36.0, 48.0);
+    final double fieldWidth =
+    ((availableWidth - 50) / 6).clamp(
+      36.0,
+      48.0,
+    );
 
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (bool didPop, Object? result) {
-        if (!didPop && !actionBusy) {
+      onPopInvokedWithResult: (
+          bool didPop,
+          Object? result,
+          ) {
+        if (!didPop &&
+            !actionBusy) {
           _cancelVerification();
         }
       },
       child: Scaffold(
-        backgroundColor: JrColors.background,
+        backgroundColor:
+        JrColors.background,
         appBar: AppBar(
-          backgroundColor: JrColors.surface,
-          foregroundColor: JrColors.textPrimary,
-          surfaceTintColor: Colors.transparent,
+          backgroundColor:
+          JrColors.surface,
+          foregroundColor:
+          JrColors.textPrimary,
+          surfaceTintColor:
+          Colors.transparent,
           elevation: 0,
           title: const Text(
             'JR CALL',
-            style: TextStyle(fontWeight: FontWeight.w800),
+            style: TextStyle(
+              fontWeight:
+              FontWeight.w800,
+            ),
           ),
         ),
         body: SafeArea(
           child: Center(
             child: SingleChildScrollView(
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+              keyboardDismissBehavior:
+              ScrollViewKeyboardDismissBehavior
+                  .onDrag,
+              padding:
+              const EdgeInsets.symmetric(
+                horizontal: 20,
+                vertical: 24,
+              ),
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 520),
+                constraints:
+                const BoxConstraints(
+                  maxWidth: 520,
+                ),
                 child: Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.fromLTRB(22, 30, 22, 24),
-                  decoration: BoxDecoration(
-                    color: JrColors.surface,
-                    borderRadius: BorderRadius.circular(28),
-                    border: Border.all(color: JrColors.border),
-                    boxShadow: [
+                  padding:
+                  const EdgeInsets.fromLTRB(
+                    22,
+                    30,
+                    22,
+                    24,
+                  ),
+                  decoration:
+                  BoxDecoration(
+                    color:
+                    JrColors.surface,
+                    borderRadius:
+                    BorderRadius.circular(
+                      28,
+                    ),
+                    border:
+                    Border.all(
+                      color:
+                      JrColors.border,
+                    ),
+                    boxShadow:
+                    <BoxShadow>[
                       BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.045),
+                        color:
+                        Colors.black.withValues(
+                          alpha: 0.045,
+                        ),
                         blurRadius: 28,
-                        offset: const Offset(0, 10),
+                        offset:
+                        const Offset(
+                          0,
+                          10,
+                        ),
                       ),
                     ],
                   ),
                   child: AutofillGroup(
                     child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
+                      mainAxisSize:
+                      MainAxisSize.min,
+                      children:
+                      <Widget>[
                         Container(
                           width: 88,
                           height: 88,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: JrColors.primaryBlue.withValues(alpha: 0.08),
+                          decoration:
+                          BoxDecoration(
+                            shape:
+                            BoxShape.circle,
+                            color:
+                            JrColors.primaryBlue
+                                .withValues(
+                              alpha: 0.08,
+                            ),
                           ),
                           child: Icon(
-                            _isEmailMode
-                                ? Icons.mark_email_read_outlined
-                                : Icons.sms_outlined,
+                            _isPasswordRecovery
+                                ? Icons
+                                .lock_reset_rounded
+                                : _isEmailMode
+                                ? Icons
+                                .mark_email_read_outlined
+                                : Icons
+                                .sms_outlined,
                             size: 42,
-                            color: JrColors.primaryBlue,
+                            color:
+                            JrColors.primaryBlue,
                           ),
                         ),
-                        const SizedBox(height: 24),
+                        const SizedBox(
+                          height: 24,
+                        ),
                         Text(
                           _screenTitle,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
+                          textAlign:
+                          TextAlign.center,
+                          style:
+                          const TextStyle(
                             fontSize: 26,
                             height: 1.15,
-                            fontWeight: FontWeight.w800,
-                            color: JrColors.textPrimary,
+                            fontWeight:
+                            FontWeight.w800,
+                            color:
+                            JrColors.textPrimary,
                           ),
                         ),
-                        const SizedBox(height: 10),
+                        const SizedBox(
+                          height: 10,
+                        ),
                         Text(
                           _screenSubtitle,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: JrColors.textSecondary,
+                          textAlign:
+                          TextAlign.center,
+                          style:
+                          const TextStyle(
+                            color:
+                            JrColors.textSecondary,
                             fontSize: 14,
                             height: 1.45,
                           ),
                         ),
-                        const SizedBox(height: 32),
+                        const SizedBox(
+                          height: 32,
+                        ),
                         SizedBox(
-                          width: availableWidth,
-                          child: PinCodeTextField(
-                            appContext: context,
-                            controller: _otpController,
-                            length: _otpLength,
-                            keyboardType: TextInputType.number,
-                            inputFormatters: <TextInputFormatter>[
-                              FilteringTextInputFormatter.digitsOnly,
+                          width:
+                          availableWidth,
+                          child:
+                          PinCodeTextField(
+                            appContext:
+                            context,
+                            controller:
+                            _otpController,
+                            length:
+                            _otpLength,
+                            keyboardType:
+                            TextInputType.number,
+                            inputFormatters:
+                            <TextInputFormatter>[
+                              FilteringTextInputFormatter
+                                  .digitsOnly,
                             ],
-                            animationType: AnimationType.fade,
+                            animationType:
+                            AnimationType.fade,
                             autoFocus: true,
-                            enableActiveFill: true,
-                            enablePinAutofill: true,
-                            useExternalAutoFillGroup: true,
-                            autoUnfocus: true,
-                            autoDisposeControllers: false,
-                            textInputAction: TextInputAction.done,
-                            cursorColor: JrColors.primaryBlue,
-                            textStyle: const TextStyle(
-                              color: JrColors.textPrimary,
+                            enableActiveFill:
+                            true,
+                            enablePinAutofill:
+                            !_isEmailMode,
+                            useExternalAutoFillGroup:
+                            true,
+                            autoUnfocus:
+                            true,
+                            autoDisposeControllers:
+                            false,
+                            textInputAction:
+                            TextInputAction.done,
+                            cursorColor:
+                            JrColors.primaryBlue,
+                            textStyle:
+                            const TextStyle(
+                              color:
+                              JrColors.textPrimary,
                               fontSize: 21,
-                              fontWeight: FontWeight.w700,
+                              fontWeight:
+                              FontWeight.w700,
                             ),
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            pinTheme: PinTheme(
-                              shape: PinCodeFieldShape.box,
-                              borderRadius: BorderRadius.circular(13),
-                              fieldHeight: 56,
-                              fieldWidth: fieldWidth,
-                              activeColor: JrColors.primaryBlue,
-                              selectedColor: JrColors.primaryBlue,
-                              inactiveColor: JrColors.border,
-                              activeFillColor: const Color(0xFFF8FAFC),
-                              selectedFillColor: const Color(0xFFEFF6FF),
-                              inactiveFillColor: const Color(0xFFF8FAFC),
+                            mainAxisAlignment:
+                            MainAxisAlignment
+                                .spaceBetween,
+                            pinTheme:
+                            PinTheme(
+                              shape:
+                              PinCodeFieldShape.box,
+                              borderRadius:
+                              BorderRadius.circular(
+                                13,
+                              ),
+                              fieldHeight:
+                              56,
+                              fieldWidth:
+                              fieldWidth,
+                              activeColor:
+                              JrColors.primaryBlue,
+                              selectedColor:
+                              JrColors.primaryBlue,
+                              inactiveColor:
+                              JrColors.border,
+                              activeFillColor:
+                              const Color(
+                                0xFFF8FAFC,
+                              ),
+                              selectedFillColor:
+                              const Color(
+                                0xFFEFF6FF,
+                              ),
+                              inactiveFillColor:
+                              const Color(
+                                0xFFF8FAFC,
+                              ),
                             ),
-                            onChanged: (_) {},
-                            onCompleted: (_) {
+                            onChanged:
+                                (_) {},
+                            onCompleted:
+                                (_) {
                               if (!actionBusy) {
-                                unawaited(_verifyOtp());
+                                unawaited(
+                                  _verifyOtp(),
+                                );
                               }
                             },
                           ),
                         ),
-                        const SizedBox(height: 28),
+                        const SizedBox(
+                          height: 28,
+                        ),
                         SizedBox(
-                          width: double.infinity,
+                          width:
+                          double.infinity,
                           height: 56,
-                          child: FilledButton(
-                            onPressed: actionBusy ? null : _verifyOtp,
-                            style: FilledButton.styleFrom(
-                              backgroundColor: JrColors.primaryBlue,
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(17),
+                          child:
+                          FilledButton(
+                            onPressed:
+                            actionBusy
+                                ? null
+                                : _verifyOtp,
+                            style:
+                            FilledButton.styleFrom(
+                              backgroundColor:
+                              JrColors.primaryBlue,
+                              foregroundColor:
+                              Colors.white,
+                              shape:
+                              RoundedRectangleBorder(
+                                borderRadius:
+                                BorderRadius.circular(
+                                  17,
+                                ),
                               ),
                             ),
-                            child: _loading || _automaticVerificationRunning
+                            child:
+                            _loading ||
+                                _automaticVerificationRunning
                                 ? const SizedBox(
-                                    width: 24,
-                                    height: 24,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2.4,
-                                      color: Colors.white,
-                                    ),
-                                  )
-                                : const Text(
-                                    'VERIFY OTP',
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w800,
-                                      letterSpacing: 0.2,
-                                    ),
-                                  ),
+                              width: 24,
+                              height: 24,
+                              child:
+                              CircularProgressIndicator(
+                                strokeWidth:
+                                2.4,
+                                color:
+                                Colors.white,
+                              ),
+                            )
+                                : Text(
+                              _isPasswordRecovery
+                                  ? 'VERIFY & RESET'
+                                  : 'VERIFY OTP',
+                              style:
+                              const TextStyle(
+                                fontSize:
+                                16,
+                                fontWeight:
+                                FontWeight.w800,
+                                letterSpacing:
+                                0.2,
+                              ),
+                            ),
                           ),
                         ),
-                        const SizedBox(height: 20),
-                        if (_resendRemaining > 0)
+                        const SizedBox(
+                          height: 20,
+                        ),
+                        if (_resendRemaining >
+                            0)
                           Text(
                             'Resend code in $_resendRemaining seconds',
-                            style: const TextStyle(
-                              color: JrColors.textSecondary,
+                            style:
+                            const TextStyle(
+                              color:
+                              JrColors.textSecondary,
                             ),
                           )
                         else
                           TextButton.icon(
-                            onPressed: actionBusy ? null : _resendOtp,
-                            icon: const Icon(Icons.refresh_rounded),
-                            label: const Text(
+                            onPressed:
+                            actionBusy
+                                ? null
+                                : _resendOtp,
+                            icon:
+                            const Icon(
+                              Icons.refresh_rounded,
+                            ),
+                            label:
+                            const Text(
                               'RESEND OTP',
-                              style: TextStyle(fontWeight: FontWeight.w700),
+                              style:
+                              TextStyle(
+                                fontWeight:
+                                FontWeight.w700,
+                              ),
                             ),
                           ),
-                        const SizedBox(height: 4),
+                        const SizedBox(
+                          height: 4,
+                        ),
                         TextButton(
-                          onPressed: actionBusy ? null : _cancelVerification,
-                          child: const Text(
+                          onPressed:
+                          actionBusy
+                              ? null
+                              : _cancelVerification,
+                          child:
+                          const Text(
                             'Back',
-                            style: TextStyle(color: JrColors.textSecondary),
+                            style:
+                            TextStyle(
+                              color:
+                              JrColors.textSecondary,
+                            ),
                           ),
                         ),
-                        const SizedBox(height: 10),
+                        const SizedBox(
+                          height: 10,
+                        ),
                         Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF8FAFC),
-                            borderRadius: BorderRadius.circular(14),
+                          width:
+                          double.infinity,
+                          padding:
+                          const EdgeInsets.all(
+                            14,
+                          ),
+                          decoration:
+                          BoxDecoration(
+                            color:
+                            const Color(
+                              0xFFF8FAFC,
+                            ),
+                            borderRadius:
+                            BorderRadius.circular(
+                              14,
+                            ),
                           ),
                           child: Text(
-                            _isEmailMode
-                                ? 'Email verification is securely processed by JR CALL.'
-                                : 'SMS verification is securely processed by Firebase Authentication.',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              color: JrColors.textSecondary,
+                            _securityText,
+                            textAlign:
+                            TextAlign.center,
+                            style:
+                            const TextStyle(
+                              color:
+                              JrColors.textSecondary,
                               fontSize: 12,
                               height: 1.4,
                             ),
@@ -1268,4 +2297,25 @@ class _OtpScreenState extends State<OtpScreen> {
 
 // ===============================================================
 // END OF FILE
+//
+// OTP / AUTH MASTER FILE 06 / 09
+//
+// FINAL:
+//
+// ✓ Phone Signup verifies Phone only.
+// ✓ CreateAccountScreen owns Signup profile finalization.
+// ✓ Existing Phone identity rejected from Signup.
+// ✓ New Phone Firebase UID preserved for CreateAccountScreen.
+// ✓ Phone Login uses LoginOtpManager.
+// ✓ Web manual Phone Login/Signup uses AuthService.signInWithOtp().
+// ✓ Native automatic verification preserved.
+// ✓ Phone resend preserved.
+// ✓ Email normal Login does not require this screen.
+// ✓ Legacy Email Login OTP compatibility preserved.
+// ✓ Email Signup/Change OTP preserved.
+// ✓ Password Recovery preserved.
+// ✓ No fake/local OTP.
+// ✓ No OTP persistence.
+// ✓ No Password persistence.
+// ✓ Call/Message/WebRTC untouched.
 // ===============================================================

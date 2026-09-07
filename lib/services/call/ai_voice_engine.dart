@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../../models/network_model.dart';
@@ -9,7 +11,7 @@ import 'network_optimizer.dart';
 // File: ai_voice_engine.dart
 // Location: lib/services/call/ai_voice_engine.dart
 //
-// Production AI-assisted voice optimization coordinator.
+// FINAL PRODUCTION AI-ASSISTED VOICE OPTIMIZATION COORDINATOR.
 //
 // Architecture:
 //
@@ -22,114 +24,191 @@ import 'network_optimizer.dart';
 // AudioManager
 //
 // Ownership:
-// - NetworkManager owns network measurement
-// - NetworkOptimizer owns optimization policy
-// - AudioManager owns microphone/audio-processing state
-// - AIVoiceEngine coordinates AI voice decisions only
 //
-// Rules:
-// - No direct NetworkHelper access
-// - No duplicate network polling
-// - No duplicate timer
-// - No direct WebRTC signaling
-// - No ICE logic
-// - No recovery logic
-// - No duplicate MediaStream
+// NetworkManager:
+// - Network measurement.
+//
+// NetworkOptimizer:
+// - Voice/network optimization policy.
+//
+// AudioManager:
+// - Microphone/audio-processing state.
+//
+// AIVoiceEngine:
+// - Coordinates voice optimization decisions only.
+//
+// IMPORTANT:
+//
+// - No direct NetworkHelper access.
+// - No duplicate network polling.
+// - No duplicate timer.
+// - No direct WebRTC signaling.
+// - No ICE logic.
+// - No recovery logic.
+// - No duplicate MediaStream.
+// - No PeerConnection lifecycle ownership.
+// - No terminal call lifecycle ownership.
+// - No UI/design changes.
 // ===========================================================
 
 class AIVoiceEngine extends ChangeNotifier {
   AIVoiceEngine._();
 
-  static final AIVoiceEngine instance = AIVoiceEngine._();
+  static final AIVoiceEngine instance =
+  AIVoiceEngine._();
 
   // ===========================================================
-  // Dependencies
+  // DEPENDENCIES
   // ===========================================================
 
-  final AudioManager _audioManager = AudioManager.instance;
+  final AudioManager _audioManager =
+      AudioManager.instance;
 
-  final NetworkOptimizer _networkOptimizer = NetworkOptimizer.instance;
+  final NetworkOptimizer _networkOptimizer =
+      NetworkOptimizer.instance;
 
   // ===========================================================
-  // Runtime State
+  // RUNTIME STATE
   // ===========================================================
 
   bool _initialized = false;
+
   bool _initializing = false;
 
   bool _aiEnabled = true;
 
   bool _optimizing = false;
+
   bool _optimizationPending = false;
 
   bool _disposed = false;
 
   int _generation = 0;
 
-  NetworkQuality _networkQuality = NetworkQuality.good;
+  int? _activeInitializationGeneration;
+
+  Future<void>? _initializationFuture;
+
+  Future<void>? _optimizationFuture;
+
+  NetworkQuality _networkQuality =
+      NetworkQuality.good;
 
   int _bitrate = 64000;
 
   Object? _lastError;
 
   // ===========================================================
-  // Public State
+  // PUBLIC STATE
   // ===========================================================
 
-  bool get initialized => _initialized;
+  bool get initialized =>
+      _initialized;
 
-  bool get isInitialized => _initialized;
+  bool get isInitialized =>
+      _initialized;
 
-  bool get isInitializing => _initializing;
+  bool get isInitializing =>
+      _initializing;
 
-  bool get aiEnabled => _aiEnabled;
+  bool get aiEnabled =>
+      _aiEnabled;
 
-  bool get isOptimizing => _optimizing;
+  bool get isOptimizing =>
+      _optimizing;
 
-  bool get isDisposed => _disposed;
+  bool get isDisposed =>
+      _disposed;
 
-  NetworkQuality get networkQuality => _networkQuality;
+  NetworkQuality get networkQuality =>
+      _networkQuality;
 
-  int get bitrate => _bitrate;
+  int get bitrate =>
+      _bitrate;
 
-  Object? get lastError => _lastError;
+  Object? get lastError =>
+      _lastError;
 
-  bool get noiseSuppression => _audioManager.noiseSuppression;
+  bool get noiseSuppression =>
+      _audioManager.noiseSuppression;
 
-  bool get echoCancellation => _audioManager.echoCancellation;
+  bool get echoCancellation =>
+      _audioManager.echoCancellation;
 
-  bool get autoGainControl => _audioManager.autoGainControl;
+  bool get autoGainControl =>
+      _audioManager.autoGainControl;
 
   // ===========================================================
-  // Initialization
+  // INITIALIZATION
   // ===========================================================
 
-  Future<void> initialize() async {
+  Future<void> initialize() {
     _ensureUsable();
 
     if (_initialized) {
-      return;
+      return Future<void>.value();
     }
 
-    if (_initializing) {
-      while (_initializing && !_disposed) {
-        await Future<void>.delayed(const Duration(milliseconds: 10));
+    final Future<void>? existing =
+        _initializationFuture;
+
+    if (existing != null) {
+      return existing;
+    }
+
+    final int generation =
+        _generation;
+
+    final Future<void> operation =
+    _initializeInternal(
+      generation,
+    );
+
+    late final Future<void> tracked;
+
+    tracked = operation.whenComplete(() {
+      if (identical(
+        _initializationFuture,
+        tracked,
+      )) {
+        _initializationFuture = null;
       }
+    });
 
+    _initializationFuture =
+        tracked;
+
+    return tracked;
+  }
+
+  Future<void> _initializeInternal(
+      int generation,
+      ) async {
+    if (!_isGenerationValid(
+      generation,
+    )) {
       return;
     }
 
-    _initializing = true;
-    _lastError = null;
+    _initializing =
+    true;
 
-    final generation = _generation;
+    _activeInitializationGeneration =
+        generation;
+
+    _lastError =
+    null;
+
+    _notifySafely();
 
     try {
       if (!_networkOptimizer.isInitialized) {
         await _networkOptimizer.initialize();
       }
 
-      if (!_isGenerationValid(generation)) {
+      if (!_isGenerationValid(
+        generation,
+      )) {
         return;
       }
 
@@ -137,43 +216,85 @@ class AIVoiceEngine extends ChangeNotifier {
         await _audioManager.initialize();
       }
 
-      if (!_isGenerationValid(generation)) {
+      if (!_isGenerationValid(
+        generation,
+      )) {
         return;
       }
 
-      _initialized = true;
+      final _VoicePolicySnapshot? policy =
+      await _captureVoicePolicy(
+        generation,
+      );
 
-      await _analyzeNetworkInternal(generation);
-
-      if (!_isGenerationValid(generation)) {
+      if (!_isGenerationValid(
+        generation,
+      )) {
         return;
       }
+
+      if (policy != null) {
+        _applyPolicyState(
+          policy,
+        );
+      }
+
+      _initialized =
+      true;
 
       _notifySafely();
 
-      debugPrint('JR CALL: AIVoiceEngine initialized.');
+      _debugPrint(
+        'initialized.',
+      );
     } catch (error, stackTrace) {
-      _initialized = false;
-      _lastError = error;
+      if (_isGenerationValid(
+        generation,
+      )) {
+        _initialized =
+        false;
 
-      _reportError('initialize', error, stackTrace);
+        _lastError =
+            error;
+
+        _reportError(
+          'initialize',
+          error,
+          stackTrace,
+        );
+      }
 
       rethrow;
     } finally {
-      _initializing = false;
+      if (_activeInitializationGeneration ==
+          generation) {
+        _activeInitializationGeneration =
+        null;
+
+        _initializing =
+        false;
+
+        _notifySafely();
+      }
     }
   }
 
   Future<void> _ensureInitialized() async {
     _ensureUsable();
 
-    if (!_initialized) {
+    while (!_initialized &&
+        !_disposed) {
       await initialize();
+
+      if (_initialized ||
+          _disposed) {
+        break;
+      }
     }
   }
 
   // ===========================================================
-  // AI Enable / Disable
+  // AI ENABLE / DISABLE
   // ===========================================================
 
   Future<void> enableAI() async {
@@ -183,7 +304,11 @@ class AIVoiceEngine extends ChangeNotifier {
       return;
     }
 
-    _aiEnabled = true;
+    _aiEnabled =
+    true;
+
+    _lastError =
+    null;
 
     _notifySafely();
   }
@@ -195,13 +320,23 @@ class AIVoiceEngine extends ChangeNotifier {
       return;
     }
 
-    _aiEnabled = false;
-    _optimizationPending = false;
+    // Invalidate any in-flight optimization before it can apply
+    // additional processing changes.
+
+    _generation++;
+
+    _aiEnabled =
+    false;
+
+    _optimizationPending =
+    false;
 
     _notifySafely();
   }
 
-  Future<void> setAIEnabled(bool enabled) async {
+  Future<void> setAIEnabled(
+      bool enabled,
+      ) async {
     if (enabled) {
       await enableAI();
     } else {
@@ -210,196 +345,374 @@ class AIVoiceEngine extends ChangeNotifier {
   }
 
   // ===========================================================
-  // Network Analysis
+  // NETWORK ANALYSIS
   // ===========================================================
 
   Future<void> analyzeNetwork() async {
     await _ensureInitialized();
 
-    final generation = _generation;
-
-    await _analyzeNetworkInternal(generation);
-
-    if (_isGenerationValid(generation)) {
-      _notifySafely();
-    }
-  }
-
-  Future<void> _analyzeNetworkInternal(int generation) async {
-    if (!_isGenerationValid(generation)) {
+    if (_disposed) {
       return;
     }
 
-    final network = _networkOptimizer.currentNetwork;
+    final int generation =
+        _generation;
 
-    final recommendedBitrate = await _networkOptimizer.audioBitrate;
+    final _VoicePolicySnapshot? policy =
+    await _captureVoicePolicy(
+      generation,
+    );
 
-    if (!_isGenerationValid(generation)) {
+    if (!_isGenerationValid(
+      generation,
+    ) ||
+        policy == null) {
       return;
     }
 
-    _networkQuality = network.quality;
+    _applyPolicyState(
+      policy,
+    );
 
-    _bitrate = recommendedBitrate < 0 ? 0 : recommendedBitrate;
+    _notifySafely();
   }
 
   // ===========================================================
-  // Audio Optimization
+  // AUDIO OPTIMIZATION
   // ===========================================================
 
   Future<void> optimizeAudio() async {
     await _ensureInitialized();
 
-    if (!_aiEnabled || _disposed) {
+    if (_disposed ||
+        !_aiEnabled) {
       return;
     }
 
-    if (_optimizing) {
-      _optimizationPending = true;
+    final Future<void>? active =
+        _optimizationFuture;
+
+    if (active != null) {
+      _optimizationPending =
+      true;
+
+      await active;
+
       return;
     }
 
-    _optimizing = true;
-    _lastError = null;
+    final int generation =
+        _generation;
 
-    final generation = _generation;
+    final Future<void> operation =
+    _optimizeAudioInternal(
+      generation,
+    );
+
+    late final Future<void> tracked;
+
+    tracked = operation.whenComplete(() {
+      if (identical(
+        _optimizationFuture,
+        tracked,
+      )) {
+        _optimizationFuture = null;
+      }
+    });
+
+    _optimizationFuture =
+        tracked;
+
+    await tracked;
+  }
+
+  Future<void> _optimizeAudioInternal(
+      int generation,
+      ) async {
+    if (!_isGenerationValid(
+      generation,
+    ) ||
+        !_aiEnabled) {
+      return;
+    }
+
+    _optimizing =
+    true;
+
+    _lastError =
+    null;
+
+    _notifySafely();
 
     try {
       do {
-        _optimizationPending = false;
+        _optimizationPending =
+        false;
 
-        await _analyzeNetworkInternal(generation);
-
-        if (!_isGenerationValid(generation) || !_aiEnabled) {
-          return;
+        if (!_isGenerationValid(
+          generation,
+        ) ||
+            !_aiEnabled) {
+          break;
         }
 
-        final noiseReduction = await _networkOptimizer.enableNoiseReduction;
+        final _VoicePolicySnapshot? policy =
+        await _captureVoicePolicy(
+          generation,
+        );
 
-        if (!_isGenerationValid(generation)) {
-          return;
+        if (!_isGenerationValid(
+          generation,
+        ) ||
+            !_aiEnabled ||
+            policy == null) {
+          break;
         }
 
-        final echoCancellation = await _networkOptimizer.enableEchoCancellation;
+        _applyPolicyState(
+          policy,
+        );
 
-        if (!_isGenerationValid(generation)) {
-          return;
+        // -----------------------------------------------------
+        // OFFLINE POLICY
+        //
+        // NetworkOptimizer may recommend zero bitrate while the
+        // network is unavailable.
+        //
+        // Existing AudioManager processing preferences remain
+        // unchanged while offline. Recovery/transport restoration
+        // belongs to ConnectionManager/RecoveryManager.
+        // -----------------------------------------------------
+
+        if (!policy.network.isConnected ||
+            policy.network.quality ==
+                NetworkQuality.offline) {
+          continue;
         }
 
-        final autoGainControl = await _networkOptimizer.enableAutoGainControl;
+        await _audioManager
+            .enableNoiseSuppression(
+          policy.noiseReduction,
+        );
 
-        if (!_isGenerationValid(generation)) {
-          return;
+        if (!_isGenerationValid(
+          generation,
+        ) ||
+            !_aiEnabled) {
+          break;
         }
 
-        await _audioManager.enableNoiseSuppression(noiseReduction);
+        await _audioManager
+            .enableEchoCancellation(
+          policy.echoCancellation,
+        );
 
-        if (!_isGenerationValid(generation)) {
-          return;
+        if (!_isGenerationValid(
+          generation,
+        ) ||
+            !_aiEnabled) {
+          break;
         }
 
-        await _audioManager.enableEchoCancellation(echoCancellation);
-
-        if (!_isGenerationValid(generation)) {
-          return;
-        }
-
-        await _audioManager.enableAutoGainControl(autoGainControl);
-
-        if (!_isGenerationValid(generation)) {
-          return;
-        }
-
-        await _applyQualityPolicy(generation);
-      } while (_optimizationPending &&
-          _isGenerationValid(generation) &&
+        await _audioManager
+            .enableAutoGainControl(
+          policy.autoGainControl,
+        );
+      } while (
+      _optimizationPending &&
+          _isGenerationValid(
+            generation,
+          ) &&
           _aiEnabled);
     } catch (error, stackTrace) {
-      _lastError = error;
+      if (_isGenerationValid(
+        generation,
+      )) {
+        _lastError =
+            error;
 
-      _reportError('optimizeAudio', error, stackTrace);
+        _reportError(
+          'optimizeAudio',
+          error,
+          stackTrace,
+        );
+      }
     } finally {
-      _optimizing = false;
+      _optimizing =
+      false;
 
       _notifySafely();
     }
   }
 
   // ===========================================================
-  // Quality Policy
+  // CONSISTENT VOICE POLICY SNAPSHOT
+  //
+  // NetworkOptimizer APIs are asynchronous.
+  //
+  // Capture one NetworkModel identity before the reads and
+  // accept the result only if that same snapshot is still
+  // current afterward.
+  //
+  // This prevents quality/bitrate/audio-processing policy from
+  // being assembled from several different network snapshots.
   // ===========================================================
 
-  Future<void> _applyQualityPolicy(int generation) async {
-    if (!_isGenerationValid(generation)) {
-      return;
+  Future<_VoicePolicySnapshot?>
+  _captureVoicePolicy(
+      int generation,
+      ) async {
+    const int maxAttempts =
+    3;
+
+    for (int attempt = 0;
+    attempt < maxAttempts;
+    attempt++) {
+      if (!_isGenerationValid(
+        generation,
+      )) {
+        return null;
+      }
+
+      final NetworkModel network =
+          _networkOptimizer.currentNetwork;
+
+      final int bitrate =
+      await _networkOptimizer
+          .audioBitrate;
+
+      if (!_isGenerationValid(
+        generation,
+      )) {
+        return null;
+      }
+
+      final bool noiseReduction =
+      await _networkOptimizer
+          .enableNoiseReduction;
+
+      if (!_isGenerationValid(
+        generation,
+      )) {
+        return null;
+      }
+
+      final bool echoCancellation =
+      await _networkOptimizer
+          .enableEchoCancellation;
+
+      if (!_isGenerationValid(
+        generation,
+      )) {
+        return null;
+      }
+
+      final bool autoGainControl =
+      await _networkOptimizer
+          .enableAutoGainControl;
+
+      if (!_isGenerationValid(
+        generation,
+      )) {
+        return null;
+      }
+
+      if (identical(
+        network,
+        _networkOptimizer.currentNetwork,
+      )) {
+        return _VoicePolicySnapshot(
+          network:
+          network,
+          bitrate:
+          _sanitizeBitrate(
+            bitrate,
+          ),
+          noiseReduction:
+          noiseReduction,
+          echoCancellation:
+          echoCancellation,
+          autoGainControl:
+          autoGainControl,
+        );
+      }
     }
 
-    switch (_networkQuality) {
-      case NetworkQuality.excellent:
-      case NetworkQuality.good:
-      case NetworkQuality.fair:
-      case NetworkQuality.poor:
-        await _ensureVoiceProcessingEnabled(generation);
-        break;
+    // Network changed continuously during all bounded attempts.
+    // Do not manufacture a mixed policy. A later network/stats
+    // update will request optimization again.
 
-      case NetworkQuality.offline:
-        // Audio-processing preferences remain unchanged.
-        // Network restoration/recovery belongs to
-        // RecoveryManager / ConnectionManager.
-        break;
-    }
-  }
-
-  Future<void> _ensureVoiceProcessingEnabled(int generation) async {
-    if (!_isGenerationValid(generation)) {
-      return;
-    }
-
-    if (!_audioManager.noiseSuppression) {
-      await _audioManager.enableNoiseSuppression(true);
-    }
-
-    if (!_isGenerationValid(generation)) {
-      return;
-    }
-
-    if (!_audioManager.echoCancellation) {
-      await _audioManager.enableEchoCancellation(true);
-    }
-
-    if (!_isGenerationValid(generation)) {
-      return;
-    }
-
-    if (!_audioManager.autoGainControl) {
-      await _audioManager.enableAutoGainControl(true);
-    }
+    return null;
   }
 
   // ===========================================================
-  // Current AI Voice Snapshot
+  // POLICY STATE
+  // ===========================================================
+
+  void _applyPolicyState(
+      _VoicePolicySnapshot policy,
+      ) {
+    _networkQuality =
+        policy.network.quality;
+
+    _bitrate =
+        policy.bitrate;
+  }
+
+  int _sanitizeBitrate(
+      int bitrate,
+      ) {
+    if (bitrate <= 0) {
+      return 0;
+    }
+
+    return bitrate;
+  }
+
+  // ===========================================================
+  // CURRENT AI VOICE SNAPSHOT
   // ===========================================================
 
   Map<String, dynamic> get stateSnapshot {
-    return <String, dynamic>{
-      'initialized': _initialized,
-      'initializing': _initializing,
-      'aiEnabled': _aiEnabled,
-      'optimizing': _optimizing,
-      'networkQuality': _networkQuality.name,
-      'bitrate': _bitrate,
-      'noiseSuppression': _audioManager.noiseSuppression,
-      'echoCancellation': _audioManager.echoCancellation,
-      'autoGainControl': _audioManager.autoGainControl,
-      'microphoneEnabled': _audioManager.microphoneEnabled,
-      'muted': _audioManager.isMuted,
-      'audioTransmitting': _audioManager.isAudioTransmitting,
-      'lastError': _lastError?.toString(),
-    };
+    return Map<String, dynamic>.unmodifiable(
+      <String, dynamic>{
+        'initialized':
+        _initialized,
+        'initializing':
+        _initializing,
+        'aiEnabled':
+        _aiEnabled,
+        'optimizing':
+        _optimizing,
+        'networkQuality':
+        _networkQuality.name,
+        'bitrate':
+        _bitrate,
+        'noiseSuppression':
+        _audioManager
+            .noiseSuppression,
+        'echoCancellation':
+        _audioManager
+            .echoCancellation,
+        'autoGainControl':
+        _audioManager
+            .autoGainControl,
+        'microphoneEnabled':
+        _audioManager
+            .microphoneEnabled,
+        'muted':
+        _audioManager.isMuted,
+        'audioTransmitting':
+        _audioManager
+            .isAudioTransmitting,
+        'lastError':
+        _lastError?.toString(),
+      },
+    );
   }
 
   // ===========================================================
-  // Reset
+  // RESET
   // ===========================================================
 
   Future<void> reset() async {
@@ -409,37 +722,103 @@ class AIVoiceEngine extends ChangeNotifier {
 
     _generation++;
 
-    // AudioManager is shared across the call engine.
-    // Do not reset AudioManager here.
+    _optimizationPending =
+    false;
 
-    _initialized = false;
-    _initializing = false;
+    final Future<void>? initialization =
+        _initializationFuture;
 
-    _optimizing = false;
-    _optimizationPending = false;
+    final Future<void>? optimization =
+        _optimizationFuture;
 
-    _aiEnabled = true;
+    if (initialization != null) {
+      try {
+        await initialization;
+      } catch (error, stackTrace) {
+        _reportError(
+          'stale initialization during reset',
+          error,
+          stackTrace,
+        );
+      }
+    }
 
-    _networkQuality = NetworkQuality.good;
+    if (optimization != null) {
+      try {
+        await optimization;
+      } catch (error, stackTrace) {
+        _reportError(
+          'stale optimization during reset',
+          error,
+          stackTrace,
+        );
+      }
+    }
 
-    _bitrate = 64000;
+    if (_disposed) {
+      return;
+    }
 
-    _lastError = null;
+    // AudioManager and NetworkOptimizer are shared Call Engine
+    // services and are intentionally NOT reset here.
+
+    _initialized =
+    false;
+
+    _initializing =
+    false;
+
+    _activeInitializationGeneration =
+    null;
+
+    _optimizing =
+    false;
+
+    _optimizationPending =
+    false;
+
+    _aiEnabled =
+    true;
+
+    _networkQuality =
+        NetworkQuality.good;
+
+    _bitrate =
+    64000;
+
+    _lastError =
+    null;
+
+    _initializationFuture =
+    null;
+
+    _optimizationFuture =
+    null;
 
     _notifySafely();
+
+    _debugPrint(
+      'reset.',
+    );
   }
 
   // ===========================================================
-  // Internal Helpers
+  // INTERNAL HELPERS
   // ===========================================================
 
-  bool _isGenerationValid(int generation) {
-    return !_disposed && generation == _generation;
+  bool _isGenerationValid(
+      int generation,
+      ) {
+    return !_disposed &&
+        generation ==
+            _generation;
   }
 
   void _ensureUsable() {
     if (_disposed) {
-      throw StateError('AIVoiceEngine has already been disposed.');
+      throw StateError(
+        'AIVoiceEngine has already been disposed.',
+      );
     }
   }
 
@@ -449,22 +828,48 @@ class AIVoiceEngine extends ChangeNotifier {
     }
   }
 
-  void _reportError(String source, Object error, [StackTrace? stackTrace]) {
+  void _debugPrint(
+      String message,
+      ) {
+    if (!kDebugMode) {
+      return;
+    }
+
     debugPrint(
-      'JR CALL [AIVoiceEngine/$source] '
-      'error: $error',
+      'JR CALL '
+          '[AIVoiceEngine] '
+          '$message',
+    );
+  }
+
+  void _reportError(
+      String source,
+      Object error, [
+        StackTrace? stackTrace,
+      ]) {
+    if (!kDebugMode) {
+      return;
+    }
+
+    debugPrint(
+      'JR CALL '
+          '[AIVoiceEngine/$source] '
+          'error: $error',
     );
 
     if (stackTrace != null) {
       debugPrintStack(
-        label: 'JR CALL [AIVoiceEngine/$source]',
-        stackTrace: stackTrace,
+        label:
+        'JR CALL '
+            '[AIVoiceEngine/$source]',
+        stackTrace:
+        stackTrace,
       );
     }
   }
 
   // ===========================================================
-  // Dispose
+  // DISPOSE
   // ===========================================================
 
   @override
@@ -475,16 +880,110 @@ class AIVoiceEngine extends ChangeNotifier {
 
     _generation++;
 
-    _disposed = true;
+    _disposed =
+    true;
 
-    _initialized = false;
-    _initializing = false;
+    _initialized =
+    false;
 
-    _optimizing = false;
-    _optimizationPending = false;
+    _initializing =
+    false;
 
-    _lastError = null;
+    _activeInitializationGeneration =
+    null;
+
+    _optimizing =
+    false;
+
+    _optimizationPending =
+    false;
+
+    _initializationFuture =
+    null;
+
+    _optimizationFuture =
+    null;
+
+    _lastError =
+    null;
+
+    // Shared AudioManager / NetworkOptimizer are intentionally
+    // not disposed here.
 
     super.dispose();
   }
 }
+
+// ===========================================================
+// INTERNAL VOICE POLICY SNAPSHOT
+// ===========================================================
+
+class _VoicePolicySnapshot {
+  final NetworkModel network;
+
+  final int bitrate;
+
+  final bool noiseReduction;
+
+  final bool echoCancellation;
+
+  final bool autoGainControl;
+
+  const _VoicePolicySnapshot({
+    required this.network,
+    required this.bitrate,
+    required this.noiseReduction,
+    required this.echoCancellation,
+    required this.autoGainControl,
+  });
+}
+
+// ===============================================================
+// END OF FILE
+//
+// FILE 24 FINAL GUARANTEES:
+//
+// ✓ Existing public APIs preserved.
+// ✓ Existing ChangeNotifier ownership preserved.
+// ✓ NetworkOptimizer remains voice-policy owner.
+// ✓ AudioManager remains audio-processing state owner.
+// ✓ No direct network measurement/polling added.
+// ✓ No timer added.
+// ✓ No MediaStream duplicated.
+// ✓ No signaling/ICE/recovery ownership.
+// ✓ No PeerConnection lifecycle ownership.
+// ✓ Initialization Future is concurrency-deduplicated.
+// ✓ 10ms initialization busy-wait loop removed.
+// ✓ Initialization is generation guarded.
+// ✓ Reset/disable/dispose invalidate stale async work.
+// ✓ Optimization is serialized/coalesced.
+// ✓ Old optimization cannot continue after AI disable.
+// ✓ NetworkOptimizer Future APIs are explicitly awaited.
+// ✓ audioBitrate Future contract handled correctly.
+// ✓ enableNoiseReduction Future contract handled correctly.
+// ✓ enableEchoCancellation Future contract handled correctly.
+// ✓ enableAutoGainControl Future contract handled correctly.
+// ✓ Voice policy assembled only from a stable network snapshot.
+// ✓ Mixed network snapshots are never manufactured.
+// ✓ NetworkOptimizer decisions are not overridden afterward.
+// ✓ No duplicate forced audio-processing policy.
+// ✓ Offline network does not disable existing processing settings.
+// ✓ Recovery remains RecoveryManager/ConnectionManager-owned.
+// ✓ Audio bitrate remains bits per second.
+// ✓ Negative/non-positive bitrate safely becomes zero.
+// ✓ stateSnapshot existing keys preserved.
+// ✓ stateSnapshot returned unmodifiable.
+// ✓ Shared AudioManager is not reset/disposed.
+// ✓ Shared NetworkOptimizer is not reset/disposed.
+// ✓ reset remains reusable.
+// ✓ dispose remains terminal.
+// ✓ Debug logging is release-safe.
+// ✓ No UI/design changes.
+//
+// STATUS:
+// AI VOICE ENGINE FINALIZED.
+//
+// NEXT PURE CALL ENGINE FILE:
+// FILE 25
+// lib/services/call/ai_video_engine.dart
+// ===============================================================

@@ -2,22 +2,29 @@
 // JR CALL
 // File: outgoing_call_screen.dart
 // Location: lib/screens/outgoing_call_screen.dart
-// Fixes: BUG 07, BUG 08, BUG 09
-// Production-safe replacement
-// Existing APIs preserved
 //
-// ALSO FIXED:
-// - Removed duplicate/oversized JR CALL branding header.
-// - Removed hidden duplicate CallBottomBar.
+// Production outgoing-call presentation screen.
+//
+// Responsibilities:
+// - Display caller identity.
+// - Display externally supplied call status.
+// - Display externally supplied connected duration.
+// - Forward end-call requests to the parent/call layer.
+// - Forward keypad digits to the parent/call layer.
+// - Protect against duplicate end-call actions.
+// - Protect active call from accidental back navigation.
+//
+// Architecture:
+// - Presentation only.
+// - No local call timer.
+// - No Firestore ownership.
+// - No signaling ownership.
+// - No WebRTC ownership.
+// - No ICE ownership.
+// - No recovery ownership.
+// - No history ownership.
 // - No fake online state.
-// - No fake "secure/connected" state.
-// - End-call callback failure no longer closes the screen falsely.
-// - Duplicate end-call action prevented.
-// - Accidental back navigation protected.
-// - Status/duration remain owned by CallService/Provider.
-// - No local timer.
-// - No direct Firestore/WebRTC/ICE/signaling ownership.
-// - Keypad callback remains external.
+// - No fake connected/security state.
 // ===============================================================
 
 import 'dart:async';
@@ -49,26 +56,21 @@ class OutgoingCallScreen extends StatefulWidget {
   /// True for video call, false for voice call.
   final bool isVideoCall;
 
-  /// Call-engine/provider callback used to terminate the call.
+  /// Parent/call-layer callback used to terminate the call.
   final FutureOr<void> Function()? onEndCall;
 
-  /// Optional DTMF/keypad callback.
+  /// Optional parent-owned keypad digit forwarding.
   final FutureOr<void> Function(String digit)? onKeypadDigit;
 
-  /// Optional status stream supplied by CallService/Provider.
-  ///
-  /// Expected examples:
-  /// PREPARING, CALLING, RINGING, CONNECTING, CONNECTED,
-  /// RECONNECTING, RECONNECTED, NETWORK_LOST, USER_BUSY,
-  /// REJECTED, DECLINED, CANCELLED, TIMEOUT, FAILED, ENDED.
+  /// Status supplied by CallService / Provider.
   final Stream<String>? statusStream;
 
   /// Connected-call duration in seconds.
   ///
-  /// Actual timing remains owned by CallService/Provider.
+  /// Timing remains owned by CallService / Provider.
   final Stream<int>? durationStream;
 
-  /// Initial status shown before first stream event.
+  /// Initial presentation status before the first stream event.
   final String? initialStatus;
 
   @override
@@ -77,7 +79,7 @@ class OutgoingCallScreen extends StatefulWidget {
 
 class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   // =============================================================
-  // DESIGN
+  // Design
   // =============================================================
 
   static const Color _background = Color(0xFFF6F9FE);
@@ -99,7 +101,7 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   static const Color _warning = Color(0xFFF59E0B);
 
   // =============================================================
-  // LIMITS
+  // Limits
   // =============================================================
 
   static const int _maximumDurationSeconds = 86400000;
@@ -113,7 +115,7 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   ];
 
   // =============================================================
-  // STATE
+  // State
   // =============================================================
 
   bool _showKeypad = false;
@@ -123,7 +125,7 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   String _dialedDigits = '';
 
   // =============================================================
-  // DERIVED DATA
+  // Derived Data
   // =============================================================
 
   String get _displayName {
@@ -149,7 +151,7 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   }
 
   // =============================================================
-  // KEYPAD
+  // Keypad
   // =============================================================
 
   Future<void> _handleKeypadDigit(String digit) async {
@@ -172,11 +174,19 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
     }
 
     try {
-      await Future<void>.sync(() => callback(digit));
+      await Future<void>.sync(
+            () => callback(digit),
+      );
     } catch (error, stackTrace) {
-      _logError('Keypad callback', error, stackTrace);
+      _logError(
+        'Keypad callback',
+        error,
+        stackTrace,
+      );
 
-      _showMessage('Unable to send keypad tone.');
+      _showMessage(
+        'Unable to send keypad tone.',
+      );
     }
   }
 
@@ -186,7 +196,10 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
     }
 
     setState(() {
-      _dialedDigits = _dialedDigits.substring(0, _dialedDigits.length - 1);
+      _dialedDigits = _dialedDigits.substring(
+        0,
+        _dialedDigits.length - 1,
+      );
     });
   }
 
@@ -215,7 +228,7 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   }
 
   // =============================================================
-  // END CALL
+  // End Call
   // =============================================================
 
   Future<void> _handleEndCall() async {
@@ -223,37 +236,46 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
       return;
     }
 
+    final FutureOr<void> Function()? callback = widget.onEndCall;
+
+    if (callback == null) {
+      _showMessage(
+        'Call end action is not connected.',
+      );
+      return;
+    }
+
     setState(() {
       _endingCall = true;
     });
 
-    bool completedSuccessfully = false;
-
     try {
-      final FutureOr<void> Function()? callback = widget.onEndCall;
-
-      if (callback != null) {
-        await Future<void>.sync(callback);
-      }
-
-      completedSuccessfully = true;
+      await Future<void>.sync(
+        callback,
+      );
     } catch (error, stackTrace) {
-      _logError('End-call callback', error, stackTrace);
+      _logError(
+        'End-call callback',
+        error,
+        stackTrace,
+      );
 
-      if (mounted) {
-        _showMessage('The call could not be ended. Please try again.');
+      if (!mounted) {
+        return;
       }
-    }
 
-    if (!mounted) {
-      return;
-    }
-
-    if (!completedSuccessfully) {
       setState(() {
         _endingCall = false;
       });
 
+      _showMessage(
+        'The call could not be ended. Please try again.',
+      );
+
+      return;
+    }
+
+    if (!mounted) {
       return;
     }
 
@@ -270,7 +292,7 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   }
 
   // =============================================================
-  // BACK PROTECTION
+  // Back Protection
   // =============================================================
 
   Future<void> _handleBackAttempt() async {
@@ -304,7 +326,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
         return AlertDialog(
           title: const Text(
             'End call?',
-            style: TextStyle(fontWeight: FontWeight.w800),
+            style: TextStyle(
+              fontWeight: FontWeight.w800,
+            ),
           ),
           content: const Text(
             'Leaving this call screen will end the current call.',
@@ -324,8 +348,12 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
               onPressed: () {
                 Navigator.of(dialogContext).pop(true);
               },
-              icon: const Icon(Icons.call_end_rounded),
-              label: const Text('End Call'),
+              icon: const Icon(
+                Icons.call_end_rounded,
+              ),
+              label: const Text(
+                'End Call',
+              ),
             ),
           ],
         );
@@ -336,11 +364,12 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   }
 
   // =============================================================
-  // STATUS
+  // Status
   // =============================================================
 
   String _normalizeStatus(String? value) {
-    final String normalized = value?.trim().toUpperCase() ?? '';
+    final String normalized =
+        value?.trim().toUpperCase() ?? '';
 
     return normalized.isEmpty ? _defaultStatus : normalized;
   }
@@ -354,7 +383,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
         return 'Preparing call…';
 
       case 'CALLING':
-        return widget.isVideoCall ? 'Starting video call…' : 'Calling…';
+        return widget.isVideoCall
+            ? 'Starting video call…'
+            : 'Calling…';
 
       case 'RINGING':
         return 'Ringing…';
@@ -398,7 +429,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
         return 'Call ended';
 
       default:
-        return rawStatus.trim().isEmpty ? 'Calling…' : rawStatus.trim();
+        return rawStatus.trim().isEmpty
+            ? 'Calling…'
+            : rawStatus.trim();
     }
   }
 
@@ -463,21 +496,28 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
         return Icons.link_rounded;
 
       default:
-        return widget.isVideoCall ? Icons.videocam_rounded : Icons.call_rounded;
+        return widget.isVideoCall
+            ? Icons.videocam_rounded
+            : Icons.call_rounded;
     }
   }
 
   // =============================================================
-  // BUILD
+  // Build
   // =============================================================
 
   @override
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (bool didPop, Object? result) {
+      onPopInvokedWithResult: (
+          bool didPop,
+          Object? result,
+          ) {
         if (!didPop) {
-          unawaited(_handleBackAttempt());
+          unawaited(
+            _handleBackAttempt(),
+          );
         }
       },
       child: Scaffold(
@@ -486,14 +526,24 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
           child: StreamBuilder<String>(
             stream: widget.statusStream,
             initialData: _defaultStatus,
-            builder: (BuildContext context, AsyncSnapshot<String> snapshot) {
-              final String status = _normalizeStatus(snapshot.data);
+            builder: (
+                BuildContext context,
+                AsyncSnapshot<String> snapshot,
+                ) {
+              final String status = _normalizeStatus(
+                snapshot.data,
+              );
 
               return LayoutBuilder(
-                builder: (BuildContext context, BoxConstraints constraints) {
-                  final bool compact = constraints.maxHeight < 700;
+                builder: (
+                    BuildContext context,
+                    BoxConstraints constraints,
+                    ) {
+                  final bool compact =
+                      constraints.maxHeight < 700;
 
-                  final bool wide = constraints.maxWidth >= 700;
+                  final bool wide =
+                      constraints.maxWidth >= 700;
 
                   return _buildPage(
                     status: status,
@@ -521,17 +571,24 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
         const Positioned(
           top: -100,
           right: -100,
-          child: _GlowOrb(size: 280, color: Color(0x1804BDF5)),
+          child: _GlowOrb(
+            size: 280,
+            color: Color(0x1804BDF5),
+          ),
         ),
         const Positioned(
           left: -120,
           bottom: 40,
-          child: _GlowOrb(size: 300, color: Color(0x1700D99B)),
+          child: _GlowOrb(
+            size: 300,
+            color: Color(0x1700D99B),
+          ),
         ),
-
         Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 700),
+            constraints: const BoxConstraints(
+              maxWidth: 700,
+            ),
             child: SingleChildScrollView(
               physics: const BouncingScrollPhysics(),
               padding: EdgeInsets.fromLTRB(
@@ -542,26 +599,38 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
               ),
               child: Column(
                 children: <Widget>[
-                  _buildCompactTopStatus(status: status),
-
-                  SizedBox(height: compact ? 14 : 20),
-
-                  _buildCallCard(status: status, compact: compact),
-
-                  SizedBox(height: compact ? 16 : 22),
-
-                  AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 220),
-                    child: _showKeypad
-                        ? _buildKeypad(compact: compact)
-                        : _buildCallInfoCard(status: status),
+                  _buildCompactTopStatus(
+                    status: status,
                   ),
-
-                  SizedBox(height: compact ? 18 : 26),
-
+                  SizedBox(
+                    height: compact ? 14 : 20,
+                  ),
+                  _buildCallCard(
+                    status: status,
+                    compact: compact,
+                  ),
+                  SizedBox(
+                    height: compact ? 16 : 22,
+                  ),
+                  AnimatedSwitcher(
+                    duration: const Duration(
+                      milliseconds: 220,
+                    ),
+                    child: _showKeypad
+                        ? _buildKeypad(
+                      compact: compact,
+                    )
+                        : _buildCallInfoCard(
+                      status: status,
+                    ),
+                  ),
+                  SizedBox(
+                    height: compact ? 18 : 26,
+                  ),
                   _buildBottomControls(),
-
-                  const SizedBox(height: 8),
+                  const SizedBox(
+                    height: 8,
+                  ),
                 ],
               ),
             ),
@@ -572,10 +641,12 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   }
 
   // =============================================================
-  // COMPACT TOP STATUS
+  // Compact Top Status
   // =============================================================
 
-  Widget _buildCompactTopStatus({required String status}) {
+  Widget _buildCompactTopStatus({
+    required String status,
+  }) {
     final Color color = _statusColor(status);
 
     return Row(
@@ -586,14 +657,24 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
           alignment: Alignment.center,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: color.withValues(alpha: 0.09),
-            border: Border.all(color: color.withValues(alpha: 0.16)),
+            color: color.withValues(
+              alpha: 0.09,
+            ),
+            border: Border.all(
+              color: color.withValues(
+                alpha: 0.16,
+              ),
+            ),
           ),
-          child: Icon(_statusIcon(status), color: color, size: 20),
+          child: Icon(
+            _statusIcon(status),
+            color: color,
+            size: 20,
+          ),
         ),
-
-        const SizedBox(width: 11),
-
+        const SizedBox(
+          width: 11,
+        ),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -609,7 +690,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
                   letterSpacing: 0.8,
                 ),
               ),
-              const SizedBox(height: 2),
+              const SizedBox(
+                height: 2,
+              ),
               Text(
                 _statusLabel(status),
                 maxLines: 1,
@@ -628,10 +711,13 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   }
 
   // =============================================================
-  // MAIN CALL CARD
+  // Main Call Card
   // =============================================================
 
-  Widget _buildCallCard({required String status, required bool compact}) {
+  Widget _buildCallCard({
+    required String status,
+    required bool compact,
+  }) {
     final Color statusColor = _statusColor(status);
 
     return Container(
@@ -643,9 +729,15 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
         compact ? 24 : 34,
       ),
       decoration: BoxDecoration(
-        color: _surface.withValues(alpha: 0.94),
-        borderRadius: BorderRadius.circular(30),
-        border: Border.all(color: _border),
+        color: _surface.withValues(
+          alpha: 0.94,
+        ),
+        borderRadius: BorderRadius.circular(
+          30,
+        ),
+        border: Border.all(
+          color: _border,
+        ),
         boxShadow: const <BoxShadow>[
           BoxShadow(
             color: Color(0x15087AF5),
@@ -657,13 +749,15 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
       child: Column(
         children: <Widget>[
           _buildCallTypeBadge(),
-
-          SizedBox(height: compact ? 21 : 29),
-
-          _buildAvatar(compact: compact),
-
-          SizedBox(height: compact ? 17 : 22),
-
+          SizedBox(
+            height: compact ? 21 : 29,
+          ),
+          _buildAvatar(
+            compact: compact,
+          ),
+          SizedBox(
+            height: compact ? 17 : 22,
+          ),
           Text(
             _displayName,
             maxLines: 2,
@@ -677,11 +771,13 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
               letterSpacing: -0.4,
             ),
           ),
-
-          const SizedBox(height: 10),
-
+          const SizedBox(
+            height: 10,
+          ),
           AnimatedSwitcher(
-            duration: const Duration(milliseconds: 180),
+            duration: const Duration(
+              milliseconds: 180,
+            ),
             child: Text(
               _showKeypad && _dialedDigits.isNotEmpty
                   ? _dialedDigits
@@ -700,13 +796,16 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
                     : statusColor,
                 fontSize: compact ? 16 : 17,
                 fontWeight: FontWeight.w700,
-                letterSpacing: _showKeypad && _dialedDigits.isNotEmpty ? 2 : 0,
+                letterSpacing:
+                _showKeypad && _dialedDigits.isNotEmpty
+                    ? 2
+                    : 0,
               ),
             ),
           ),
-
-          const SizedBox(height: 14),
-
+          const SizedBox(
+            height: 14,
+          ),
           if (_shouldShowDuration(status))
             _buildDuration()
           else
@@ -717,14 +816,27 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   }
 
   Widget _buildCallTypeBadge() {
-    final Color featureColor = widget.isVideoCall ? _primaryBlue : _callGreen;
+    final Color featureColor = widget.isVideoCall
+        ? _primaryBlue
+        : _callGreen;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 13,
+        vertical: 7,
+      ),
       decoration: BoxDecoration(
-        color: featureColor.withValues(alpha: 0.07),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: featureColor.withValues(alpha: 0.18)),
+        color: featureColor.withValues(
+          alpha: 0.07,
+        ),
+        borderRadius: BorderRadius.circular(
+          999,
+        ),
+        border: Border.all(
+          color: featureColor.withValues(
+            alpha: 0.18,
+          ),
+        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -736,7 +848,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
             size: 16,
             color: featureColor,
           ),
-          const SizedBox(width: 7),
+          const SizedBox(
+            width: 7,
+          ),
           Text(
             _callTypeLabel,
             style: TextStyle(
@@ -751,23 +865,41 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
     );
   }
 
-  Widget _buildAvatar({required bool compact}) {
+  Widget _buildAvatar({
+    required bool compact,
+  }) {
     final double radius = compact ? 58 : 68;
 
     return Container(
-      padding: const EdgeInsets.all(5),
+      padding: const EdgeInsets.all(
+        5,
+      ),
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         gradient: const LinearGradient(
-          colors: <Color>[_callGreen, _cyan, _primaryBlue],
+          colors: <Color>[
+            _callGreen,
+            _cyan,
+            _primaryBlue,
+          ],
         ),
         boxShadow: const <BoxShadow>[
-          BoxShadow(color: Color(0x3000D99B), blurRadius: 25, spreadRadius: 1),
-          BoxShadow(color: Color(0x2004BDF5), blurRadius: 34, spreadRadius: 2),
+          BoxShadow(
+            color: Color(0x3000D99B),
+            blurRadius: 25,
+            spreadRadius: 1,
+          ),
+          BoxShadow(
+            color: Color(0x2004BDF5),
+            blurRadius: 34,
+            spreadRadius: 2,
+          ),
         ],
       ),
       child: Container(
-        padding: const EdgeInsets.all(3),
+        padding: const EdgeInsets.all(
+          3,
+        ),
         decoration: const BoxDecoration(
           color: Colors.white,
           shape: BoxShape.circle,
@@ -776,30 +908,46 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
           name: _displayName,
           imageUrl: _displayImage,
           radius: radius,
-
-          // This screen has no real presence source.
-          // Never fabricate an online state.
           isOnline: false,
         ),
       ),
     );
   }
 
-  Widget _buildStatusPill(String status) {
+  Widget _buildStatusPill(
+      String status,
+      ) {
     final Color color = _statusColor(status);
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 14,
+        vertical: 8,
+      ),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.07),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.18)),
+        color: color.withValues(
+          alpha: 0.07,
+        ),
+        borderRadius: BorderRadius.circular(
+          999,
+        ),
+        border: Border.all(
+          color: color.withValues(
+            alpha: 0.18,
+          ),
+        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          Icon(_statusIcon(status), size: 16, color: color),
-          const SizedBox(width: 7),
+          Icon(
+            _statusIcon(status),
+            size: 16,
+            color: color,
+          ),
+          const SizedBox(
+            width: 7,
+          ),
           Flexible(
             child: Text(
               _statusLabel(status),
@@ -818,46 +966,77 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   }
 
   // =============================================================
-  // DURATION
+  // Duration
   // =============================================================
 
   Widget _buildDuration() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 9),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 15,
+        vertical: 9,
+      ),
       decoration: BoxDecoration(
         color: const Color(0xFFF3FBF8),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: const Color(0xFFD1F5E9)),
+        borderRadius: BorderRadius.circular(
+          999,
+        ),
+        border: Border.all(
+          color: const Color(0xFFD1F5E9),
+        ),
       ),
       child: StreamBuilder<int>(
         stream: widget.durationStream,
         initialData: 0,
-        builder: (BuildContext context, AsyncSnapshot<int> snapshot) {
+        builder: (
+            BuildContext context,
+            AsyncSnapshot<int> snapshot,
+            ) {
           final int rawSeconds = snapshot.data ?? 0;
 
-          final int seconds = rawSeconds.clamp(0, _maximumDurationSeconds);
+          final int seconds = rawSeconds
+              .clamp(
+            0,
+            _maximumDurationSeconds,
+          )
+              .toInt();
 
-          return CallTimerWidget(duration: Duration(seconds: seconds));
+          return CallTimerWidget(
+            duration: Duration(
+              seconds: seconds,
+            ),
+          );
         },
       ),
     );
   }
 
   // =============================================================
-  // CALL INFO
+  // Call Info
   // =============================================================
 
-  Widget _buildCallInfoCard({required String status}) {
+  Widget _buildCallInfoCard({
+    required String status,
+  }) {
     final Color color = _statusColor(status);
 
     return Container(
-      key: const ValueKey<String>('outgoing-call-info'),
+      key: const ValueKey<String>(
+        'outgoing-call-info',
+      ),
       width: double.infinity,
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(
+        18,
+      ),
       decoration: BoxDecoration(
-        color: _surface.withValues(alpha: 0.88),
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: _border),
+        color: _surface.withValues(
+          alpha: 0.88,
+        ),
+        borderRadius: BorderRadius.circular(
+          22,
+        ),
+        border: Border.all(
+          color: _border,
+        ),
         boxShadow: const <BoxShadow>[
           BoxShadow(
             color: Color(0x0D101828),
@@ -874,13 +1053,19 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
             alignment: Alignment.center,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: color.withValues(alpha: 0.08),
+              color: color.withValues(
+                alpha: 0.08,
+              ),
             ),
-            child: Icon(_statusIcon(status), color: color, size: 23),
+            child: Icon(
+              _statusIcon(status),
+              color: color,
+              size: 23,
+            ),
           ),
-
-          const SizedBox(width: 13),
-
+          const SizedBox(
+            width: 13,
+          ),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -893,7 +1078,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
                     fontWeight: FontWeight.w800,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(
+                  height: 4,
+                ),
                 Text(
                   _statusDescription(status),
                   style: const TextStyle(
@@ -910,7 +1097,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
     );
   }
 
-  String _statusDescription(String status) {
+  String _statusDescription(
+      String status,
+      ) {
     switch (_normalizeStatus(status)) {
       case 'CONNECTED':
       case 'RECONNECTED':
@@ -955,18 +1144,33 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
   }
 
   // =============================================================
-  // KEYPAD
+  // Keypad
   // =============================================================
 
-  Widget _buildKeypad({required bool compact}) {
+  Widget _buildKeypad({
+    required bool compact,
+  }) {
     return Container(
-      key: const ValueKey<String>('outgoing-call-keypad'),
+      key: const ValueKey<String>(
+        'outgoing-call-keypad',
+      ),
       width: double.infinity,
-      padding: EdgeInsets.fromLTRB(18, compact ? 16 : 20, 18, 16),
+      padding: EdgeInsets.fromLTRB(
+        18,
+        compact ? 16 : 20,
+        18,
+        16,
+      ),
       decoration: BoxDecoration(
-        color: _surface.withValues(alpha: 0.94),
-        borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: _border),
+        color: _surface.withValues(
+          alpha: 0.94,
+        ),
+        borderRadius: BorderRadius.circular(
+          26,
+        ),
+        border: Border.all(
+          color: _border,
+        ),
         boxShadow: const <BoxShadow>[
           BoxShadow(
             color: Color(0x12087AF5),
@@ -996,7 +1200,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
                 ),
                 IconButton(
                   tooltip: 'Delete digit',
-                  onPressed: _endingCall ? null : _removeLastDigit,
+                  onPressed: _endingCall
+                      ? null
+                      : _removeLastDigit,
                   icon: const Icon(
                     Icons.backspace_outlined,
                     color: _textSecondary,
@@ -1004,21 +1210,39 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(
+              height: 8,
+            ),
           ],
-
-          for (int index = 0; index < _keypadRows.length; index++) ...<Widget>[
-            _buildKeypadRow(_keypadRows[index], compact: compact),
+          for (
+          int index = 0;
+          index < _keypadRows.length;
+          index++
+          ) ...<Widget>[
+            _buildKeypadRow(
+              _keypadRows[index],
+              compact: compact,
+            ),
             if (index < _keypadRows.length - 1)
-              SizedBox(height: compact ? 8 : 12),
+              SizedBox(
+                height: compact ? 8 : 12,
+              ),
           ],
-
           if (_dialedDigits.isNotEmpty) ...<Widget>[
-            const SizedBox(height: 14),
+            const SizedBox(
+              height: 14,
+            ),
             TextButton.icon(
-              onPressed: _endingCall ? null : _clearDigits,
-              icon: const Icon(Icons.clear_rounded, size: 18),
-              label: const Text('Clear'),
+              onPressed: _endingCall
+                  ? null
+                  : _clearDigits,
+              icon: const Icon(
+                Icons.clear_rounded,
+                size: 18,
+              ),
+              label: const Text(
+                'Clear',
+              ),
             ),
           ],
         ],
@@ -1026,55 +1250,72 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
     );
   }
 
-  Widget _buildKeypadRow(List<String> digits, {required bool compact}) {
+  Widget _buildKeypadRow(
+      List<String> digits, {
+        required bool compact,
+      }) {
     final double size = compact ? 52 : 58;
 
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: digits
-          .map((String digit) {
-            return Semantics(
-              button: true,
-              enabled: !_endingCall,
-              label: 'Dial $digit',
-              child: Material(
-                color: Colors.transparent,
-                shape: const CircleBorder(),
-                child: InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: _endingCall
-                      ? null
-                      : () {
-                          unawaited(_handleKeypadDigit(digit));
-                        },
-                  child: Container(
-                    width: size,
-                    height: size,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: const Color(0xFFF6FAFF),
-                      border: Border.all(color: const Color(0xFFDCEAF8)),
-                    ),
-                    child: Text(
+          .map(
+            (String digit) {
+          return Semantics(
+            button: true,
+            enabled: !_endingCall,
+            label: 'Dial $digit',
+            child: Material(
+              color: Colors.transparent,
+              shape: const CircleBorder(),
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: _endingCall
+                    ? null
+                    : () {
+                  unawaited(
+                    _handleKeypadDigit(
                       digit,
-                      style: TextStyle(
-                        color: _textPrimary,
-                        fontSize: compact ? 20 : 22,
-                        fontWeight: FontWeight.w700,
+                    ),
+                  );
+                },
+                child: Container(
+                  width: size,
+                  height: size,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(
+                      0xFFF6FAFF,
+                    ),
+                    border: Border.all(
+                      color: const Color(
+                        0xFFDCEAF8,
                       ),
+                    ),
+                  ),
+                  child: Text(
+                    digit,
+                    style: TextStyle(
+                      color: _textPrimary,
+                      fontSize: compact ? 20 : 22,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
               ),
-            );
-          })
-          .toList(growable: false),
+            ),
+          );
+        },
+      )
+          .toList(
+        growable: false,
+      ),
     );
   }
 
   // =============================================================
-  // BOTTOM CONTROLS
+  // Bottom Controls
   // =============================================================
 
   Widget _buildBottomControls() {
@@ -1082,7 +1323,9 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
       mainAxisAlignment: MainAxisAlignment.center,
       children: <Widget>[
         _RoundControlButton(
-          tooltip: _showKeypad ? 'Hide keypad' : 'Show keypad',
+          tooltip: _showKeypad
+              ? 'Hide keypad'
+              : 'Show keypad',
           label: _showKeypad ? 'Hide' : 'Keypad',
           icon: _showKeypad
               ? Icons.keyboard_hide_rounded
@@ -1090,14 +1333,18 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
           foregroundColor: _primaryBlue,
           backgroundColor: const Color(0xFFF0F7FF),
           borderColor: const Color(0xFFD6E8FF),
-          onTap: _endingCall ? null : _toggleKeypad,
+          onTap: _endingCall
+              ? null
+              : _toggleKeypad,
         ),
-
-        const SizedBox(width: 28),
-
+        const SizedBox(
+          width: 28,
+        ),
         _RoundControlButton(
           tooltip: 'End call',
-          label: _endingCall ? 'Ending…' : 'End',
+          label: _endingCall
+              ? 'Ending…'
+              : 'End',
           icon: Icons.call_end_rounded,
           foregroundColor: _danger,
           backgroundColor: _dangerSoft,
@@ -1106,18 +1353,22 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
           onTap: _endingCall
               ? null
               : () {
-                  unawaited(_handleEndCall());
-                },
+            unawaited(
+              _handleEndCall(),
+            );
+          },
         ),
       ],
     );
   }
 
   // =============================================================
-  // MESSAGE / LOGGING
+  // Messages / Logging
   // =============================================================
 
-  void _showMessage(String message) {
+  void _showMessage(
+      String message,
+      ) {
     if (!mounted) {
       return;
     }
@@ -1125,14 +1376,23 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+        SnackBar(
+          content: Text(
+            message,
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
   }
 
-  void _logError(String source, Object error, StackTrace stackTrace) {
+  void _logError(
+      String source,
+      Object error,
+      StackTrace stackTrace,
+      ) {
     debugPrint(
       'JR CALL [OutgoingCallScreen/$source] '
-      'error: $error',
+          'error: $error',
     );
 
     debugPrintStack(
@@ -1143,7 +1403,7 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
 }
 
 // ===============================================================
-// ROUND CONTROL BUTTON
+// Round Control Button
 // ===============================================================
 
 class _RoundControlButton extends StatelessWidget {
@@ -1196,35 +1456,52 @@ class _RoundControlButton extends StatelessWidget {
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: backgroundColor,
-                    border: Border.all(color: borderColor),
+                    border: Border.all(
+                      color: borderColor,
+                    ),
                     boxShadow: <BoxShadow>[
                       BoxShadow(
-                        color: foregroundColor.withValues(alpha: 0.14),
+                        color: foregroundColor.withValues(
+                          alpha: 0.14,
+                        ),
                         blurRadius: 18,
-                        offset: const Offset(0, 7),
+                        offset: const Offset(
+                          0,
+                          7,
+                        ),
                       ),
                     ],
                   ),
                   child: loading
                       ? SizedBox(
-                          width: 23,
-                          height: 23,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.4,
-                            color: foregroundColor,
-                          ),
-                        )
-                      : Icon(icon, color: foregroundColor, size: 29),
+                    width: 23,
+                    height: 23,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.4,
+                      color: foregroundColor,
+                    ),
+                  )
+                      : Icon(
+                    icon,
+                    color: foregroundColor,
+                    size: 29,
+                  ),
                 ),
               ),
             ),
-            const SizedBox(height: 7),
+            const SizedBox(
+              height: 7,
+            ),
             Text(
               label,
               style: TextStyle(
                 color: enabled || loading
-                    ? const Color(0xFF58677F)
-                    : const Color(0xFF98A2B3),
+                    ? const Color(
+                  0xFF58677F,
+                )
+                    : const Color(
+                  0xFF98A2B3,
+                ),
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
               ),
@@ -1237,11 +1514,14 @@ class _RoundControlButton extends StatelessWidget {
 }
 
 // ===============================================================
-// DECORATIVE GLOW
+// Decorative Glow
 // ===============================================================
 
 class _GlowOrb extends StatelessWidget {
-  const _GlowOrb({required this.size, required this.color});
+  const _GlowOrb({
+    required this.size,
+    required this.color,
+  });
 
   final double size;
   final Color color;
@@ -1256,32 +1536,14 @@ class _GlowOrb extends StatelessWidget {
           shape: BoxShape.circle,
           color: color,
           boxShadow: <BoxShadow>[
-            BoxShadow(color: color, blurRadius: 100, spreadRadius: 38),
+            BoxShadow(
+              color: color,
+              blurRadius: 100,
+              spreadRadius: 38,
+            ),
           ],
         ),
       ),
     );
   }
 }
-
-// ===============================================================
-// END OF FILE
-//
-// FIXED: BUG 07, BUG 08, BUG 09
-//
-// ALSO FIXED:
-// - Duplicate oversized top branding removed.
-// - Hidden duplicate CallBottomBar removed.
-// - Fake online state removed.
-// - Fake security/connected presentation removed.
-// - End callback failure no longer falsely closes UI.
-// - Duplicate end requests prevented.
-// - Back navigation protected.
-// - CallService remains lifecycle/timer owner.
-// - No Firestore/WebRTC/ICE/signaling duplication.
-//
-// STATUS: READY FOR FORMAT + ANALYZE
-//
-// NEXT FILE: voice_call_screen.dart
-// Location: lib/screens/voice_call_screen.dart
-// ===============================================================

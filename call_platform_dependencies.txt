@@ -1,0 +1,354 @@
+===== PUBSPEC =====
+# ===============================================================
+# JR CALL
+# File: pubspec.yaml
+# Location: /pubspec.yaml
+#
+# PRODUCTION DEPENDENCY CONTRACT
+#
+# - Flutter + Dart 3.12.x preserved.
+# - Current Firebase generation preserved.
+# - Firebase App Check added for Android/iOS/Web protection.
+# - Firebase Auth Phone OTP compatibility preserved.
+# - Email OTP Cloud Functions preserved.
+# - Firebase Messaging preserved.
+# - Firestore / Storage preserved.
+# - WebRTC Call Engine preserved.
+# - No Firebase major-version migration.
+# - No Call Engine API changes.
+# ===============================================================
+
+name: jr_call
+description: "JR CALL - Global Voice, Video, Messaging and Creator Platform"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+# ===============================================================
+# ENVIRONMENT
+# ===============================================================
+
+environment:
+  sdk: ">=3.12.2 <4.0.0"
+
+# ===============================================================
+# DEPENDENCIES
+# ===============================================================
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # =============================================================
+  # UI / PLATFORM
+  # =============================================================
+
+  cupertino_icons: 1.0.9
+
+  # =============================================================
+  # FIREBASE
+  #
+  # Current compatible Firebase generation retained.
+  #
+  # firebase_app_check is required by the repaired main.dart for:
+  #
+  # - Android debug App Check
+  # - Android Play Integrity production protection
+  # - Apple App Attest / DeviceCheck protection
+  # - Web App Check
+  #
+  # Phone OTP itself remains Firebase Authentication owned.
+  # =============================================================
+
+  firebase_core: 3.15.2
+  firebase_auth: 5.7.0
+  cloud_firestore: 5.6.12
+  cloud_functions: 5.6.2
+  firebase_storage: 12.4.10
+  firebase_messaging: 15.2.10
+  firebase_app_check: 0.3.2+10
+
+  # =============================================================
+  # WEBRTC / CALL ENGINE
+  #
+  # Protected dependency.
+  # =============================================================
+
+  flutter_webrtc: 1.5.2
+
+  # =============================================================
+  # NETWORK
+  # =============================================================
+
+  http: 1.6.0
+  connectivity_plus: 6.1.5
+
+  # =============================================================
+  # STATE MANAGEMENT
+  # =============================================================
+
+  flutter_riverpod: 2.6.1
+
+  # =============================================================
+  # AUTH / GLOBAL USER INPUT
+  # =============================================================
+
+  country_picker: 2.0.28
+  intl_phone_field: 3.2.0
+  pin_code_fields: 8.0.1
+  phone_numbers_parser: 9.0.25
+
+  # =============================================================
+  # PROFILE MEDIA
+  # =============================================================
+
+  image_picker: 1.1.2
+  image_cropper: 12.2.1
+
+  # =============================================================
+  # PERMISSIONS
+  # =============================================================
+
+  permission_handler: 12.0.3
+
+  # =============================================================
+  # UTILITIES
+  # =============================================================
+
+  uuid: 4.6.0
+
+# ===============================================================
+# DEVELOPMENT DEPENDENCIES
+# ===============================================================
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: 6.0.0
+  flutter_launcher_icons: 0.13.1
+
+# ===============================================================
+# APP ICON
+# ===============================================================
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/images/logo.png"
+  min_sdk_android: 21
+
+# ===============================================================
+# FLUTTER
+# ===============================================================
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/logo.png
+
+# ===============================================================
+# END OF FILE
+#
+# FINAL REPAIR:
+#
+# ✓ firebase_app_check dependency added.
+#
+# ✓ Fixes missing import:
+#   package:firebase_app_check/firebase_app_check.dart
+#
+# ✓ Enables main.dart to resolve FirebaseAppCheck.
+#
+# ✓ Enables compatible Android App Check provider APIs.
+#
+# ✓ Firebase Auth Phone OTP preserved.
+#
+# ✓ Email OTP Cloud Functions preserved.
+#
+# ✓ Firebase Messaging preserved.
+#
+# ✓ Firestore preserved.
+#
+# ✓ Firebase Storage preserved.
+#
+# ✓ ProfileService dependencies preserved.
+#
+# ✓ Riverpod preserved.
+#
+# ✓ WebRTC Call Engine preserved.
+#
+# ✓ No Firebase 6.x migration.
+#
+# ✓ No applicationId/package-name change.
+#
+# ✓ No Call Engine/WebRTC/ICE/SDP/signaling modification.
+#
+# SAVE/REPLACE THIS WHOLE FILE.
+#
+# THEN RUN:
+#
+# flutter pub get
+# flutter analyze
+#
+# ===============================================================
+
+===== ANDROID APP GRADLE =====
+
+import com.android.build.api.dsl.ApplicationExtension
+
+// ===============================================================
+// JR CALL
+// File: build.gradle.kts
+// Location: android/app/build.gradle.kts
+//
+// ANDROID APP MODULE
+//
+// PRESERVED:
+// - Firebase / Google Services
+// - Firebase package identity
+// - Flutter SDK configuration
+// - Java / Kotlin JVM 17
+// - OTP / Auth
+// - Profile / Discovery
+// - Call Engine / WebRTC / Signaling
+// - Message Engine
+// - Google reCAPTCHA Android SDK
+// ===============================================================
+
+plugins {
+    id("com.android.application")
+    id("com.google.gms.google-services")
+    id("dev.flutter.flutter-gradle-plugin")
+}
+
+// ===============================================================
+// FLUTTER CLI NAMESPACE DISCOVERY COMPATIBILITY
+//
+// IMPORTANT:
+// Flutter tooling currently discovers the Android namespace by
+// scanning build.gradle(.kts) for an "android { ... namespace ... }"
+// pattern.
+//
+// JR CALL intentionally configures AGP through the public
+// ApplicationExtension API below.
+//
+// This COMMENT is intentionally preserved so Flutter CLI can discover
+// the namespace without changing the actual AGP configuration.
+//
+// android {
+//     namespace = "com.example.jr_call"
+// }
+// ===============================================================
+
+// ===============================================================
+// FLUTTER-OWNED ANDROID VALUES
+// ===============================================================
+
+val jrCompileSdk = flutter.compileSdkVersion
+val jrNdkVersion = flutter.ndkVersion
+val jrMinSdk = flutter.minSdkVersion
+val jrTargetSdk = flutter.targetSdkVersion
+val jrVersionCode = flutter.versionCode
+val jrVersionName = flutter.versionName
+
+// ===============================================================
+// ANDROID
+// ===============================================================
+
+extensions.configure<ApplicationExtension>("android") {
+    namespace = "com.example.jr_call"
+
+    compileSdk = jrCompileSdk
+    ndkVersion = jrNdkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        applicationId = "com.example.jr_call"
+
+        minSdk = jrMinSdk
+        targetSdk = jrTargetSdk
+
+        versionCode = jrVersionCode
+        versionName = jrVersionName
+    }
+
+    buildTypes {
+        getByName("debug") {
+            // Development configuration remains Flutter-managed.
+        }
+
+        getByName("release") {
+            // Temporary testing signing configuration.
+            // Production signing is configured in the release step.
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+}
+
+// ===============================================================
+// KOTLIN — JVM 17
+// ===============================================================
+
+kotlin {
+    compilerOptions {
+        jvmTarget =
+            org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
+// ===============================================================
+// DEPENDENCIES
+// ===============================================================
+
+dependencies {
+    implementation(
+        "com.google.android.recaptcha:recaptcha:18.9.2"
+    )
+}
+
+// ===============================================================
+// FLUTTER
+// ===============================================================
+
+flutter {
+    source = "../.."
+}
+
+// ===============================================================
+// END OF FILE
+//
+// PRESERVED:
+//
+// ✓ com.example.jr_call namespace
+// ✓ com.example.jr_call applicationId
+// ✓ Flutter compile SDK
+// ✓ Flutter minimum SDK
+// ✓ Flutter target SDK
+// ✓ Flutter NDK
+// ✓ Flutter version code
+// ✓ Flutter version name
+// ✓ Java 17
+// ✓ Kotlin JVM 17
+// ✓ Google Services
+// ✓ Firebase
+// ✓ Phone OTP / Auth
+// ✓ Profile / Discovery
+// ✓ Call Engine
+// ✓ WebRTC
+// ✓ Signaling
+// ✓ Message Engine
+// ✓ Temporary debug signing for release testing
+// ✓ Google reCAPTCHA Android integration
+//
+// FIXED:
+//
+// ✓ Flutter CLI can discover the Android namespace.
+// ✓ Public ApplicationExtension configuration remains unchanged.
+// ✓ No Manifest package attribute added.
+// ✓ No Call Engine runtime logic changed.
+// ===============================================================

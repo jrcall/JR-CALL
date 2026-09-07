@@ -2,23 +2,22 @@
 // JR CALL
 // File: call_history_model.dart
 // Location: lib/models/call_history_model.dart
-// Fixes: BUG 04
-// Production-safe replacement
-// Existing APIs preserved
 //
-// PRODUCTION CONTRACT:
+// FINAL PRODUCTION CONTRACT:
 // - Existing constructor, fields and enums preserved.
 // - Existing initial/copyWith/fromMap/toMap/fromJson/toJson preserved.
-// - Real call-history data only.
+// - Firestore-native serialization added without breaking JSON.
+// - Real terminal call-history data only.
 // - Legacy Firestore / JSON values parsed safely.
-// - Firestore Timestamp-compatible date parsing.
-// - Unknown malformed status never becomes fake "completed" state.
+// - Unknown malformed status never becomes fake completed state.
 // - Negative duration/network values are normalized safely.
 // - Incoming/outgoing and voice/video semantics preserved.
 // - No Call Engine/WebRTC/signaling ownership.
 // ===============================================================
 
 import 'dart:convert';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 enum CallType { voice, video }
 
@@ -56,7 +55,7 @@ class CallHistoryModel {
   final int averagePing;
   final int averageJitter;
 
-  /// Percentage.
+  /// Percentage, normalized to 0..100.
   final double packetLoss;
 
   final bool isEncrypted;
@@ -88,6 +87,39 @@ class CallHistoryModel {
     required this.startedAt,
     required this.endedAt,
   });
+
+  // =============================================================
+  // COMPATIBILITY / SEMANTIC GETTERS
+  // =============================================================
+
+  String get ownerUid => userId;
+
+  String get peerUid => contactId;
+
+  bool get isVoice => callType == CallType.voice;
+
+  bool get isVideo => callType == CallType.video;
+
+  bool get isIncoming => direction == CallDirection.incoming;
+
+  bool get isOutgoing => direction == CallDirection.outgoing;
+
+  bool get isMissed => status == CallStatus.missed;
+
+  bool get wasAnswered => status == CallStatus.completed;
+
+  bool get wasRejected =>
+      status == CallStatus.rejected || status == CallStatus.declined;
+
+  bool get wasCancelled => status == CallStatus.cancelled;
+
+  bool get wasBusy => status == CallStatus.busy;
+
+  bool get wasFailed => status == CallStatus.failed;
+
+  bool get isTerminal => true;
+
+  bool get hasDuration => status == CallStatus.completed && duration > 0;
 
   // =============================================================
   // INITIAL
@@ -171,7 +203,7 @@ class CallHistoryModel {
   }
 
   // =============================================================
-  // SERIALIZATION
+  // JSON-SAFE SERIALIZATION
   // =============================================================
 
   Map<String, dynamic> toMap() {
@@ -194,12 +226,44 @@ class CallHistoryModel {
       'isEncrypted': isEncrypted,
       'isRecorded': isRecorded,
       'isHd': isHd,
-      'startedAt': startedAt.toIso8601String(),
-      'endedAt': endedAt.toIso8601String(),
+      'startedAt': startedAt.toUtc().toIso8601String(),
+      'endedAt': endedAt.toUtc().toIso8601String(),
     };
   }
 
-  factory CallHistoryModel.fromMap(Map<String, dynamic> map) {
+  // =============================================================
+  // FIRESTORE SERIALIZATION
+  // =============================================================
+
+  Map<String, dynamic> toFirestoreMap() {
+    return <String, dynamic>{
+      'id': id,
+      'sessionId': sessionId,
+      'userId': userId,
+      'contactId': contactId,
+      'contactName': contactName,
+      'phoneNumber': phoneNumber,
+      'avatarUrl': avatarUrl,
+      'callType': callType.name,
+      'direction': direction.name,
+      'status': status.name,
+      'quality': quality.name,
+      'duration': duration,
+      'averagePing': averagePing,
+      'averageJitter': averageJitter,
+      'packetLoss': packetLoss,
+      'isEncrypted': isEncrypted,
+      'isRecorded': isRecorded,
+      'isHd': isHd,
+      'startedAt': Timestamp.fromDate(startedAt),
+      'endedAt': Timestamp.fromDate(endedAt),
+    };
+  }
+
+  factory CallHistoryModel.fromMap(
+      Map<String, dynamic> map, {
+        String? documentId,
+      }) {
     final DateTime startedAt = _dateTime(
       _firstValue(map, const <String>[
         'startedAt',
@@ -224,23 +288,32 @@ class CallHistoryModel {
       endedAt = startedAt;
     }
 
+    final String parsedId = _string(
+      _firstValue(map, const <String>[
+        'id',
+        'historyId',
+      ]),
+    );
+
+    final String parsedSessionId = _string(
+      _firstValue(map, const <String>[
+        'sessionId',
+        'session_id',
+        'callSessionId',
+        'callId',
+      ]),
+    );
+
     return CallHistoryModel(
-      id: _string(
-        _firstValue(map, const <String>['id', 'callId', 'historyId']),
-      ),
-      sessionId: _string(
-        _firstValue(map, const <String>[
-          'sessionId',
-          'session_id',
-          'callSessionId',
-        ]),
-      ),
+      id: parsedId.isNotEmpty ? parsedId : _string(documentId),
+      sessionId: parsedSessionId,
       userId: _string(
         _firstValue(map, const <String>[
           'userId',
           'uid',
           'currentUserId',
           'ownerId',
+          'ownerUid',
         ]),
       ),
       contactId: _string(
@@ -248,7 +321,9 @@ class CallHistoryModel {
           'contactId',
           'otherUserId',
           'peerId',
+          'peerUid',
           'remoteUserId',
+          'remoteUid',
         ]),
       ),
       contactName: _string(
@@ -276,19 +351,42 @@ class CallHistoryModel {
           'receiverImage',
         ]),
       ),
-      callType: _callType(_firstValue(map, const <String>['callType', 'type'])),
-      direction: _direction(
-        _firstValue(map, const <String>['direction', 'callDirection']),
+      callType: _callType(
+        _firstValue(map, const <String>[
+          'callType',
+          'type',
+        ]),
       ),
-      status: _status(_firstValue(map, const <String>['status', 'callStatus'])),
+      direction: _direction(
+        _firstValue(map, const <String>[
+          'direction',
+          'callDirection',
+        ]),
+      ),
+      status: _status(
+        _firstValue(map, const <String>[
+          'status',
+          'callStatus',
+        ]),
+      ),
       quality: _quality(
-        _firstValue(map, const <String>['quality', 'callQuality']),
+        _firstValue(map, const <String>[
+          'quality',
+          'callQuality',
+        ]),
       ),
       duration: _nonNegativeInt(
-        _firstValue(map, const <String>['duration', 'durationSeconds']),
+        _firstValue(map, const <String>[
+          'duration',
+          'durationSeconds',
+        ]),
       ),
       averagePing: _nonNegativeInt(
-        _firstValue(map, const <String>['averagePing', 'avgPing', 'ping']),
+        _firstValue(map, const <String>[
+          'averagePing',
+          'avgPing',
+          'ping',
+        ]),
       ),
       averageJitter: _nonNegativeInt(
         _firstValue(map, const <String>[
@@ -298,16 +396,31 @@ class CallHistoryModel {
         ]),
       ),
       packetLoss: _packetLoss(
-        _firstValue(map, const <String>['packetLoss', 'packetLossPercent']),
+        _firstValue(map, const <String>[
+          'packetLoss',
+          'packetLossPercent',
+        ]),
       ),
       isEncrypted: _boolean(
-        _firstValue(map, const <String>['isEncrypted', 'encrypted']),
+        _firstValue(map, const <String>[
+          'isEncrypted',
+          'encrypted',
+        ]),
         fallback: true,
       ),
       isRecorded: _boolean(
-        _firstValue(map, const <String>['isRecorded', 'recorded']),
+        _firstValue(map, const <String>[
+          'isRecorded',
+          'recorded',
+        ]),
       ),
-      isHd: _boolean(_firstValue(map, const <String>['isHd', 'isHD', 'hd'])),
+      isHd: _boolean(
+        _firstValue(map, const <String>[
+          'isHd',
+          'isHD',
+          'hd',
+        ]),
+      ),
       startedAt: startedAt,
       endedAt: endedAt,
     );
@@ -351,7 +464,10 @@ class CallHistoryModel {
   // SAFE LEGACY PARSING
   // =============================================================
 
-  static dynamic _firstValue(Map<String, dynamic> map, List<String> keys) {
+  static dynamic _firstValue(
+      Map<String, dynamic> map,
+      List<String> keys,
+      ) {
     for (final String key in keys) {
       if (!map.containsKey(key)) {
         continue;
@@ -390,7 +506,10 @@ class CallHistoryModel {
       return value.toInt();
     }
 
-    return int.tryParse(value?.toString().trim() ?? '') ?? 0;
+    return int.tryParse(
+      value?.toString().trim() ?? '',
+    ) ??
+        0;
   }
 
   static int _nonNegativeInt(dynamic value) {
@@ -418,7 +537,9 @@ class CallHistoryModel {
       return parsed;
     }
 
-    final double? parsed = double.tryParse(value?.toString().trim() ?? '');
+    final double? parsed = double.tryParse(
+      value?.toString().trim() ?? '',
+    );
 
     if (parsed == null || parsed.isNaN || parsed.isInfinite) {
       return 0;
@@ -441,7 +562,10 @@ class CallHistoryModel {
     return parsed;
   }
 
-  static bool _boolean(dynamic value, {bool fallback = false}) {
+  static bool _boolean(
+      dynamic value, {
+        bool fallback = false,
+      }) {
     if (value is bool) {
       return value;
     }
@@ -450,7 +574,8 @@ class CallHistoryModel {
       return value != 0;
     }
 
-    final String normalized = value?.toString().trim().toLowerCase() ?? '';
+    final String normalized =
+        value?.toString().trim().toLowerCase() ?? '';
 
     switch (normalized) {
       case 'true':
@@ -474,18 +599,26 @@ class CallHistoryModel {
   // DATE PARSING
   // =============================================================
 
-  static DateTime _dateTime(dynamic value, {DateTime? fallback}) {
+  static DateTime _dateTime(
+      dynamic value, {
+        DateTime? fallback,
+      }) {
+    if (value is Timestamp) {
+      return value.toDate();
+    }
+
     if (value is DateTime) {
       return value;
     }
 
     if (value is num) {
-      return _dateTimeFromNumber(value, fallback: fallback);
+      return _dateTimeFromNumber(
+        value,
+        fallback: fallback,
+      );
     }
 
     if (value != null) {
-      // Firestore Timestamp support without importing
-      // cloud_firestore into the model.
       try {
         final dynamic converted = value.toDate();
 
@@ -508,7 +641,10 @@ class CallHistoryModel {
         final num? numericDate = num.tryParse(text);
 
         if (numericDate != null) {
-          return _dateTimeFromNumber(numericDate, fallback: fallback);
+          return _dateTimeFromNumber(
+            numericDate,
+            fallback: fallback,
+          );
         }
       }
     }
@@ -516,14 +652,19 @@ class CallHistoryModel {
     return fallback ?? DateTime.fromMillisecondsSinceEpoch(0);
   }
 
-  static DateTime _dateTimeFromNumber(num value, {DateTime? fallback}) {
+  static DateTime _dateTimeFromNumber(
+      num value, {
+        DateTime? fallback,
+      }) {
     try {
       final int raw = value.toInt();
       final int absolute = raw.abs();
 
       // Seconds since epoch.
       if (absolute < 100000000000) {
-        return DateTime.fromMillisecondsSinceEpoch(raw * 1000);
+        return DateTime.fromMillisecondsSinceEpoch(
+          raw * 1000,
+        );
       }
 
       // Microseconds since epoch.
@@ -545,7 +686,8 @@ class CallHistoryModel {
   // =============================================================
 
   static String _enumText(dynamic value) {
-    final String raw = value?.toString().trim().toLowerCase() ?? '';
+    final String raw =
+        value?.toString().trim().toLowerCase() ?? '';
 
     if (raw.isEmpty) {
       return '';
@@ -553,7 +695,8 @@ class CallHistoryModel {
 
     final int dot = raw.lastIndexOf('.');
 
-    final String normalized = dot >= 0 ? raw.substring(dot + 1) : raw;
+    final String normalized =
+    dot >= 0 ? raw.substring(dot + 1) : raw;
 
     return normalized
         .replaceAll('-', '')
@@ -562,21 +705,39 @@ class CallHistoryModel {
   }
 
   static CallType _callType(dynamic value) {
+    final CallType? indexed = _enumByIndex(
+      value,
+      CallType.values,
+    );
+
+    if (indexed != null) {
+      return indexed;
+    }
+
     switch (_enumText(value)) {
       case 'video':
-      case 'videocall':
+      case 'video' 'call':
         return CallType.video;
 
       case 'voice':
       case 'audio':
-      case 'voicecall':
-      case 'audiocall':
+      case 'voice' 'call':
+      case 'audio' 'call':
       default:
         return CallType.voice;
     }
   }
 
   static CallDirection _direction(dynamic value) {
+    final CallDirection? indexed = _enumByIndex(
+      value,
+      CallDirection.values,
+    );
+
+    if (indexed != null) {
+      return indexed;
+    }
+
     switch (_enumText(value)) {
       case 'incoming':
       case 'inbound':
@@ -592,15 +753,24 @@ class CallHistoryModel {
   }
 
   static CallStatus _status(dynamic value) {
+    final CallStatus? indexed = _enumByIndex(
+      value,
+      CallStatus.values,
+    );
+
+    if (indexed != null) {
+      return indexed;
+    }
+
     final String normalized = _enumText(value);
 
     switch (normalized) {
       case 'missed':
-      case 'missedcall':
-      case 'noanswer':
+      case 'missed' 'call':
+      case 'no' 'answer':
       case 'unanswered':
       case 'timeout':
-      case 'timedout':
+      case 'timed' 'out':
         return CallStatus.missed;
 
       case 'rejected':
@@ -612,11 +782,11 @@ class CallHistoryModel {
 
       case 'failed':
       case 'error':
-      case 'networkfailed':
+      case 'network' 'failed':
         return CallStatus.failed;
 
       case 'busy':
-      case 'userbusy':
+      case 'user' 'busy':
         return CallStatus.busy;
 
       case 'declined':
@@ -626,23 +796,25 @@ class CallHistoryModel {
       case 'complete':
       case 'ended':
       case 'success':
-        return CallStatus.completed;
-
-      // A connected signaling state is not necessarily a completed
-      // history record. However legacy JR CALL history may persist
-      // "connected" only after a successful call, so compatibility
-      // is preserved here.
+      case 'answered':
       case 'connected':
         return CallStatus.completed;
 
       default:
-        // Never manufacture a successful/completed history entry
-        // from malformed or unknown production data.
         return CallStatus.failed;
     }
   }
 
   static CallQuality _quality(dynamic value) {
+    final CallQuality? indexed = _enumByIndex(
+      value,
+      CallQuality.values,
+    );
+
+    if (indexed != null) {
+      return indexed;
+    }
+
     switch (_enumText(value)) {
       case 'excellent':
         return CallQuality.excellent;
@@ -658,6 +830,23 @@ class CallHistoryModel {
       default:
         return CallQuality.good;
     }
+  }
+
+  static T? _enumByIndex<T>(
+      dynamic value,
+      List<T> values,
+      ) {
+    if (value is! num) {
+      return null;
+    }
+
+    final int index = value.toInt();
+
+    if (index < 0 || index >= values.length) {
+      return null;
+    }
+
+    return values[index];
   }
 
   // =============================================================
@@ -724,25 +913,33 @@ class CallHistoryModel {
     final String normalizedSession = sessionId.trim();
 
     if (normalizedSession.isNotEmpty) {
-      return Object.hash('session', normalizedSession);
+      return Object.hash(
+        'session',
+        normalizedSession,
+      );
     }
 
     final String normalizedId = id.trim();
 
     if (normalizedId.isNotEmpty) {
-      return Object.hash('id', normalizedId);
+      return Object.hash(
+        'id',
+        normalizedId,
+      );
     }
 
-    return Object.hash(userId, contactId, direction, callType, startedAt);
+    return Object.hash(
+      userId,
+      contactId,
+      direction,
+      callType,
+      startedAt,
+    );
   }
 }
 
 // ===============================================================
 // END OF FILE
-//
-// FIXED: BUG 04 model / parsing / identity / status safety
-// STATUS: READY FOR FORMAT + ANALYZE
-//
-// NEXT FILE: call_repository.dart
-// Location: lib/services/call/call_repository.dart
+// STATUS: FILE 03 CORRECTED VERIFICATION VERSION
+// NEXT FILE: lib/models/device_model.dart
 // ===============================================================

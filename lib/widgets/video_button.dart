@@ -11,20 +11,21 @@ import 'package:flutter/material.dart';
 /// Production-ready reusable JR CALL video action button.
 ///
 /// Responsibilities:
-/// - Render video action control
-/// - Preserve parent supplied callback
-/// - Prevent accidental rapid repeated taps
-/// - Support enabled / disabled state
-/// - Provide premium JR CALL visual feedback
-/// - Provide accessibility semantics
+/// - Render video action control.
+/// - Preserve parent supplied callback.
+/// - Prevent accidental rapid repeated taps.
+/// - Support enabled / disabled state.
+/// - Provide premium JR CALL visual feedback.
+/// - Provide accessibility semantics.
 ///
 /// Architecture:
-/// - UI only
-/// - No Firebase logic
-/// - No navigation logic
-/// - No CallService logic
-/// - No WebRTC logic
-/// - No VideoManager logic
+/// - UI only.
+/// - No Firebase logic.
+/// - No navigation logic.
+/// - No CallService logic.
+/// - No WebRTC logic.
+/// - No VideoManager logic.
+/// - No call-lifecycle ownership.
 ///
 /// Existing public API preserved.
 ///
@@ -45,7 +46,10 @@ class VideoButton extends StatefulWidget {
     this.icon = Icons.videocam_rounded,
     this.enabled = true,
     this.tooltip,
-  }) : assert(size > 0, 'VideoButton size must be greater than zero.');
+  }) : assert(
+  size > 0,
+  'VideoButton size must be greater than zero.',
+  );
 
   /// Parent supplied video action.
   final VoidCallback? onPressed;
@@ -92,8 +96,47 @@ class _VideoButtonState extends State<VideoButton> {
     return 'Video call';
   }
 
+  // ===========================================================
+  // Widget Updates
+  // ===========================================================
+
+  @override
+  void didUpdateWidget(covariant VideoButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    final bool wasInteractive =
+        oldWidget.enabled && oldWidget.onPressed != null;
+
+    final bool isInteractive = _isInteractive;
+
+    if (wasInteractive && !isInteractive) {
+      _resetTransientInteractionState();
+    }
+  }
+
+  void _resetTransientInteractionState() {
+    _unlockTimer?.cancel();
+    _unlockTimer = null;
+
+    _tapLocked = false;
+
+    if (!_isPressed) {
+      return;
+    }
+
+    _isPressed = false;
+  }
+
+  // ===========================================================
+  // Press State
+  // ===========================================================
+
   void _setPressed(bool value) {
-    if (!_isInteractive || !mounted) {
+    if (!mounted) {
+      return;
+    }
+
+    if (value && !_isInteractive) {
       return;
     }
 
@@ -105,6 +148,10 @@ class _VideoButtonState extends State<VideoButton> {
       _isPressed = value;
     });
   }
+
+  // ===========================================================
+  // Tap Handling
+  // ===========================================================
 
   void _handleTap() {
     if (!_isInteractive || _tapLocked) {
@@ -118,11 +165,19 @@ class _VideoButtonState extends State<VideoButton> {
     } finally {
       _unlockTimer?.cancel();
 
-      _unlockTimer = Timer(const Duration(milliseconds: 350), () {
-        _tapLocked = false;
-      });
+      _unlockTimer = Timer(
+        const Duration(milliseconds: 350),
+            () {
+          _tapLocked = false;
+          _unlockTimer = null;
+        },
+      );
     }
   }
+
+  // ===========================================================
+  // Build
+  // ===========================================================
 
   @override
   Widget build(BuildContext context) {
@@ -136,7 +191,8 @@ class _VideoButtonState extends State<VideoButton> {
         ? widget.iconColor
         : const Color(0xFF98A2B3);
 
-    final double scale = _isPressed && _isInteractive ? 0.94 : 1.0;
+    final double scale =
+    _isPressed && _isInteractive ? 0.94 : 1.0;
 
     final Widget button = Semantics(
       button: true,
@@ -155,13 +211,13 @@ class _VideoButtonState extends State<VideoButton> {
             shape: BoxShape.circle,
             gradient: _isInteractive
                 ? LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: <Color>[
-                      activeColor.withValues(alpha: 0.96),
-                      const Color(0xFF1557D9),
-                    ],
-                  )
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: <Color>[
+                activeColor.withValues(alpha: 0.96),
+                const Color(0xFF1557D9),
+              ],
+            )
                 : null,
             color: _isInteractive ? null : effectiveBackground,
             border: Border.all(
@@ -172,30 +228,31 @@ class _VideoButtonState extends State<VideoButton> {
             ),
             boxShadow: _isInteractive
                 ? <BoxShadow>[
-                    BoxShadow(
-                      color: activeColor.withValues(alpha: 0.26),
-                      blurRadius: 22,
-                      spreadRadius: 1,
-                      offset: const Offset(0, 8),
-                    ),
-                    BoxShadow(
-                      color: const Color(0xFF22D3EE).withValues(alpha: 0.12),
-                      blurRadius: 28,
-                      spreadRadius: 2,
-                    ),
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.06),
-                      blurRadius: 12,
-                      offset: const Offset(0, 5),
-                    ),
-                  ]
+              BoxShadow(
+                color: activeColor.withValues(alpha: 0.26),
+                blurRadius: 22,
+                spreadRadius: 1,
+                offset: const Offset(0, 8),
+              ),
+              BoxShadow(
+                color: const Color(0xFF22D3EE)
+                    .withValues(alpha: 0.12),
+                blurRadius: 28,
+                spreadRadius: 2,
+              ),
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.06),
+                blurRadius: 12,
+                offset: const Offset(0, 5),
+              ),
+            ]
                 : <BoxShadow>[
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.04),
-                      blurRadius: 8,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.04),
+                blurRadius: 8,
+                offset: const Offset(0, 4),
+              ),
+            ],
           ),
           child: Material(
             color: Colors.transparent,
@@ -206,23 +263,27 @@ class _VideoButtonState extends State<VideoButton> {
               onTap: _isInteractive ? _handleTap : null,
               onTapDown: _isInteractive
                   ? (_) {
-                      _setPressed(true);
-                    }
+                _setPressed(true);
+              }
                   : null,
               onTapUp: _isInteractive
                   ? (_) {
-                      _setPressed(false);
-                    }
+                _setPressed(false);
+              }
                   : null,
               onTapCancel: _isInteractive
                   ? () {
-                      _setPressed(false);
-                    }
+                _setPressed(false);
+              }
                   : null,
-              splashColor: widget.iconColor.withValues(alpha: 0.14),
-              highlightColor: widget.iconColor.withValues(alpha: 0.06),
-              hoverColor: widget.iconColor.withValues(alpha: 0.05),
-              focusColor: widget.iconColor.withValues(alpha: 0.07),
+              splashColor:
+              widget.iconColor.withValues(alpha: 0.14),
+              highlightColor:
+              widget.iconColor.withValues(alpha: 0.06),
+              hoverColor:
+              widget.iconColor.withValues(alpha: 0.05),
+              focusColor:
+              widget.iconColor.withValues(alpha: 0.07),
               child: Stack(
                 fit: StackFit.expand,
                 children: <Widget>[
@@ -233,7 +294,8 @@ class _VideoButtonState extends State<VideoButton> {
                         width: widget.size * 0.54,
                         height: widget.size * 0.26,
                         decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(widget.size),
+                          borderRadius:
+                          BorderRadius.circular(widget.size),
                           gradient: LinearGradient(
                             colors: <Color>[
                               Colors.white.withValues(alpha: 0.28),
@@ -264,8 +326,15 @@ class _VideoButtonState extends State<VideoButton> {
       return button;
     }
 
-    return Tooltip(message: tooltipValue, child: button);
+    return Tooltip(
+      message: tooltipValue,
+      child: button,
+    );
   }
+
+  // ===========================================================
+  // Dispose
+  // ===========================================================
 
   @override
   void dispose() {

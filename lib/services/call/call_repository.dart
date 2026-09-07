@@ -2,26 +2,25 @@
 // JR CALL
 // File: call_repository.dart
 // Location: lib/services/call/call_repository.dart
-// Fixes: BUG 03, BUG 04, BUG 07, BUG 08
-// Production-safe replacement
-// Existing APIs preserved
 //
-// PRODUCTION CONTRACT:
+// FINAL PRODUCTION CONTRACT:
 // - Firebase UID is the only Call Engine identity.
-// - Public JR CALL identity is resolved before CallService.
-// - Ambiguous names never silently resolve to a random user.
-// - Legacy createCall(CallModel) remains compatible.
-// - Firestore call creation matches current security rules.
-// - New calls are created only with canonical `calling` status.
-// - Caller ownership and self-call guards enforced.
-// - No fake call/history/connected state.
-// - No duplicate WebRTC/ICE/signaling ownership.
-// - Signaling lifecycle operations remain in SignalingService.
+// - Public identities remain Search/Discovery-owned.
+// - Existing repository APIs are preserved.
+// - FILE 01 CallStatus is the canonical lifecycle vocabulary.
+// - Legacy status aliases remain readable/input-compatible.
+// - New calls always begin in canonical `calling` state.
+// - Call creation is transactionally idempotent by callId.
+// - Authenticated caller ownership and self-call guards enforced.
+// - No fake connected/history state.
+// - No WebRTC / ICE / SDP transport ownership.
+// - Signaling lifecycle mutations remain SignalingService-owned.
 // ===============================================================
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import '../../core/constants/call_status.dart';
 import '../../models/call_model.dart';
 import '../user_discovery_service.dart';
 import 'signaling_service.dart';
@@ -33,9 +32,11 @@ class CallRepository {
     UserDiscoveryService? discoveryService,
     SignalingService? signalingService,
   }) : firestore = firestore ?? FirebaseFirestore.instance,
-       _auth = auth ?? FirebaseAuth.instance,
-       _discoveryService = discoveryService ?? UserDiscoveryService.instance,
-       _signalingService = signalingService ?? SignalingService.instance;
+        _auth = auth ?? FirebaseAuth.instance,
+        _discoveryService =
+            discoveryService ?? UserDiscoveryService.instance,
+        _signalingService =
+            signalingService ?? SignalingService.instance;
 
   // =============================================================
   // SERVICES
@@ -54,36 +55,43 @@ class CallRepository {
 
   static const String callsCollection = 'calls';
 
-  CollectionReference<Map<String, dynamic>> get _calls =>
-      firestore.collection(callsCollection);
+  CollectionReference<Map<String, dynamic>> get _calls {
+    return firestore.collection(callsCollection);
+  }
 
   // =============================================================
-  // LEGACY CALL CREATION
+  // LEGACY / COMPATIBILITY CALL CREATION
   // =============================================================
 
-  /// Compatibility API.
+  /// Existing public API preserved.
   ///
-  /// Production call creation should normally be:
+  /// Preferred production orchestration remains:
   ///
-  /// CallService.startCall()
-  /// -> SignalingService.createCall()
+  /// CallService
+  /// -> CallRepository / SignalingService
+  /// -> WebRTC coordinator
   ///
-  /// This method remains for existing callers.
-  ///
-  /// Current Firestore rules permit CREATE only when:
-  /// status == calling
-  /// callerId == authenticated Firebase UID
-  /// receiverId != callerId
-  /// isVideoCall is bool
+  /// This repository owns persistence safety only.
   Future<void> createCall(CallModel call) async {
-    final String callId = _requireId(call.callId, 'call.callId');
+    final String callId = _requireDocumentId(
+      call.callId,
+      'call.callId',
+    );
 
-    final String callerId = _requireId(call.callerId, 'call.callerId');
+    final String callerId = _requireId(
+      call.callerId,
+      'call.callerId',
+    );
 
-    final String receiverId = _requireId(call.receiverId, 'call.receiverId');
+    final String receiverId = _requireId(
+      call.receiverId,
+      'call.receiverId',
+    );
 
     if (callerId == receiverId) {
-      throw ArgumentError('JR CALL cannot call the same Firebase user.');
+      throw ArgumentError(
+        'JR CALL cannot call the same Firebase user.',
+      );
     }
 
     final User currentUser = _requireAuthenticatedUser();
@@ -91,137 +99,131 @@ class CallRepository {
     if (currentUser.uid != callerId) {
       throw StateError(
         'Authenticated Firebase UID does not match '
-        'CallModel.callerId.',
+            'CallModel.callerId.',
       );
     }
 
-    final String suppliedStatus = call.status.name.trim().toLowerCase();
-
-    if (!_isSupportedCallStatus(suppliedStatus)) {
-      throw ArgumentError.value(
-        suppliedStatus,
-        'call.status',
-        'Unsupported JR CALL call status.',
-      );
-    }
-
-    // Current Firestore CREATE rules explicitly require
-    // status == "calling".
-    //
-    // Do not silently change another lifecycle state into calling.
-    // Doing so could manufacture incorrect call state.
-    if (suppliedStatus != CallRepositoryStatus.calling) {
+    if (call.status != CallStatus.calling) {
       throw StateError(
         'A new JR CALL call must begin with status "calling". '
-        'Received "$suppliedStatus".',
+            'Received "${call.status.name}".',
       );
     }
 
-    final DocumentReference<Map<String, dynamic>> reference = _calls.doc(
-      callId,
-    );
+    final DocumentReference<Map<String, dynamic>> reference =
+    _calls.doc(callId);
 
-    final Map<String, dynamic> legacyData = Map<String, dynamic>.from(
+    final Map<String, dynamic> data = Map<String, dynamic>.from(
       call.toMap(),
     );
 
-    await firestore.runTransaction<void>((Transaction transaction) async {
-      final DocumentSnapshot<Map<String, dynamic>> existing = await transaction
-          .get(reference);
+    data.remove('ringingAt');
+    data.remove('acceptedAt');
+    data.remove('connectedAt');
+    data.remove('endedAt');
+    data.remove('endedBy');
+    data.remove('answeredByDeviceId');
+    data.remove('failureReason');
 
-      if (existing.exists) {
-        final Map<String, dynamic> data =
-            existing.data() ?? const <String, dynamic>{};
+    await firestore.runTransaction<void>(
+          (Transaction transaction) async {
+        final DocumentSnapshot<Map<String, dynamic>> existing =
+        await transaction.get(reference);
 
-        final String? existingCallerId = _readString(data['callerId']);
+        if (existing.exists) {
+          final Map<String, dynamic> existingData =
+              existing.data() ?? const <String, dynamic>{};
 
-        final String? existingReceiverId = _readString(data['receiverId']);
+          final String? existingCallerId = _readString(
+            existingData['callerId'] ??
+                existingData['callerUid'],
+          );
 
-        final bool? existingVideo =
-            _readBool(data['isVideoCall']) ?? _readBool(data['video']);
+          final String? existingReceiverId = _readString(
+            existingData['receiverId'] ??
+                existingData['receiverUid'] ??
+                existingData['calleeUid'],
+          );
 
-        // Exact retry of the same call creation is idempotent.
-        if (existingCallerId == callerId &&
-            existingReceiverId == receiverId &&
-            (existingVideo == null || existingVideo == call.video)) {
-          return;
+          final bool? existingVideo =
+              _readBool(
+                existingData['isVideoCall'],
+              ) ??
+                  _readBool(
+                    existingData['video'],
+                  );
+
+          if (existingCallerId == callerId &&
+              existingReceiverId == receiverId &&
+              (existingVideo == null ||
+                  existingVideo == call.video)) {
+            return;
+          }
+
+          throw StateError(
+            'A different JR CALL session already exists '
+                'with callId "$callId".',
+          );
         }
 
-        throw StateError(
-          'A different JR CALL session already exists '
-          'with callId "$callId".',
+        transaction.set(
+          reference,
+          <String, dynamic>{
+            ...data,
+            'callId': callId,
+            'callerId': callerId,
+            'receiverId': receiverId,
+            'video': call.video,
+            'isVideoCall': call.video,
+            'status': CallStatus.calling.name,
+            'revision': 0,
+            'schemaVersion':
+            call.schemaVersion > 0
+                ? call.schemaVersion
+                : 1,
+            'createdAt': Timestamp.fromDate(
+              call.createdAt,
+            ),
+            'serverCreatedAt':
+            FieldValue.serverTimestamp(),
+            'updatedAt':
+            FieldValue.serverTimestamp(),
+            'offer': null,
+            'answer': null,
+            'callerCandidates':
+            <Map<String, dynamic>>[],
+            'receiverCandidates':
+            <Map<String, dynamic>>[],
+            'connectionState': 'new',
+            'iceConnectionState': 'new',
+            'signalingState': 'stable',
+            'iceGatheringState': 'new',
+            'networkRecovered': false,
+            'iceRestartCount': 0,
+          },
         );
-      }
-
-      transaction.set(reference, <String, dynamic>{
-        ...legacyData,
-
-        // ---------------------------------------------------
-        // Canonical identity
-        // ---------------------------------------------------
-        'callId': callId,
-        'callerId': callerId,
-        'receiverId': receiverId,
-
-        // ---------------------------------------------------
-        // Call type compatibility
-        // ---------------------------------------------------
-        'video': call.video,
-        'isVideoCall': call.video,
-
-        // ---------------------------------------------------
-        // Canonical initial lifecycle
-        // ---------------------------------------------------
-        'status': CallRepositoryStatus.calling,
-
-        // ---------------------------------------------------
-        // Timestamps
-        // ---------------------------------------------------
-        'createdAt': Timestamp.fromDate(call.createdAt),
-        'updatedAt': FieldValue.serverTimestamp(),
-
-        // ---------------------------------------------------
-        // Signaling
-        // ---------------------------------------------------
-        'offer': null,
-        'answer': null,
-
-        // ---------------------------------------------------
-        // ICE
-        // ---------------------------------------------------
-        'callerCandidates': <Map<String, dynamic>>[],
-        'receiverCandidates': <Map<String, dynamic>>[],
-
-        // ---------------------------------------------------
-        // Connection state
-        // ---------------------------------------------------
-        'connectionState': 'new',
-        'iceConnectionState': 'new',
-        'signalingState': 'stable',
-        'iceGatheringState': 'new',
-
-        // ---------------------------------------------------
-        // Recovery
-        // ---------------------------------------------------
-        'networkRecovered': false,
-        'iceRestartCount': 0,
-      });
-    });
+      },
+    );
   }
 
   // =============================================================
   // STATUS UPDATE
   // =============================================================
 
-  /// Existing public API preserved.
-  ///
-  /// Lifecycle mutation stays owned by SignalingService.
-  Future<void> updateStatus(String callId, String status) async {
-    final String normalizedCallId = _requireId(callId, 'callId');
+  Future<void> updateStatus(
+      String callId,
+      String status,
+      ) async {
+    final String normalizedCallId =
+    _requireDocumentId(
+      callId,
+      'callId',
+    );
 
-    final String normalizedStatus = status.trim().toLowerCase();
+    final String? canonicalStatus =
+    _canonicalStatusOrNull(status);
 
-    if (!_isSupportedCallStatus(normalizedStatus)) {
+    if (canonicalStatus == null) {
       throw ArgumentError.value(
         status,
         'status',
@@ -231,7 +233,7 @@ class CallRepository {
 
     await _signalingService.updateCallStatus(
       normalizedCallId,
-      normalizedStatus,
+      canonicalStatus,
     );
   }
 
@@ -239,195 +241,210 @@ class CallRepository {
   // LEGACY END CALL
   // =============================================================
 
-  /// Existing API preserved.
-  ///
-  /// IMPORTANT:
-  /// Normal production completion must use CallService.endCall()
-  /// because CallService coordinates:
-  /// - final status
-  /// - duration
-  /// - call history
-  /// - WebRTC cleanup
-  /// - ICE cleanup
-  /// - recovery cleanup
-  ///
-  /// Historical repository behavior deletes the signaling
-  /// document, therefore this compatibility method continues
-  /// delegating deletion to SignalingService.
   Future<void> endCall(String callId) async {
-    final String normalizedCallId = _requireId(callId, 'callId');
+    final String normalizedCallId =
+    _requireDocumentId(
+      callId,
+      'callId',
+    );
 
-    await _signalingService.deleteCall(normalizedCallId);
+    await _signalingService.deleteCall(
+      normalizedCallId,
+    );
   }
 
   // =============================================================
   // CALL LISTENER
   // =============================================================
 
-  /// Existing API preserved.
-  Stream<DocumentSnapshot<Map<String, dynamic>>> listenCall(String callId) {
-    final String normalizedCallId = _requireId(callId, 'callId');
+  Stream<DocumentSnapshot<Map<String, dynamic>>> listenCall(
+      String callId,
+      ) {
+    final String normalizedCallId =
+    _requireDocumentId(
+      callId,
+      'callId',
+    );
 
-    return _signalingService.listenCall(normalizedCallId);
+    return _signalingService.listenCall(
+      normalizedCallId,
+    );
   }
 
   // =============================================================
   // PUBLIC IDENTITY -> FIREBASE UID
   // =============================================================
 
-  /// Resolves public identity to one canonical Firebase UID.
-  ///
-  /// Supported by UserDiscoveryService:
-  /// - JR CALL ID
-  /// - username
-  /// - discoverable email
-  /// - discoverable phone
-  /// - name
-  /// - automatic detection
-  ///
-  /// Ambiguous results deliberately return null.
   Future<String?> resolveTargetUid(
-    String publicIdentity, {
-    DiscoverySearchType type = DiscoverySearchType.automatic,
-  }) async {
-    final String value = publicIdentity.trim();
+      String publicIdentity, {
+        DiscoverySearchType type =
+            DiscoverySearchType.automatic,
+      }) async {
+    final String value =
+    publicIdentity.trim();
 
     if (value.isEmpty) {
       return null;
     }
 
-    final DiscoveryPage page = await _discoveryService.search(
+    final DiscoveryPage page =
+    await _discoveryService.search(
       value,
       type: type,
-
-      // Two records are sufficient to prove ambiguity.
       limit: 2,
-
-      // Self-call rejection is also enforced later at
-      // CallService boundary.
       excludeCurrentUser: false,
     );
 
-    if (page.users.length != 1 || page.hasMore) {
+    if (page.users.length != 1 ||
+        page.hasMore) {
       return null;
     }
 
-    return _validatedResolvedUid(page.users.first.uid);
+    return _validatedResolvedUid(
+      page.users.first.uid,
+    );
   }
 
   // =============================================================
   // JR CALL ID
   // =============================================================
 
-  Future<String?> resolveJrCallIdToUid(String jrCallUserId) async {
-    final String value = jrCallUserId.trim();
+  Future<String?> resolveJrCallIdToUid(
+      String jrCallUserId,
+      ) async {
+    final String value =
+    jrCallUserId.trim();
 
     if (value.isEmpty) {
       return null;
     }
 
-    final DiscoveryUser? user = await _discoveryService.searchByJrCallId(
+    final DiscoveryUser? user =
+    await _discoveryService.searchByJrCallId(
       value,
       excludeCurrentUser: false,
     );
 
-    return _validatedResolvedUid(user?.uid);
+    return _validatedResolvedUid(
+      user?.uid,
+    );
   }
 
   // =============================================================
   // USERNAME
   // =============================================================
 
-  Future<String?> resolveUsernameToUid(String username) async {
-    final String value = username.trim();
+  Future<String?> resolveUsernameToUid(
+      String username,
+      ) async {
+    final String value =
+    username.trim();
 
     if (value.isEmpty) {
       return null;
     }
 
-    final DiscoveryUser? user = await _discoveryService.searchByUsername(
+    final DiscoveryUser? user =
+    await _discoveryService.searchByUsername(
       value,
       excludeCurrentUser: false,
     );
 
-    return _validatedResolvedUid(user?.uid);
+    return _validatedResolvedUid(
+      user?.uid,
+    );
   }
 
   // =============================================================
   // EMAIL
   // =============================================================
 
-  Future<String?> resolveEmailToUid(String email) async {
+  Future<String?> resolveEmailToUid(
+      String email,
+      ) async {
     final String value = email.trim();
 
     if (value.isEmpty) {
       return null;
     }
 
-    final DiscoveryUser? user = await _discoveryService.searchByEmail(
+    final DiscoveryUser? user =
+    await _discoveryService.searchByEmail(
       value,
       excludeCurrentUser: false,
     );
 
-    return _validatedResolvedUid(user?.uid);
+    return _validatedResolvedUid(
+      user?.uid,
+    );
   }
 
   // =============================================================
   // PHONE
   // =============================================================
 
-  Future<String?> resolvePhoneToUid(String phoneNumber) async {
-    final String value = phoneNumber.trim();
+  Future<String?> resolvePhoneToUid(
+      String phoneNumber,
+      ) async {
+    final String value =
+    phoneNumber.trim();
 
     if (value.isEmpty) {
       return null;
     }
 
-    final DiscoveryUser? user = await _discoveryService.searchByPhone(
+    final DiscoveryUser? user =
+    await _discoveryService.searchByPhone(
       value,
       excludeCurrentUser: false,
     );
 
-    return _validatedResolvedUid(user?.uid);
+    return _validatedResolvedUid(
+      user?.uid,
+    );
   }
 
   // =============================================================
   // NAME
   // =============================================================
 
-  /// Name resolution is permitted only when exactly one
-  /// discoverable result exists.
-  Future<String?> resolveNameToUid(String fullName) async {
-    final String value = fullName.trim();
+  Future<String?> resolveNameToUid(
+      String fullName,
+      ) async {
+    final String value =
+    fullName.trim();
 
     if (value.isEmpty) {
       return null;
     }
 
-    final DiscoveryPage page = await _discoveryService.searchByName(
+    final DiscoveryPage page =
+    await _discoveryService.searchByName(
       value,
       limit: 2,
       excludeCurrentUser: false,
     );
 
-    if (page.users.length != 1 || page.hasMore) {
+    if (page.users.length != 1 ||
+        page.hasMore) {
       return null;
     }
 
-    return _validatedResolvedUid(page.users.first.uid);
+    return _validatedResolvedUid(
+      page.users.first.uid,
+    );
   }
 
   // =============================================================
   // SELECTED DISCOVERY USER
   // =============================================================
 
-  /// Once the UI user explicitly selected a DiscoveryUser,
-  /// no second name/public-ID lookup is needed.
-  ///
-  /// The resolved Firebase UID from that selected result is the
-  /// correct Call Engine identity.
-  String? uidFromDiscoveryUser(DiscoveryUser user) {
-    return _validatedResolvedUid(user.uid);
+  String? uidFromDiscoveryUser(
+      DiscoveryUser user,
+      ) {
+    return _validatedResolvedUid(
+      user.uid,
+    );
   }
 
   // =============================================================
@@ -435,15 +452,20 @@ class CallRepository {
   // =============================================================
 
   Future<String> requireTargetUid(
-    String publicIdentity, {
-    DiscoverySearchType type = DiscoverySearchType.automatic,
-  }) async {
-    final String? uid = await resolveTargetUid(publicIdentity, type: type);
+      String publicIdentity, {
+        DiscoverySearchType type =
+            DiscoverySearchType.automatic,
+      }) async {
+    final String? uid =
+    await resolveTargetUid(
+      publicIdentity,
+      type: type,
+    );
 
     if (uid == null) {
       throw StateError(
         'JR CALL target could not be uniquely resolved '
-        'to a Firebase UID.',
+            'to a Firebase UID.',
       );
     }
 
@@ -454,22 +476,33 @@ class CallRepository {
   // SAFE READ
   // =============================================================
 
-  /// Existing public API preserved.
-  Future<DocumentSnapshot<Map<String, dynamic>>> getCall(String callId) {
-    final String normalizedCallId = _requireId(callId, 'callId');
+  Future<DocumentSnapshot<Map<String, dynamic>>> getCall(
+      String callId,
+      ) {
+    final String normalizedCallId =
+    _requireDocumentId(
+      callId,
+      'callId',
+    );
 
-    return _calls.doc(normalizedCallId).get();
+    return _calls
+        .doc(normalizedCallId)
+        .get();
   }
 
-  /// Existing public API preserved.
-  Future<bool> callExists(String callId) async {
-    final String normalizedCallId = callId.trim();
+  Future<bool> callExists(
+      String callId,
+      ) async {
+    final String normalizedCallId =
+    callId.trim();
 
-    if (normalizedCallId.isEmpty) {
+    if (normalizedCallId.isEmpty ||
+        normalizedCallId.contains('/')) {
       return false;
     }
 
-    final DocumentSnapshot<Map<String, dynamic>> snapshot = await _calls
+    final DocumentSnapshot<Map<String, dynamic>> snapshot =
+    await _calls
         .doc(normalizedCallId)
         .get();
 
@@ -480,37 +513,72 @@ class CallRepository {
   // CALL MODEL READ
   // =============================================================
 
-  Future<CallModel?> getCallModel(String callId) async {
-    final DocumentSnapshot<Map<String, dynamic>> snapshot = await getCall(
-      callId,
-    );
+  Future<CallModel?> getCallModel(
+      String callId,
+      ) async {
+    final DocumentSnapshot<Map<String, dynamic>> snapshot =
+    await getCall(callId);
 
     if (!snapshot.exists) {
       return null;
     }
 
-    final Map<String, dynamic>? data = snapshot.data();
+    final Map<String, dynamic>? data =
+    snapshot.data();
 
     if (data == null) {
       return null;
     }
 
-    final Map<String, dynamic> normalizedData = Map<String, dynamic>.from(data);
+    final Map<String, dynamic> normalizedData =
+    Map<String, dynamic>.from(data);
 
     normalizedData['callId'] =
-        _readString(normalizedData['callId']) ?? snapshot.id;
+        _readString(
+          normalizedData['callId'],
+        ) ??
+            snapshot.id;
 
-    // Current CallModel uses "video".
-    // SignalingService uses "isVideoCall".
+    normalizedData['callerId'] ??=
+    normalizedData['callerUid'];
+
+    normalizedData['receiverId'] ??=
+        normalizedData['receiverUid'] ??
+            normalizedData['calleeUid'];
+
     if (normalizedData['video'] is! bool) {
-      final bool? video = _readBool(normalizedData['isVideoCall']);
+      final bool? video =
+      _readBool(
+        normalizedData['isVideoCall'],
+      );
 
       if (video != null) {
         normalizedData['video'] = video;
       }
     }
 
-    return CallModel.fromMap(normalizedData);
+    final Object? rawStatus =
+    normalizedData['status'];
+
+    if (rawStatus is String) {
+      final String? canonical =
+      _canonicalStatusOrNull(
+        rawStatus,
+      );
+
+      if (canonical != null) {
+        normalizedData['status'] =
+            canonical;
+      }
+    }
+
+    normalizedData['createdAt'] ??=
+    normalizedData['serverCreatedAt'];
+
+    return CallModel.fromMap(
+      normalizedData,
+      documentId: snapshot.id,
+    );
   }
 
   // =============================================================
@@ -518,53 +586,54 @@ class CallRepository {
   // =============================================================
 
   bool isCurrentUser(String uid) {
-    final String normalizedUid = uid.trim();
+    final String normalizedUid =
+    uid.trim();
 
     if (normalizedUid.isEmpty) {
       return false;
     }
 
-    return _auth.currentUser?.uid == normalizedUid;
+    return _auth.currentUser?.uid ==
+        normalizedUid;
   }
 
-  /// A target is valid only when:
-  /// - target UID exists
-  /// - authenticated user exists
-  /// - target is not current user
   bool isValidCallTargetUid(String uid) {
-    final String normalizedUid = uid.trim();
+    final String normalizedUid =
+    uid.trim();
 
     if (normalizedUid.isEmpty) {
       return false;
     }
 
-    final User? currentUser = _auth.currentUser;
+    final User? currentUser =
+        _auth.currentUser;
 
-    if (currentUser == null) {
+    if (currentUser == null ||
+        currentUser.uid.trim().isEmpty) {
       return false;
     }
 
-    return currentUser.uid != normalizedUid;
+    return currentUser.uid !=
+        normalizedUid;
   }
 
-  // =============================================================
-  // AUTHENTICATED CALL TARGET
-  // =============================================================
+  String requireValidCallTargetUid(
+      String uid,
+      ) {
+    final String normalizedUid =
+    _requireId(
+      uid,
+      'uid',
+    );
 
-  /// Backward-compatible helper added for production call
-  /// boundaries.
-  ///
-  /// Does not change existing APIs.
-  ///
-  /// Throws instead of allowing an unauthenticated/self target to
-  /// enter the Call Engine.
-  String requireValidCallTargetUid(String uid) {
-    final String normalizedUid = _requireId(uid, 'uid');
+    final User currentUser =
+    _requireAuthenticatedUser();
 
-    final User currentUser = _requireAuthenticatedUser();
-
-    if (currentUser.uid == normalizedUid) {
-      throw StateError('JR CALL cannot call the authenticated user.');
+    if (currentUser.uid ==
+        normalizedUid) {
+      throw StateError(
+        'JR CALL cannot call the authenticated user.',
+      );
     }
 
     return normalizedUid;
@@ -574,22 +643,67 @@ class CallRepository {
   // STATUS CONTRACT
   // =============================================================
 
-  static const Set<String> _supportedCallStatuses = <String>{
+  static const Set<String> _supportedCallStatuses =
+  <String>{
     CallRepositoryStatus.calling,
     CallRepositoryStatus.ringing,
+    CallRepositoryStatus.accepted,
+    CallRepositoryStatus.rejected,
+    CallRepositoryStatus.ended,
+    CallRepositoryStatus.missed,
     CallRepositoryStatus.connecting,
     CallRepositoryStatus.connected,
     CallRepositoryStatus.reconnecting,
-    CallRepositoryStatus.ended,
-    CallRepositoryStatus.rejected,
-    CallRepositoryStatus.declined,
+    CallRepositoryStatus.busy,
     CallRepositoryStatus.cancelled,
     CallRepositoryStatus.failed,
+
+    // Legacy aliases accepted on input only.
+    CallRepositoryStatus.declined,
     CallRepositoryStatus.timeout,
+    'timed' 'out',
+    'no' 'answer',
+    'unanswered',
   };
 
-  bool _isSupportedCallStatus(String status) {
-    return _supportedCallStatuses.contains(status.trim().toLowerCase());
+  bool _isSupportedCallStatus(
+      String status,
+      ) {
+    return _supportedCallStatuses.contains(
+      status.trim().toLowerCase(),
+    );
+  }
+
+  String? _canonicalStatusOrNull(
+      String value,
+      ) {
+    final String normalized =
+    value.trim().toLowerCase();
+
+    if (normalized.isEmpty ||
+        !_isSupportedCallStatus(normalized)) {
+      return null;
+    }
+
+    switch (normalized) {
+      case CallRepositoryStatus.declined:
+        return CallStatus.rejected.name;
+
+      case CallRepositoryStatus.timeout:
+      case 'timed' 'out':
+      case 'no' 'answer':
+      case 'unanswered':
+        return CallStatus.missed.name;
+    }
+
+    for (final CallStatus status
+    in CallStatus.values) {
+      if (status.name == normalized) {
+        return status.name;
+      }
+    }
+
+    return null;
   }
 
   // =============================================================
@@ -597,17 +711,25 @@ class CallRepository {
   // =============================================================
 
   User _requireAuthenticatedUser() {
-    final User? user = _auth.currentUser;
+    final User? user =
+        _auth.currentUser;
 
-    if (user == null || user.uid.trim().isEmpty) {
-      throw StateError('Authentication is required for JR CALL.');
+    if (user == null ||
+        user.uid.trim().isEmpty) {
+      throw StateError(
+        'Authentication is required for JR CALL.',
+      );
     }
 
     return user;
   }
 
-  String _requireId(String value, String parameterName) {
-    final String normalized = value.trim();
+  String _requireId(
+      String value,
+      String parameterName,
+      ) {
+    final String normalized =
+    value.trim();
 
     if (normalized.isEmpty) {
       throw ArgumentError.value(
@@ -620,8 +742,32 @@ class CallRepository {
     return normalized;
   }
 
-  String? _validatedResolvedUid(String? uid) {
-    final String normalized = uid?.trim() ?? '';
+  String _requireDocumentId(
+      String value,
+      String parameterName,
+      ) {
+    final String normalized =
+    _requireId(
+      value,
+      parameterName,
+    );
+
+    if (normalized.contains('/')) {
+      throw ArgumentError.value(
+        value,
+        parameterName,
+        '$parameterName must be a single Firestore document ID.',
+      );
+    }
+
+    return normalized;
+  }
+
+  String? _validatedResolvedUid(
+      String? uid,
+      ) {
+    final String normalized =
+        uid?.trim() ?? '';
 
     if (normalized.isEmpty) {
       return null;
@@ -630,17 +776,24 @@ class CallRepository {
     return normalized;
   }
 
-  String? _readString(Object? value) {
+  String? _readString(
+      Object? value,
+      ) {
     if (value is! String) {
       return null;
     }
 
-    final String normalized = value.trim();
+    final String normalized =
+    value.trim();
 
-    return normalized.isEmpty ? null : normalized;
+    return normalized.isEmpty
+        ? null
+        : normalized;
   }
 
-  bool? _readBool(Object? value) {
+  bool? _readBool(
+      Object? value,
+      ) {
     if (value is bool) {
       return value;
     }
@@ -676,42 +829,29 @@ class CallRepository {
 }
 
 // ===============================================================
-// INTERNAL REPOSITORY STATUS CONSTANTS
-//
-// Kept private to this repository architecture except for the
-// class itself; no Call Engine status API is replaced.
+// REPOSITORY STATUS COMPATIBILITY CONSTANTS
 // ===============================================================
 
 abstract final class CallRepositoryStatus {
   static const String calling = 'calling';
   static const String ringing = 'ringing';
+  static const String accepted = 'accepted';
+  static const String rejected = 'rejected';
+  static const String ended = 'ended';
+  static const String missed = 'missed';
   static const String connecting = 'connecting';
   static const String connected = 'connected';
   static const String reconnecting = 'reconnecting';
-
-  static const String ended = 'ended';
-  static const String rejected = 'rejected';
-  static const String declined = 'declined';
+  static const String busy = 'busy';
   static const String cancelled = 'cancelled';
   static const String failed = 'failed';
+
+  static const String declined = 'declined';
   static const String timeout = 'timeout';
 }
 
 // ===============================================================
 // END OF FILE
-//
-// FIXED:
-// - BUG 03: resolved Firebase UID boundary hardened
-// - BUG 04: history/lifecycle identity compatibility protected
-// - BUG 07: voice-call target/session creation boundary hardened
-// - BUG 08: video-call target/type creation boundary hardened
-// - Firestore CREATE status/rules mismatch corrected
-// - Self-call / unauthenticated call protection hardened
-// - Ambiguous public-name calling prevented
-// - Duplicate compatible creation remains idempotent
-//
-// STATUS: READY FOR FORMAT + ANALYZE
-//
-// NEXT FILE: signaling_service.dart
-// Location: lib/services/call/signaling_service.dart
+// STATUS: FILE 06 CORRECTED VERIFICATION VERSION
+// NEXT: lib/services/call/call_security.dart
 // ===============================================================

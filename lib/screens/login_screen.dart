@@ -3,18 +3,95 @@
 // File: login_screen.dart
 // Location: lib/screens/login_screen.dart
 //
+// OTP / AUTH MASTER FILE 04 / 09
+//
+// GLOBAL PRODUCTION LOGIN SCREEN
+//
+// LANGUAGE CONTRACT:
+//
+// - All production user-facing text in this file is English.
+// - No hard-coded Bengali or mixed-language production messages.
+// - Full multilingual localization can be added later through the
+//   centralized JR CALL localization/i18n system.
+//
 // GUEST MODE:
+//
 // - Login is optional for browsing JR CALL.
 // - Protected actions may open this screen with guestReturn=true.
 // - Successful direct login returns to the protected caller when possible.
-// - Email: Password -> Firebase -> JR CALL Email OTP.
-// - Phone: Existing account -> Firebase SMS OTP.
-// - No fake/local OTP.
+//
+// FINAL LOGIN CONTRACT:
+//
+// EMAIL LOGIN:
+//
+// Email + Password
+//      ↓
+// Firebase Authentication
+//      ↓
+// Existing JR CALL Profile
+//      ↓
+// Login Complete
+//
+// IMPORTANT:
+//
+// ✓ NO Email OTP during normal Email Login.
+// ✓ NO Email verification requirement during normal Email Login.
+// ✓ Email + Password must belong to an existing Firebase/JR CALL account.
+//
+// PHONE LOGIN:
+//
+// Phone Number
+//      ↓
+// LoginOtpManager
+//      ↓
+// AuthService
+//      ↓
+// Firebase Phone Authentication
+//      ↓
+// SMS OTP / automatic verification
+//      ↓
+// Firebase UID
+//
+// IMPORTANT:
+//
+// ✓ Phone Login always requires Firebase Phone verification.
+// ✓ Phone Login does NOT require a password.
+// ✓ A Phone password can never bypass Phone OTP.
+// ✓ NO phoneAccountExists() pre-login blocker.
+// ✓ NO fake/local OTP.
+// ✓ NO OTP persistence.
+// ✓ NO Play Integrity/reCAPTCHA bypass.
+//
+// AUTHORITY:
+//
+// ✓ Firebase Authentication is the authentication authority.
+// ✓ A successfully authenticated Firebase Phone user is never
+//   signed out merely because a nested route returned null/false.
+// ✓ Blocked/deleted account protection remains intact.
+// ✓ Existing legitimate sessions are never revoked by route cleanup.
+//
+// GLOBAL PHONE SUPPORT:
+//
+// ✓ IntlPhoneField keeps the international country selector.
+// ✓ E.164 international Phone Numbers are supported.
+// ✓ Device locale is used only for the initial country selection.
+// ✓ Users can manually select any supported country.
+//
+// PASSWORD RECOVERY:
+//
+// Existing ForgotPasswordScreen flow remains unchanged.
+//
+// PROTECTED:
+//
+// ✓ Call Engine untouched.
+// ✓ Message Engine untouched.
+// ✓ WebRTC untouched.
+// ✓ Signaling untouched.
+//
 // ===============================================================
 
 import 'dart:async';
 
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -25,12 +102,23 @@ import '../core/theme/jr_typography.dart';
 import '../models/user_model.dart';
 import '../services/auth_service.dart';
 import '../services/firebase/firestore_service.dart';
+import '../services/profile_service.dart';
 import 'create_account_screen.dart';
+import 'create_profile_setup_screen.dart';
 import 'forgot_password_screen.dart';
 import 'home_screen.dart';
+import 'login_otp_manager.dart';
 import 'otp_screen.dart';
 
+// ===============================================================
+// LOGIN METHOD
+// ===============================================================
+
 enum _LoginMethod { email, phone }
+
+// ===============================================================
+// LOGIN SCREEN
+// ===============================================================
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -39,32 +127,117 @@ class LoginScreen extends StatefulWidget {
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
+// ===============================================================
+// LOGIN SCREEN STATE
+// ===============================================================
+
 class _LoginScreenState extends State<LoginScreen> {
+  // =============================================================
+  // SERVICES
+  // =============================================================
+
   final AuthService _authService = AuthService.instance;
+
   final FirestoreService _firestoreService = FirestoreService.instance;
 
+  final ProfileService _profileService = ProfileService.instance;
+
+  late final LoginOtpManager _loginOtpManager;
+
+  // =============================================================
+  // CONTROLLERS
+  // =============================================================
+
   final TextEditingController _emailController = TextEditingController();
+
   final TextEditingController _passwordController = TextEditingController();
+
   final TextEditingController _phoneController = TextEditingController();
 
+  // =============================================================
+  // FOCUS NODES
+  // =============================================================
+
   final FocusNode _emailFocus = FocusNode();
+
   final FocusNode _passwordFocus = FocusNode();
+
   final FocusNode _phoneFocus = FocusNode();
+
+  // =============================================================
+  // LOGIN STATE
+  // =============================================================
 
   _LoginMethod _method = _LoginMethod.email;
 
   String _completePhoneNumber = '';
+
   String? _requestedAction;
 
   bool _guestReturn = false;
+
   bool _routeArgumentsResolved = false;
+
   bool _loading = false;
+
   bool _showPassword = false;
+
   bool _otpRouteRunning = false;
+
   bool _automaticPhoneVerificationRunning = false;
 
-  bool get _busy =>
-      _loading || _otpRouteRunning || _automaticPhoneVerificationRunning;
+  LoginOtpResult? _pendingAutomaticPhoneResult;
+
+  // =============================================================
+  // BUSY STATE
+  // =============================================================
+
+  bool get _busy {
+    return _loading ||
+        _otpRouteRunning ||
+        _automaticPhoneVerificationRunning ||
+        _loginOtpManager.isBusy;
+  }
+
+  // =============================================================
+  // GLOBAL INITIAL COUNTRY
+  //
+  // Uses the device locale only as an initial convenience.
+  //
+  // This does NOT restrict the country selector.
+  // =============================================================
+
+  String get _initialCountryCode {
+    final String rawCode =
+        WidgetsBinding.instance.platformDispatcher.locale.countryCode
+            ?.trim()
+            .toUpperCase() ??
+        '';
+
+    if (RegExp(r'^[A-Z]{2}$').hasMatch(rawCode)) {
+      return rawCode;
+    }
+
+    return 'US';
+  }
+
+  // =============================================================
+  // INIT
+  // =============================================================
+
+  @override
+  void initState() {
+    super.initState();
+
+    _loginOtpManager = LoginOtpManager(
+      authService: _authService,
+      firestoreService: _firestoreService,
+    );
+  }
+
+  // =============================================================
+  // ROUTE ARGUMENTS
+  // =============================================================
 
   @override
   void didChangeDependencies() {
@@ -93,8 +266,14 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  // =============================================================
+  // DISPOSE
+  // =============================================================
+
   @override
   void dispose() {
+    _loginOtpManager.cancel();
+
     _emailController.dispose();
     _passwordController.dispose();
     _phoneController.dispose();
@@ -119,13 +298,26 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (_method == _LoginMethod.email) {
       await _loginWithEmail();
-    } else {
-      await _loginWithPhone();
+      return;
     }
+
+    await _loginWithPhone();
   }
 
   // =============================================================
   // EMAIL LOGIN
+  //
+  // FINAL CONTRACT:
+  //
+  // Email + Password
+  //      ↓
+  // Firebase signInWithEmailAndPassword()
+  //      ↓
+  // Existing JR CALL profile
+  //      ↓
+  // Login complete
+  //
+  // NO Email OTP.
   // =============================================================
 
   Future<void> _loginWithEmail() async {
@@ -134,15 +326,18 @@ class _LoginScreenState extends State<LoginScreen> {
     }
 
     final String email = _normalizeEmail(_emailController.text);
+
     final String password = _passwordController.text;
 
     if (!_isValidEmail(email)) {
-      _showMessage('সঠিক Email Address দিন।');
+      _showMessage('Enter a valid email address.');
+
       return;
     }
 
     if (password.isEmpty) {
-      _showMessage('Password দিন।');
+      _showMessage('Enter your password.');
+
       return;
     }
 
@@ -156,18 +351,38 @@ class _LoginScreenState extends State<LoginScreen> {
 
       final User? user = credential.user ?? _authService.currentUser;
 
-      if (user == null) {
-        throw StateError('Authenticated Firebase user পাওয়া যায়নি।');
+      if (user == null || user.uid.trim().isEmpty) {
+        throw StateError('The authenticated Firebase user is unavailable.');
       }
 
       signedIn = true;
+
+      // ---------------------------------------------------------
+      // EMAIL LOGIN IS FOR AN EXISTING JR CALL ACCOUNT.
+      //
+      // Account creation remains Phone-owned.
+      //
+      // A Firebase Email user without users/{uid} must NOT silently
+      // become a new JR CALL account from the Login screen.
+      // ---------------------------------------------------------
 
       final UserModel profile = await _requireExistingProfile(user.uid);
 
       _assertProfileCanLogin(profile);
 
-      final EmailOtpChallenge challenge = await _authService.sendEmailLoginOtp(
-        email: email,
+      // ---------------------------------------------------------
+      // PRESERVE EXISTING PROFILE.
+      //
+      // Synchronize authentication-owned metadata only.
+      // ---------------------------------------------------------
+
+      await _firestoreService.syncAuthenticationProfile(
+        uid: user.uid,
+        email: user.email,
+        phoneNumber: user.phoneNumber,
+        emailVerified: user.emailVerified,
+        phoneVerified: user.phoneNumber?.trim().isNotEmpty ?? false,
+        signInProviders: _authService.linkedProviderIds,
       );
 
       if (!mounted) {
@@ -178,32 +393,20 @@ class _LoginScreenState extends State<LoginScreen> {
 
       _setLoading(false);
 
-      final bool verified = await _openOtpScreen(
-        verificationId: challenge.challengeId,
-        phoneNumber: '',
-        email: email,
-        provider: 'email_login',
-        mode: 'emailLogin',
-      );
+      // ---------------------------------------------------------
+      // DIRECT SUCCESS.
+      //
+      // NO sendEmailLoginOtp().
+      // NO Email OtpScreen.
+      // ---------------------------------------------------------
 
-      if (!verified &&
-          mounted &&
-          _authService.currentUser != null &&
-          !_guestReturn) {
-        await _safeSignOut();
-      }
+      _finishSuccessfulLogin();
     } on FirebaseAuthException catch (error) {
       if (signedIn) {
         await _safeSignOut();
       }
 
       _showMessage(_firebaseAuthMessage(error));
-    } on FirebaseFunctionsException catch (error) {
-      if (signedIn) {
-        await _safeSignOut();
-      }
-
-      _showMessage(_functionsMessage(error));
     } on StateError catch (error) {
       if (signedIn) {
         await _safeSignOut();
@@ -219,7 +422,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
       debugPrintStack(label: 'JR CALL Email Login', stackTrace: stackTrace);
 
-      _showMessage('Login সম্পন্ন করা যায়নি। আবার চেষ্টা করুন।');
+      _showMessage('Login could not be completed. Please try again.');
     } finally {
       if (mounted && !_otpRouteRunning) {
         _setLoading(false);
@@ -229,6 +432,10 @@ class _LoginScreenState extends State<LoginScreen> {
 
   // =============================================================
   // PHONE LOGIN
+  //
+  // Phone OTP implementation is owned by LoginOtpManager.
+  //
+  // Phone Login ALWAYS enters Firebase Phone verification.
   // =============================================================
 
   Future<void> _loginWithPhone() async {
@@ -243,46 +450,38 @@ class _LoginScreenState extends State<LoginScreen> {
         : _normalizePhone(_completePhoneNumber);
 
     if (localNumber.isEmpty || !_isValidE164Phone(phoneNumber)) {
-      _showMessage('Country code সহ সঠিক Phone Number দিন।');
+      _showMessage('Enter a valid phone number with the correct country code.');
+
       return;
     }
+
+    _pendingAutomaticPhoneResult = null;
 
     _setLoading(true);
 
     try {
-      final bool exists = await _authService.phoneAccountExists(
+      await _loginOtpManager.startPhoneLogin(
         phoneNumber: phoneNumber,
-      );
 
-      if (!exists) {
-        _showMessage(
-          'এই Phone Number-এর JR CALL account পাওয়া যায়নি। Create Account ব্যবহার করুন।',
-        );
-        return;
-      }
-
-      await _authService.verifyPhoneNumber(
-        phoneNumber: phoneNumber,
-        verificationCompleted: (PhoneAuthCredential credential) {
-          unawaited(
-            _handleAutomaticPhoneVerification(
-              credential: credential,
-              phoneNumber: phoneNumber,
-            ),
-          );
-        },
-        verificationFailed: (FirebaseAuthException error) {
-          if (!mounted) {
+        // -------------------------------------------------------
+        // MANUAL OTP
+        // -------------------------------------------------------
+        onCodeSent: (String verificationId) {
+          if (!mounted ||
+              _automaticPhoneVerificationRunning ||
+              _pendingAutomaticPhoneResult != null) {
             return;
           }
 
-          _setLoading(false);
-          _showMessage(_firebaseAuthMessage(error));
-        },
-        codeSent: (String verificationId) {
-          if (!mounted ||
-              _otpRouteRunning ||
-              _automaticPhoneVerificationRunning) {
+          final String cleanVerificationId = verificationId.trim();
+
+          if (cleanVerificationId.isEmpty) {
+            _setLoading(false);
+
+            _showMessage(
+              'The OTP verification session is unavailable. Request a new code.',
+            );
+
             return;
           }
 
@@ -290,25 +489,55 @@ class _LoginScreenState extends State<LoginScreen> {
 
           unawaited(
             _handleManualPhoneOtp(
-              verificationId: verificationId,
+              verificationId: cleanVerificationId,
               phoneNumber: phoneNumber,
             ),
           );
         },
-        codeAutoRetrievalTimeout: (String verificationId) {
-          if (mounted &&
-              !_otpRouteRunning &&
-              !_automaticPhoneVerificationRunning) {
+
+        // -------------------------------------------------------
+        // AUTOMATIC FIREBASE PHONE VERIFICATION
+        // -------------------------------------------------------
+        onAutomaticVerified: (LoginOtpResult result) {
+          if (!mounted) {
+            return;
+          }
+
+          unawaited(_receiveAutomaticPhoneResult(result));
+        },
+
+        // -------------------------------------------------------
+        // FAILURE
+        // -------------------------------------------------------
+        onVerificationFailed: (FirebaseAuthException error) {
+          if (!mounted) {
+            return;
+          }
+
+          _setLoading(false);
+
+          _showMessage(_firebaseAuthMessage(error));
+        },
+
+        // -------------------------------------------------------
+        // AUTO RETRIEVAL TIMEOUT
+        //
+        // Manual OTP remains valid.
+        // -------------------------------------------------------
+        onAutoRetrievalTimeout: (String verificationId) {
+          if (!mounted || _automaticPhoneVerificationRunning) {
+            return;
+          }
+
+          if (!_otpRouteRunning) {
             _setLoading(false);
           }
         },
       );
-    } on FirebaseFunctionsException catch (error) {
-      _showMessage(_functionsMessage(error));
     } on FirebaseAuthException catch (error) {
       _showMessage(_firebaseAuthMessage(error));
     } on ArgumentError catch (error) {
-      _showMessage(error.message?.toString() ?? 'Invalid Phone Number.');
+      _showMessage(error.message?.toString() ?? 'The phone number is invalid.');
     } on StateError catch (error) {
       _showMessage(error.message);
     } catch (error, stackTrace) {
@@ -316,9 +545,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
       debugPrintStack(label: 'JR CALL Phone Login', stackTrace: stackTrace);
 
-      _showMessage('Phone verification শুরু করা যায়নি।');
+      _showMessage(
+        'Phone verification could not be started. Please try again.',
+      );
     } finally {
-      if (mounted && !_otpRouteRunning && !_automaticPhoneVerificationRunning) {
+      if (mounted &&
+          !_otpRouteRunning &&
+          !_automaticPhoneVerificationRunning &&
+          !_loginOtpManager.isBusy) {
         _setLoading(false);
       }
     }
@@ -326,100 +560,215 @@ class _LoginScreenState extends State<LoginScreen> {
 
   // =============================================================
   // MANUAL PHONE OTP
+  //
+  // IMPORTANT:
+  //
+  // Firebase Authentication is authoritative.
+  //
+  // A nested OTP/Profile route returning null/false must NEVER
+  // destroy a valid Firebase Phone session.
   // =============================================================
 
   Future<void> _handleManualPhoneOtp({
     required String verificationId,
     required String phoneNumber,
   }) async {
-    final bool verified = await _openOtpScreen(
+    if (!mounted || _otpRouteRunning || _automaticPhoneVerificationRunning) {
+      return;
+    }
+
+    final bool verified = await _openPhoneOtpScreen(
       verificationId: verificationId,
       phoneNumber: phoneNumber,
-      email: '',
-      provider: 'phone_login',
-      mode: 'phoneLogin',
     );
 
     if (!mounted) {
       return;
     }
 
-    if (verified) {
-      _finishSuccessfulLogin();
+    // -----------------------------------------------------------
+    // AUTOMATIC VERIFICATION MAY HAVE FINISHED WHILE THE MANUAL
+    // OTP SCREEN WAS OPEN.
+    // -----------------------------------------------------------
+
+    final LoginOtpResult? automaticResult = _takePendingAutomaticPhoneResult();
+
+    if (automaticResult != null) {
+      await _handleAutomaticPhoneResult(automaticResult);
+
       return;
     }
 
-    if (!_guestReturn && _authService.currentUser != null) {
-      await _safeSignOut();
+    // -----------------------------------------------------------
+    // OtpScreen reported explicit success.
+    //
+    // OtpScreen owns successful manual Phone OTP routing.
+    // -----------------------------------------------------------
+
+    if (verified) {
+      return;
     }
+
+    // -----------------------------------------------------------
+    // ROUTE RESULT WAS FALSE / NULL.
+    //
+    // OLD BROKEN BEHAVIOR:
+    //
+    // Any existing Firebase currentUser was signed out here.
+    //
+    // CORRECT PRODUCTION BEHAVIOR:
+    //
+    // A valid Firebase session remains authoritative.
+    //
+    // If Firebase currently holds the exact Phone identity that
+    // this login attempt requested, authentication has already
+    // succeeded and the session must be preserved.
+    // -----------------------------------------------------------
+
+    final User? authenticatedUser = _authService.currentUser;
+
+    if (authenticatedUser == null || authenticatedUser.uid.trim().isEmpty) {
+      // Genuine cancelled/incomplete authentication.
+      return;
+    }
+
+    final String authenticatedPhone = _normalizePhone(
+      authenticatedUser.phoneNumber ?? '',
+    );
+
+    if (authenticatedPhone.isEmpty || authenticatedPhone != phoneNumber) {
+      // Never sign out an unrelated legitimate Firebase session.
+      return;
+    }
+
+    // -----------------------------------------------------------
+    // Firebase has an authenticated user for the exact requested
+    // Phone Number.
+    //
+    // Preserve the authenticated session and complete login.
+    // -----------------------------------------------------------
+
+    _finishSuccessfulLogin();
   }
 
   // =============================================================
-  // AUTOMATIC PHONE OTP
+  // AUTOMATIC PHONE RESULT
   // =============================================================
 
-  Future<void> _handleAutomaticPhoneVerification({
-    required PhoneAuthCredential credential,
-    required String phoneNumber,
-  }) async {
-    if (_automaticPhoneVerificationRunning || _otpRouteRunning) {
+  Future<void> _receiveAutomaticPhoneResult(LoginOtpResult result) async {
+    if (!mounted) {
+      return;
+    }
+
+    _pendingAutomaticPhoneResult = result;
+
+    // -----------------------------------------------------------
+    // IF MANUAL OTP SCREEN IS OPEN:
+    //
+    // Close it and process the automatic Firebase result here.
+    // -----------------------------------------------------------
+
+    if (_otpRouteRunning) {
+      final NavigatorState navigator = Navigator.of(context);
+
+      if (navigator.canPop()) {
+        navigator.pop<bool>(true);
+      }
+
+      return;
+    }
+
+    final LoginOtpResult? pending = _takePendingAutomaticPhoneResult();
+
+    if (pending == null) {
+      return;
+    }
+
+    await _handleAutomaticPhoneResult(pending);
+  }
+
+  // =============================================================
+  // TAKE PENDING AUTOMATIC RESULT
+  // =============================================================
+
+  LoginOtpResult? _takePendingAutomaticPhoneResult() {
+    final LoginOtpResult? result = _pendingAutomaticPhoneResult;
+
+    _pendingAutomaticPhoneResult = null;
+
+    return result;
+  }
+
+  // =============================================================
+  // HANDLE AUTOMATIC PHONE RESULT
+  // =============================================================
+
+  Future<void> _handleAutomaticPhoneResult(LoginOtpResult result) async {
+    if (!mounted || _automaticPhoneVerificationRunning) {
       return;
     }
 
     _automaticPhoneVerificationRunning = true;
 
-    if (mounted) {
-      _setLoading(true);
-    }
+    _setLoading(true);
 
     try {
-      final UserCredential result = await _authService
-          .signInWithPhoneCredential(credential);
+      // ---------------------------------------------------------
+      // EXISTING JR CALL ACCOUNT
+      // ---------------------------------------------------------
 
-      final User? user = result.user ?? _authService.currentUser;
+      if (result.hasExistingProfile) {
+        _finishSuccessfulLogin();
 
-      if (user == null) {
-        throw StateError('Authenticated Firebase user পাওয়া যায়নি।');
-      }
-
-      if (result.additionalUserInfo?.isNewUser == true) {
-        try {
-          await user.delete();
-        } catch (error) {
-          debugPrint('JR CALL temporary Phone user cleanup failed: $error');
-
-          await _safeSignOut();
-        }
-
-        throw StateError(
-          'এই Phone Number-এর existing JR CALL account পাওয়া যায়নি।',
-        );
-      }
-
-      final UserModel profile = await _requireExistingProfile(user.uid);
-
-      _assertProfileCanLogin(profile);
-
-      await _syncPhoneProfile(
-        user: user,
-        phoneNumber: phoneNumber,
-        profile: profile,
-      );
-
-      if (!mounted) {
         return;
       }
 
-      _finishSuccessfulLogin();
+      // ---------------------------------------------------------
+      // NEW FIREBASE PHONE ACCOUNT
+      //
+      // Phone has already been verified by Firebase.
+      //
+      // Create the minimum JR CALL profile identity and then open
+      // optional Profile Setup.
+      // ---------------------------------------------------------
+
+      if (result.requiresProfileSetup) {
+        await _profileService.ensureCurrentProfile(generateJrCallUserId: true);
+
+        if (!mounted) {
+          return;
+        }
+
+        await _openNewPhoneProfileSetup();
+
+        if (!mounted) {
+          return;
+        }
+
+        // -------------------------------------------------------
+        // Profile Setup may simply return to LoginScreen.
+        //
+        // If the exact authenticated Firebase UID is still active,
+        // login is complete.
+        // -------------------------------------------------------
+
+        final User? currentUser = _authService.currentUser;
+
+        if (currentUser != null &&
+            currentUser.uid.trim().isNotEmpty &&
+            currentUser.uid.trim() == result.user.uid.trim()) {
+          _finishSuccessfulLogin();
+        }
+
+        return;
+      }
+
+      throw StateError('The Phone authentication state is invalid.');
     } on FirebaseAuthException catch (error) {
-      await _safeSignOut();
       _showMessage(_firebaseAuthMessage(error));
     } on StateError catch (error) {
-      await _safeSignOut();
       _showMessage(error.message);
     } catch (error, stackTrace) {
-      await _safeSignOut();
-
       debugPrint('JR CALL automatic Phone Login error: $error');
 
       debugPrintStack(
@@ -428,7 +777,7 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
       _showMessage(
-        'Automatic verification সম্পন্ন হয়নি। SMS OTP ব্যবহার করুন।',
+        'Phone verification could not be completed. Please try again.',
       );
     } finally {
       _automaticPhoneVerificationRunning = false;
@@ -440,15 +789,30 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   // =============================================================
-  // OTP SCREEN
+  // NEW PHONE PROFILE SETUP
   // =============================================================
 
-  Future<bool> _openOtpScreen({
+  Future<void> _openNewPhoneProfileSetup() async {
+    if (!mounted) {
+      return;
+    }
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) => const CreateProfileSetupScreen(),
+      ),
+    );
+  }
+
+  // =============================================================
+  // PHONE OTP SCREEN
+  //
+  // Normal Email Login NEVER enters this route.
+  // =============================================================
+
+  Future<bool> _openPhoneOtpScreen({
     required String verificationId,
     required String phoneNumber,
-    required String email,
-    required String provider,
-    required String mode,
   }) async {
     if (!mounted || _otpRouteRunning) {
       return false;
@@ -461,9 +825,7 @@ class _LoginScreenState extends State<LoginScreen> {
         MaterialPageRoute<bool>(
           settings: RouteSettings(
             arguments: <String, dynamic>{
-              'mode': mode,
-              if (mode.startsWith('email'))
-                'emailOtpChallengeId': verificationId,
+              'mode': 'phoneLogin',
               'guestReturn': _guestReturn,
               if (_requestedAction != null) 'requestedAction': _requestedAction,
             },
@@ -471,8 +833,8 @@ class _LoginScreenState extends State<LoginScreen> {
           builder: (BuildContext context) => OtpScreen(
             verificationId: verificationId,
             phoneNumber: phoneNumber,
-            email: email,
-            provider: provider,
+            email: '',
+            provider: 'phone_login',
           ),
         ),
       );
@@ -484,56 +846,35 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   // =============================================================
-  // PROFILE VALIDATION / SYNC
+  // PROFILE VALIDATION
   // =============================================================
 
   Future<UserModel> _requireExistingProfile(String uid) async {
-    final UserModel? profile = await _firestoreService.getUser(uid);
+    final String normalizedUid = uid.trim();
+
+    if (normalizedUid.isEmpty) {
+      throw StateError('The authenticated Firebase UID is unavailable.');
+    }
+
+    final UserModel? profile = await _firestoreService.getUser(normalizedUid);
 
     if (profile == null) {
-      throw StateError('এই account-এর JR CALL profile পাওয়া যায়নি।');
+      throw StateError(
+        'This Firebase account is not linked to an existing JR CALL profile.',
+      );
     }
 
     return profile;
   }
 
+  // =============================================================
+  // PROFILE LOGIN PERMISSION
+  // =============================================================
+
   void _assertProfileCanLogin(UserModel profile) {
     if (profile.isDeleted || profile.isBlocked) {
-      throw StateError('এই JR CALL account বর্তমানে ব্যবহার করা যাবে না।');
+      throw StateError('This JR CALL account is currently unavailable.');
     }
-  }
-
-  Future<void> _syncPhoneProfile({
-    required User user,
-    required String phoneNumber,
-    required UserModel profile,
-  }) async {
-    final DateTime now = DateTime.now();
-
-    final String resolvedPhone = user.phoneNumber?.trim().isNotEmpty == true
-        ? user.phoneNumber!.trim()
-        : phoneNumber;
-
-    await _firestoreService.updateUser(
-      profile.copyWith(
-        phone: resolvedPhone,
-        email: user.email ?? profile.email,
-        online: true,
-        verified: true,
-        updatedAt: now,
-        lastSeen: now,
-        lastLogin: now,
-      ),
-    );
-
-    await _firestoreService.syncAuthenticationProfile(
-      uid: user.uid,
-      email: user.email,
-      phoneNumber: resolvedPhone,
-      emailVerified: user.emailVerified,
-      phoneVerified: true,
-      signInProviders: _authService.linkedProviderIds,
-    );
   }
 
   // =============================================================
@@ -545,10 +886,21 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
+    // -----------------------------------------------------------
+    // PROTECTED ACTION LOGIN
+    //
+    // Return to caller.
+    // -----------------------------------------------------------
+
     if (_guestReturn && Navigator.of(context).canPop()) {
       Navigator.of(context).pop<bool>(true);
+
       return;
     }
+
+    // -----------------------------------------------------------
+    // NORMAL LOGIN
+    // -----------------------------------------------------------
 
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute<void>(
@@ -559,7 +911,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   // =============================================================
-  // GUEST / CREATE / PASSWORD
+  // CONTINUE AS GUEST
   // =============================================================
 
   void _continueAsGuest() {
@@ -569,6 +921,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (Navigator.of(context).canPop()) {
       Navigator.of(context).pop<bool>(false);
+
       return;
     }
 
@@ -579,6 +932,12 @@ class _LoginScreenState extends State<LoginScreen> {
       (Route<dynamic> route) => false,
     );
   }
+
+  // =============================================================
+  // FORGOT PASSWORD
+  //
+  // Recovery flow remains separate from normal Email Login.
+  // =============================================================
 
   Future<void> _openForgotPassword() async {
     if (_busy) {
@@ -591,13 +950,23 @@ class _LoginScreenState extends State<LoginScreen> {
         ? _emailController.text.trim()
         : '';
 
-    await Navigator.of(context).push(
+    await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (BuildContext context) =>
             ForgotPasswordScreen(initialValue: initialEmail),
       ),
     );
   }
+
+  // =============================================================
+  // CREATE ACCOUNT
+  //
+  // Phone-required account creation is owned by:
+  //
+  // CreateAccountScreen
+  // CreateAccountOtpManager
+  // AuthService
+  // =============================================================
 
   Future<void> _openCreateAccount() async {
     if (_busy) {
@@ -606,7 +975,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     FocusScope.of(context).unfocus();
 
-    await Navigator.of(context).push(
+    await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         settings: RouteSettings(
           arguments: <String, dynamic>{
@@ -620,7 +989,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   // =============================================================
-  // METHOD
+  // SELECT LOGIN METHOD
   // =============================================================
 
   void _selectMethod(_LoginMethod method) {
@@ -636,19 +1005,48 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   // =============================================================
-  // VALIDATION
+  // EMAIL NORMALIZATION
   // =============================================================
 
-  String _normalizeEmail(String value) => value.trim().toLowerCase();
+  String _normalizeEmail(String value) {
+    return value.trim().toLowerCase();
+  }
 
-  String _normalizePhone(String value) =>
-      value.trim().replaceAll(RegExp(r'[\s\-()]'), '');
+  // =============================================================
+  // PHONE NORMALIZATION
+  // =============================================================
 
-  bool _isValidEmail(String value) =>
-      RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(value);
+  String _normalizePhone(String value) {
+    return value.trim().replaceAll(RegExp(r'[\s\-()]'), '');
+  }
 
-  bool _isValidE164Phone(String value) =>
-      RegExp(r'^\+[1-9]\d{7,14}$').hasMatch(value);
+  // =============================================================
+  // EMAIL VALIDATION
+  // =============================================================
+
+  bool _isValidEmail(String value) {
+    return RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(value);
+  }
+
+  // =============================================================
+  // E.164 PHONE VALIDATION
+  // =============================================================
+
+  bool _isValidE164Phone(String value) {
+    return RegExp(r'^\+[1-9]\d{7,14}$').hasMatch(value);
+  }
+
+  // =============================================================
+  // SAFE SIGN OUT
+  //
+  // IMPORTANT:
+  //
+  // This method remains available for genuine rejected account
+  // states and Email Login cleanup.
+  //
+  // It is NEVER called merely because an OTP route returned
+  // false/null.
+  // =============================================================
 
   Future<void> _safeSignOut() async {
     try {
@@ -659,87 +1057,72 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   // =============================================================
-  // ERROR TEXT
+  // FIREBASE AUTH ERROR TEXT
   // =============================================================
 
   String _firebaseAuthMessage(FirebaseAuthException error) {
     switch (error.code) {
       case 'invalid-credential':
       case 'wrong-password':
-        return 'Email অথবা Password সঠিক নয়।';
+        return 'The email address or password is incorrect.';
 
       case 'user-not-found':
-        return 'এই Email-এর JR CALL account পাওয়া যায়নি।';
+        return 'No JR CALL account was found for this email address.';
 
       case 'invalid-email':
-        return 'Email Address সঠিক নয়।';
+        return 'The email address is invalid.';
 
       case 'user-disabled':
-        return 'এই account disable করা হয়েছে।';
+        return 'This account has been disabled.';
 
       case 'invalid-phone-number':
-        return 'Phone Number সঠিক নয়।';
+        return 'The phone number is invalid.';
+
+      case 'invalid-verification-code':
+        return 'The verification code is incorrect.';
+
+      case 'invalid-verification-id':
+        return 'The verification session is invalid. Request a new OTP.';
 
       case 'operation-not-allowed':
-        return 'এই Login method Firebase-এ enabled নয়।';
+        return 'This sign-in method is not enabled in Firebase.';
 
       case 'too-many-requests':
-        return 'অনেকবার চেষ্টা করা হয়েছে। কিছুক্ষণ পরে আবার চেষ্টা করুন।';
+        return 'Too many attempts were made. Please try again later.';
 
       case 'quota-exceeded':
-        return 'OTP service quota শেষ হয়েছে।';
+        return 'The OTP service quota has been reached. Please try again later.';
 
       case 'network-request-failed':
-        return 'Internet connection check করুন।';
+        return 'A network connection could not be established. Check your internet connection.';
 
       case 'app-not-authorized':
-        return 'Firebase application configuration verify করুন।';
+        return 'This application is not authorized for Firebase Authentication.';
 
       case 'invalid-app-credential':
-        return 'Firebase এই application verify করতে পারেনি।';
+        return 'Firebase could not verify this application.';
 
       case 'captcha-check-failed':
-        return 'Firebase security verification failed।';
+        return 'Firebase security verification failed. Please try again.';
 
       case 'session-expired':
-        return 'Verification session expired। নতুন OTP request করুন।';
+        return 'The verification session has expired. Request a new OTP.';
+
+      case 'verification-in-progress':
+        return 'Phone verification is already in progress.';
+
+      case 'phone-login-state-error':
+        return error.message ?? 'The Phone authentication state is invalid.';
+
+      case 'phone-login-invalid-argument':
+        return error.message ??
+            'The Phone authentication information is invalid.';
+
+      case 'phone-verification-failed':
+        return error.message ?? 'Phone verification could not be completed.';
 
       default:
-        return error.message ?? 'Authentication failed.';
-    }
-  }
-
-  String _functionsMessage(FirebaseFunctionsException error) {
-    switch (error.code) {
-      case 'unauthenticated':
-        return 'Login session expired। আবার Login করুন।';
-
-      case 'permission-denied':
-        return error.message ?? 'এই request অনুমোদিত নয়।';
-
-      case 'invalid-argument':
-        return error.message ?? 'Request information সঠিক নয়।';
-
-      case 'failed-precondition':
-        return error.message ?? 'Verification এখন শুরু করা যাচ্ছে না।';
-
-      case 'resource-exhausted':
-        return 'অনেকবার request করা হয়েছে। কিছুক্ষণ পরে চেষ্টা করুন।';
-
-      case 'deadline-exceeded':
-        return 'Verification service timeout হয়েছে।';
-
-      case 'unavailable':
-        return 'Verification service সাময়িকভাবে unavailable।';
-
-      case 'not-found':
-        return 'Required JR CALL backend function পাওয়া যাচ্ছে না।';
-
-      case 'internal':
-        return 'Verification service internal error দিয়েছে।';
-
-      default:
-        return error.message ?? 'Verification request সম্পন্ন হয়নি।';
+        return error.message ?? 'Authentication failed. Please try again.';
     }
   }
 
@@ -757,6 +1140,10 @@ class _LoginScreenState extends State<LoginScreen> {
     });
   }
 
+  // =============================================================
+  // MESSAGE
+  // =============================================================
+
   void _showMessage(String message) {
     if (!mounted) {
       return;
@@ -768,6 +1155,10 @@ class _LoginScreenState extends State<LoginScreen> {
         SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
       );
   }
+
+  // =============================================================
+  // FIELD DECORATION
+  // =============================================================
 
   InputDecoration _fieldDecoration({
     required String hintText,
@@ -846,13 +1237,17 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
                       ),
+
                       const SizedBox(height: 20),
+
                       Text(
                         'JR CALL',
                         textAlign: TextAlign.center,
                         style: JrTypography.brandTitle,
                       ),
+
                       const SizedBox(height: 6),
+
                       Text(
                         _requestedAction == null
                             ? 'Secure Global Login'
@@ -860,11 +1255,12 @@ class _LoginScreenState extends State<LoginScreen> {
                         textAlign: TextAlign.center,
                         style: JrTypography.screenSubtitle,
                       ),
+
                       const SizedBox(height: 26),
 
-                      // -----------------------------------------
-                      // METHOD SELECTOR
-                      // -----------------------------------------
+                      // =================================================
+                      // EMAIL / PHONE SELECTOR
+                      // =================================================
                       Container(
                         padding: const EdgeInsets.all(5),
                         decoration: BoxDecoration(
@@ -893,11 +1289,12 @@ class _LoginScreenState extends State<LoginScreen> {
                           ],
                         ),
                       ),
+
                       const SizedBox(height: 26),
 
-                      // -----------------------------------------
-                      // EMAIL
-                      // -----------------------------------------
+                      // =================================================
+                      // EMAIL LOGIN
+                      // =================================================
                       if (emailMode) ...<Widget>[
                         TextField(
                           controller: _emailController,
@@ -920,7 +1317,9 @@ class _LoginScreenState extends State<LoginScreen> {
                             icon: Icons.email_outlined,
                           ),
                         ),
+
                         const SizedBox(height: 18),
+
                         TextField(
                           controller: _passwordController,
                           focusNode: _passwordFocus,
@@ -957,6 +1356,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
                         ),
+
                         Align(
                           alignment: Alignment.centerRight,
                           child: TextButton(
@@ -969,15 +1369,15 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ],
 
-                      // -----------------------------------------
-                      // PHONE
-                      // -----------------------------------------
+                      // =================================================
+                      // PHONE LOGIN
+                      // =================================================
                       if (!emailMode) ...<Widget>[
                         IntlPhoneField(
                           controller: _phoneController,
                           focusNode: _phoneFocus,
                           enabled: !_busy,
-                          initialCountryCode: 'BD',
+                          initialCountryCode: _initialCountryCode,
                           disableLengthCheck: true,
                           disableAutoFillHints: false,
                           keyboardType: TextInputType.phone,
@@ -998,6 +1398,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           onChanged: (phone) {
                             if (_phoneController.text.trim().isEmpty) {
                               _completePhoneNumber = '';
+
                               return;
                             }
 
@@ -1016,17 +1417,21 @@ class _LoginScreenState extends State<LoginScreen> {
                             }
                           },
                         ),
+
                         const SizedBox(height: 18),
                       ],
 
-                      // -----------------------------------------
+                      // =================================================
                       // LOGIN BUTTON
-                      // -----------------------------------------
+                      // =================================================
                       SizedBox(
                         height: 56,
                         child: FilledButton(
                           onPressed: _busy ? null : _login,
-                          child: _loading || _automaticPhoneVerificationRunning
+                          child:
+                              _loading ||
+                                  _automaticPhoneVerificationRunning ||
+                                  _loginOtpManager.isBusy
                               ? const SizedBox(
                                   width: 24,
                                   height: 24,
@@ -1044,9 +1449,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 14),
 
-                      // -----------------------------------------
+                      // =================================================
                       // GUEST
-                      // -----------------------------------------
+                      // =================================================
                       TextButton.icon(
                         onPressed: _busy ? null : _continueAsGuest,
                         icon: const Icon(Icons.public_rounded),
@@ -1058,6 +1463,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 12),
 
+                      // =================================================
+                      // SECURITY INFO
+                      // =================================================
                       Container(
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
@@ -1076,8 +1484,8 @@ class _LoginScreenState extends State<LoginScreen> {
                             Expanded(
                               child: Text(
                                 emailMode
-                                    ? 'Email login uses your password and JR CALL secure Email OTP verification.'
-                                    : 'Existing Phone accounts use secure Firebase SMS OTP verification.',
+                                    ? 'Email login uses your Firebase email address and password directly.'
+                                    : 'Phone login uses secure Firebase SMS verification with automatic or manual OTP verification.',
                                 style: JrTypography.bodySmall,
                               ),
                             ),
@@ -1087,6 +1495,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 18),
 
+                      // =================================================
+                      // CREATE ACCOUNT
+                      // =================================================
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: <Widget>[
@@ -1130,8 +1541,11 @@ class _MethodButton extends StatelessWidget {
   });
 
   final bool selected;
+
   final IconData icon;
+
   final String label;
+
   final VoidCallback onTap;
 
   @override
@@ -1173,4 +1587,62 @@ class _MethodButton extends StatelessWidget {
 
 // ===============================================================
 // END OF FILE
+//
+// OTP / AUTH MASTER FILE 04 / 09
+//
+// FIXED:
+//
+// ✓ Manual Phone OTP route false/null no longer signs out a valid
+//   Firebase authenticated user.
+//
+// ✓ Exact authenticated Firebase Phone Number is checked before
+//   fallback login completion.
+//
+// ✓ Unrelated legitimate Firebase sessions are not destroyed.
+//
+// ✓ Automatic new-profile Phone authentication completes Login
+//   after optional Profile Setup returns.
+//
+// ✓ Missing Firebase currentUser remains an incomplete/cancelled
+//   authentication state.
+//
+// GLOBAL:
+//
+// ✓ All hard-coded production user-facing strings are English.
+// ✓ No Bengali production strings remain in this file.
+// ✓ International Phone country selector preserved.
+// ✓ Device locale provides the initial country selection only.
+// ✓ E.164 international Phone validation preserved.
+//
+// PRESERVED:
+//
+// ✓ Email + Password Login.
+// ✓ Existing JR CALL profile requirement for Email Login.
+// ✓ Phone OTP through LoginOtpManager.
+// ✓ Firebase automatic Phone verification.
+// ✓ Manual 6-digit Phone OTP.
+// ✓ New-profile creation ownership.
+// ✓ Guest mode.
+// ✓ requestedAction.
+// ✓ Profile Setup.
+// ✓ Forgot Password.
+// ✓ Create Account.
+// ✓ Existing UI structure.
+// ✓ Existing JR theme/colors/typography.
+// ✓ No fake OTP.
+// ✓ No OTP persistence.
+// ✓ No Phone-password bypass.
+// ✓ No Play Integrity/reCAPTCHA bypass.
+//
+// UNCHANGED:
+//
+// ✓ login_otp_manager.dart.
+// ✓ AuthService API.
+// ✓ FirestoreService API.
+// ✓ ProfileService API.
+// ✓ Call Engine.
+// ✓ Message Engine.
+// ✓ WebRTC.
+// ✓ Signaling.
+//
 // ===============================================================

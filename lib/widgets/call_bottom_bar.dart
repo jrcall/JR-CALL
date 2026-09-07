@@ -1,109 +1,152 @@
+import 'package:flutter/material.dart';
+
+import '../services/call/audio_manager.dart';
+import '../services/call/video_manager.dart';
+
 // ===========================================================
 // JR CALL
 // File: call_bottom_bar.dart
 // Location: lib/widgets/call_bottom_bar.dart
 //
 // Description:
-// Production call-control bottom bar.
+// Production-safe reusable JR CALL in-call control bar.
 //
 // Responsibilities:
-// - Mute / Unmute
+// - Microphone mute / unmute
 // - Speaker on / off
 // - Camera on / off
-// - Switch camera
-// - In-call keypad presentation
+// - Switch front / rear camera
+// - In-call keypad
+// - Optional dial-tone digit forwarding
 // - End call
 //
-// Architecture ownership:
-// - Audio behavior        -> AudioManager
-// - Video behavior        -> VideoManager
-// - End-call lifecycle    -> Parent Call Screen / CallService
-// - This widget owns UI state only
+// Architecture:
+// - Audio logic -> AudioManager
+// - Video logic -> VideoManager
+// - Call lifecycle -> parent screen / CallService
+// - Dial-tone digit logic -> parent / WebRTC layer
+// - This widget owns presentation state only
 //
-// Production rules:
-// - Preserve public API
-// - No CallService duplication
-// - No signaling
-// - No Firestore
-// - No ICE
-// - No WebRTC lifecycle
-// - No duplicate call timer
+// Design:
+// - JR CALL premium light UI
+// - Modern glassmorphism
+// - Soft blue/cyan CALL glow
+// - Responsive small/large phone layout
+// - No duplicate call-engine logic
+//
+// Important:
+// - AudioManager is the audio source of truth.
+// - VideoManager is the video source of truth.
+// - This widget never creates duplicate audio/video state.
+// - This widget never disposes shared call-engine managers.
 // ===========================================================
 
-import 'package:flutter/material.dart';
-
-import '../services/call/audio_manager.dart';
-import '../services/call/video_manager.dart';
-
 class CallBottomBar extends StatefulWidget {
-  const CallBottomBar({super.key, required this.onEndCall});
+  const CallBottomBar({
+    super.key,
+    required this.onEndCall,
+    this.showVideoControls = true,
+    this.onKeypadDigit,
+  });
 
   final VoidCallback onEndCall;
+
+  final bool showVideoControls;
+
+  final ValueChanged<String>? onKeypadDigit;
 
   @override
   State<CallBottomBar> createState() => _CallBottomBarState();
 }
 
 class _CallBottomBarState extends State<CallBottomBar> {
-  // ===========================================================
-  // Existing real managers
-  // ===========================================================
-
   final AudioManager _audioManager = AudioManager.instance;
   final VideoManager _videoManager = VideoManager.instance;
 
-  // ===========================================================
-  // Presentation state
-  // ===========================================================
-
-  bool _isMuted = false;
-  bool _isSpeakerEnabled = false;
-  bool _isCameraEnabled = true;
-
-  bool _muteBusy = false;
-  bool _speakerBusy = false;
-  bool _cameraBusy = false;
-  bool _switchCameraBusy = false;
-  bool _endCallBusy = false;
+  bool _muteLoading = false;
+  bool _speakerLoading = false;
+  bool _cameraLoading = false;
+  bool _switchCameraLoading = false;
+  bool _endCallLoading = false;
 
   // ===========================================================
-  // Design
+  // Authoritative Manager State
   // ===========================================================
 
-  static const Color _surface = Color(0xF5FFFFFF);
-  static const Color _primaryBlue = Color(0xFF087AF5);
-  static const Color _callGreen = Color(0xFF00D99B);
-  static const Color _cyan = Color(0xFF04BDF5);
-  static const Color _border = Color(0xFFDCE7F5);
-  static const Color _danger = Color(0xFFFF1744);
+  bool get _isMuted => _audioManager.microphone.isMuted;
+
+  bool get _isSpeakerEnabled =>
+      _audioManager.speaker.speakerEnabled;
+
+  bool get _isCameraEnabled => _videoManager.videoEnabled;
+
+  // ===========================================================
+  // Lifecycle
+  // ===========================================================
+
+  @override
+  void initState() {
+    super.initState();
+
+    _audioManager.addListener(_handleAudioManagerChanged);
+    _videoManager.addListener(_handleVideoManagerChanged);
+  }
+
+  @override
+  void dispose() {
+    _audioManager.removeListener(_handleAudioManagerChanged);
+    _videoManager.removeListener(_handleVideoManagerChanged);
+
+    super.dispose();
+  }
+
+  void _handleAudioManagerChanged() {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {});
+  }
+
+  void _handleVideoManagerChanged() {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {});
+  }
 
   // ===========================================================
   // Microphone
   // ===========================================================
 
   Future<void> _toggleMute() async {
-    if (_muteBusy || _endCallBusy) {
+    if (_muteLoading || _endCallLoading) {
       return;
     }
 
-    _setMuteBusy(true);
+    setState(() {
+      _muteLoading = true;
+    });
 
     try {
       await _audioManager.toggleMute();
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _isMuted = !_isMuted;
-      });
     } catch (error, stackTrace) {
-      _reportError('Toggle mute', error, stackTrace);
+      _reportError(
+        'Toggle microphone',
+        error,
+        stackTrace,
+      );
 
-      _showActionError('Unable to change microphone state.');
+      _showError(
+        'Unable to change microphone state.',
+      );
     } finally {
-      _setMuteBusy(false);
+      if (mounted) {
+        setState(() {
+          _muteLoading = false;
+        });
+      }
     }
   }
 
@@ -112,28 +155,32 @@ class _CallBottomBarState extends State<CallBottomBar> {
   // ===========================================================
 
   Future<void> _toggleSpeaker() async {
-    if (_speakerBusy || _endCallBusy) {
+    if (_speakerLoading || _endCallLoading) {
       return;
     }
 
-    _setSpeakerBusy(true);
+    setState(() {
+      _speakerLoading = true;
+    });
 
     try {
       await _audioManager.toggleSpeaker();
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _isSpeakerEnabled = !_isSpeakerEnabled;
-      });
     } catch (error, stackTrace) {
-      _reportError('Toggle speaker', error, stackTrace);
+      _reportError(
+        'Toggle speaker',
+        error,
+        stackTrace,
+      );
 
-      _showActionError('Unable to change speaker state.');
+      _showError(
+        'Unable to change speaker state.',
+      );
     } finally {
-      _setSpeakerBusy(false);
+      if (mounted) {
+        setState(() {
+          _speakerLoading = false;
+        });
+      }
     }
   }
 
@@ -142,28 +189,34 @@ class _CallBottomBarState extends State<CallBottomBar> {
   // ===========================================================
 
   Future<void> _toggleCamera() async {
-    if (_cameraBusy || _endCallBusy) {
+    if (_cameraLoading ||
+        _endCallLoading ||
+        !widget.showVideoControls) {
       return;
     }
 
-    _setCameraBusy(true);
+    setState(() {
+      _cameraLoading = true;
+    });
 
     try {
       await _videoManager.toggleVideo();
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _isCameraEnabled = !_isCameraEnabled;
-      });
     } catch (error, stackTrace) {
-      _reportError('Toggle camera', error, stackTrace);
+      _reportError(
+        'Toggle camera',
+        error,
+        stackTrace,
+      );
 
-      _showActionError('Unable to change camera state.');
+      _showError(
+        'Unable to change camera state.',
+      );
     } finally {
-      _setCameraBusy(false);
+      if (mounted) {
+        setState(() {
+          _cameraLoading = false;
+        });
+      }
     }
   }
 
@@ -172,20 +225,35 @@ class _CallBottomBarState extends State<CallBottomBar> {
   // ===========================================================
 
   Future<void> _switchCamera() async {
-    if (_switchCameraBusy || !_isCameraEnabled || _endCallBusy) {
+    if (_switchCameraLoading ||
+        _endCallLoading ||
+        !_isCameraEnabled ||
+        !widget.showVideoControls) {
       return;
     }
 
-    _setSwitchCameraBusy(true);
+    setState(() {
+      _switchCameraLoading = true;
+    });
 
     try {
       await _videoManager.switchCamera();
     } catch (error, stackTrace) {
-      _reportError('Switch camera', error, stackTrace);
+      _reportError(
+        'Switch camera',
+        error,
+        stackTrace,
+      );
 
-      _showActionError('Unable to switch camera.');
+      _showError(
+        'Unable to switch camera.',
+      );
     } finally {
-      _setSwitchCameraBusy(false);
+      if (mounted) {
+        setState(() {
+          _switchCameraLoading = false;
+        });
+      }
     }
   }
 
@@ -194,26 +262,32 @@ class _CallBottomBarState extends State<CallBottomBar> {
   // ===========================================================
 
   void _endCall() {
-    if (_endCallBusy) {
+    if (_endCallLoading) {
       return;
     }
 
     setState(() {
-      _endCallBusy = true;
+      _endCallLoading = true;
     });
 
     try {
       widget.onEndCall();
     } catch (error, stackTrace) {
-      _reportError('End call', error, stackTrace);
+      _reportError(
+        'End call',
+        error,
+        stackTrace,
+      );
 
       if (mounted) {
         setState(() {
-          _endCallBusy = false;
+          _endCallLoading = false;
         });
       }
 
-      _showActionError('Unable to end the call.');
+      _showError(
+        'Unable to end the call.',
+      );
     }
   }
 
@@ -222,92 +296,51 @@ class _CallBottomBarState extends State<CallBottomBar> {
   // ===========================================================
 
   Future<void> _openKeypad() async {
-    if (!mounted || _endCallBusy) {
+    if (!mounted || _endCallLoading) {
       return;
     }
 
     await showModalBottomSheet<void>(
       context: context,
-      isScrollControlled: true,
       useSafeArea: true,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      barrierColor: const Color(0x730F172A),
-      builder: (BuildContext sheetContext) {
-        return const _CallKeypadSheet();
+      barrierColor: const Color(0x66000000),
+      builder: (BuildContext context) {
+        return _CallKeypadSheet(
+          onDigitPressed: widget.onKeypadDigit,
+        );
       },
     );
   }
 
   // ===========================================================
-  // Busy helpers
+  // Error
   // ===========================================================
 
-  void _setMuteBusy(bool value) {
+  void _showError(String message) {
     if (!mounted) {
       return;
     }
 
-    setState(() {
-      _muteBusy = value;
-    });
-  }
-
-  void _setSpeakerBusy(bool value) {
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _speakerBusy = value;
-    });
-  }
-
-  void _setCameraBusy(bool value) {
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _cameraBusy = value;
-    });
-  }
-
-  void _setSwitchCameraBusy(bool value) {
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _switchCameraBusy = value;
-    });
-  }
-
-  // ===========================================================
-  // Error presentation
-  // ===========================================================
-
-  void _showActionError(String message) {
-    if (!mounted) {
-      return;
-    }
-
-    final ScaffoldMessengerState? messenger = ScaffoldMessenger.maybeOf(
-      context,
-    );
-
-    if (messenger == null) {
-      return;
-    }
-
-    messenger
+    ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
   }
 
-  void _reportError(String source, Object error, StackTrace stackTrace) {
-    debugPrint('JR CALL [CallBottomBar/$source] error: $error');
+  void _reportError(
+      String source,
+      Object error,
+      StackTrace stackTrace,
+      ) {
+    debugPrint(
+      'JR CALL [CallBottomBar/$source] error: $error',
+    );
 
     debugPrintStack(
       label: 'JR CALL [CallBottomBar/$source]',
@@ -323,252 +356,345 @@ class _CallBottomBarState extends State<CallBottomBar> {
   Widget build(BuildContext context) {
     return SafeArea(
       top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-        child: LayoutBuilder(
-          builder: (BuildContext context, BoxConstraints constraints) {
-            final double availableWidth = constraints.maxWidth;
+      child: LayoutBuilder(
+        builder: (
+            BuildContext context,
+            BoxConstraints constraints,
+            ) {
+          final int controlCount =
+          widget.showVideoControls ? 6 : 4;
 
-            final bool compact = availableWidth < 390;
+          final double horizontalPadding =
+          constraints.maxWidth < 360 ? 6 : 10;
 
-            final double buttonSize = compact ? 44 : 50;
-            final double iconSize = compact ? 21 : 23;
+          final double usableWidth =
+              constraints.maxWidth -
+                  (horizontalPadding * 2);
 
-            return Container(
-              width: double.infinity,
-              padding: EdgeInsets.symmetric(
-                horizontal: compact ? 7 : 10,
-                vertical: compact ? 9 : 11,
-              ),
-              decoration: BoxDecoration(
-                color: _surface,
-                borderRadius: BorderRadius.circular(26),
-                border: Border.all(color: _border, width: 1),
-                boxShadow: const <BoxShadow>[
-                  BoxShadow(
-                    color: Color(0x14087AF5),
-                    blurRadius: 30,
-                    offset: Offset(0, 10),
-                  ),
-                  BoxShadow(
-                    color: Color(0x1000D99B),
-                    blurRadius: 24,
-                    offset: Offset(0, -4),
-                  ),
+          final double availablePerControl =
+              usableWidth / controlCount;
+
+          final double buttonSize =
+          (availablePerControl - 7)
+              .clamp(
+            42.0,
+            56.0,
+          )
+              .toDouble();
+
+          final double iconSize =
+          buttonSize < 48 ? 21 : 24;
+
+          return Container(
+            width: double.infinity,
+            padding: EdgeInsets.symmetric(
+              horizontal: horizontalPadding,
+              vertical: 14,
+            ),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: <Color>[
+                  Color(0xFFFDFEFF),
+                  Color(0xFFF4F9FF),
+                  Color(0xFFEEF8FF),
                 ],
               ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: <Widget>[
-                  _CallControlButton(
-                    tooltip: _isMuted ? 'Unmute microphone' : 'Mute microphone',
-                    icon: _isMuted ? Icons.mic_off_rounded : Icons.mic_rounded,
-                    active: _isMuted,
-                    activeColor: _danger,
-                    buttonSize: buttonSize,
-                    iconSize: iconSize,
-                    loading: _muteBusy,
-                    enabled: !_endCallBusy,
-                    onTap: _toggleMute,
-                  ),
-
-                  _CallControlButton(
-                    tooltip: _isSpeakerEnabled
-                        ? 'Turn speaker off'
-                        : 'Turn speaker on',
-                    icon: _isSpeakerEnabled
-                        ? Icons.volume_up_rounded
-                        : Icons.volume_down_rounded,
-                    active: _isSpeakerEnabled,
-                    activeColor: _cyan,
-                    buttonSize: buttonSize,
-                    iconSize: iconSize,
-                    loading: _speakerBusy,
-                    enabled: !_endCallBusy,
-                    onTap: _toggleSpeaker,
-                  ),
-
-                  _CallControlButton(
-                    tooltip: _isCameraEnabled
-                        ? 'Turn camera off'
-                        : 'Turn camera on',
-                    icon: _isCameraEnabled
-                        ? Icons.videocam_rounded
-                        : Icons.videocam_off_rounded,
-                    active: !_isCameraEnabled,
-                    activeColor: _danger,
-                    buttonSize: buttonSize,
-                    iconSize: iconSize,
-                    loading: _cameraBusy,
-                    enabled: !_endCallBusy,
-                    onTap: _toggleCamera,
-                  ),
-
-                  _CallControlButton(
-                    tooltip: 'Switch camera',
-                    icon: Icons.cameraswitch_rounded,
-                    active: false,
-                    activeColor: _primaryBlue,
-                    buttonSize: buttonSize,
-                    iconSize: iconSize,
-                    loading: _switchCameraBusy,
-                    enabled: _isCameraEnabled && !_endCallBusy,
-                    onTap: _switchCamera,
-                  ),
-
-                  _CallControlButton(
-                    tooltip: 'Keypad',
-                    icon: Icons.dialpad_rounded,
-                    active: false,
-                    activeColor: _callGreen,
-                    buttonSize: buttonSize,
-                    iconSize: iconSize,
-                    enabled: !_endCallBusy,
-                    onTap: _openKeypad,
-                  ),
-
-                  _CallControlButton(
-                    tooltip: 'End call',
-                    icon: Icons.call_end_rounded,
-                    active: true,
-                    activeColor: _danger,
-                    buttonSize: buttonSize,
-                    iconSize: iconSize,
-                    loading: _endCallBusy,
-                    enabled: !_endCallBusy,
-                    destructive: true,
-                    onTap: _endCall,
-                  ),
-                ],
+              borderRadius:
+              const BorderRadius.vertical(
+                top: Radius.circular(28),
               ),
-            );
-          },
-        ),
+              border: const Border(
+                top: BorderSide(
+                  color: Color(0xFFDCE7F5),
+                ),
+              ),
+              boxShadow: const <BoxShadow>[
+                BoxShadow(
+                  color: Color(0x16087AF5),
+                  blurRadius: 28,
+                  offset: Offset(0, -8),
+                ),
+                BoxShadow(
+                  color: Color(0x1000B8D9),
+                  blurRadius: 20,
+                  offset: Offset(0, -3),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisAlignment:
+              MainAxisAlignment.spaceEvenly,
+              children: <Widget>[
+                _CallControlButton(
+                  tooltip:
+                  _isMuted ? 'Unmute' : 'Mute',
+                  icon: _isMuted
+                      ? Icons.mic_off_rounded
+                      : Icons.mic_rounded,
+                  foregroundColor: _isMuted
+                      ? const Color(0xFFE5484D)
+                      : const Color(0xFF087AF5),
+                  selected: _isMuted,
+                  loading: _muteLoading,
+                  size: buttonSize,
+                  iconSize: iconSize,
+                  onPressed: _toggleMute,
+                ),
+                _CallControlButton(
+                  tooltip: _isSpeakerEnabled
+                      ? 'Speaker off'
+                      : 'Speaker on',
+                  icon: _isSpeakerEnabled
+                      ? Icons.volume_up_rounded
+                      : Icons.hearing_rounded,
+                  foregroundColor: _isSpeakerEnabled
+                      ? const Color(0xFF00AFCB)
+                      : const Color(0xFF1557D0),
+                  selected: _isSpeakerEnabled,
+                  loading: _speakerLoading,
+                  size: buttonSize,
+                  iconSize: iconSize,
+                  onPressed: _toggleSpeaker,
+                ),
+                if (widget.showVideoControls)
+                  ...<Widget>[
+                    _CallControlButton(
+                      tooltip: _isCameraEnabled
+                          ? 'Camera off'
+                          : 'Camera on',
+                      icon: _isCameraEnabled
+                          ? Icons.videocam_rounded
+                          : Icons
+                          .videocam_off_rounded,
+                      foregroundColor:
+                      _isCameraEnabled
+                          ? const Color(
+                        0xFF087AF5,
+                      )
+                          : const Color(
+                        0xFFE5484D,
+                      ),
+                      selected:
+                      !_isCameraEnabled,
+                      loading:
+                      _cameraLoading,
+                      size: buttonSize,
+                      iconSize: iconSize,
+                      onPressed:
+                      _toggleCamera,
+                    ),
+                    _CallControlButton(
+                      tooltip:
+                      'Switch camera',
+                      icon: Icons
+                          .flip_camera_android_rounded,
+                      foregroundColor:
+                      const Color(
+                        0xFF087AF5,
+                      ),
+                      enabled:
+                      _isCameraEnabled,
+                      loading:
+                      _switchCameraLoading,
+                      size: buttonSize,
+                      iconSize: iconSize,
+                      onPressed:
+                      _switchCamera,
+                    ),
+                  ],
+                _CallControlButton(
+                  tooltip: 'Keypad',
+                  icon: Icons.dialpad_rounded,
+                  foregroundColor:
+                  const Color(
+                    0xFF00AFCB,
+                  ),
+                  size: buttonSize,
+                  iconSize: iconSize,
+                  onPressed: _openKeypad,
+                ),
+                _CallControlButton(
+                  tooltip: 'End call',
+                  icon:
+                  Icons.call_end_rounded,
+                  foregroundColor:
+                  Colors.white,
+                  backgroundColor:
+                  const Color(
+                    0xFFFF4D5E,
+                  ),
+                  loading:
+                  _endCallLoading,
+                  size: buttonSize,
+                  iconSize: iconSize,
+                  onPressed: _endCall,
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
 }
 
 // ===========================================================
-// Private call control button
+// Internal Call Control Button
 // ===========================================================
 
 class _CallControlButton extends StatelessWidget {
   const _CallControlButton({
     required this.tooltip,
     required this.icon,
-    required this.active,
-    required this.activeColor,
-    required this.buttonSize,
+    required this.foregroundColor,
+    required this.size,
     required this.iconSize,
-    required this.enabled,
-    required this.onTap,
+    required this.onPressed,
+    this.backgroundColor,
+    this.enabled = true,
     this.loading = false,
-    this.destructive = false,
+    this.selected = false,
   });
 
   final String tooltip;
+
   final IconData icon;
 
-  final bool active;
-  final Color activeColor;
+  final Color foregroundColor;
 
-  final double buttonSize;
+  final Color? backgroundColor;
+
+  final double size;
+
   final double iconSize;
 
+  final VoidCallback onPressed;
+
   final bool enabled;
+
   final bool loading;
-  final bool destructive;
 
-  final VoidCallback onTap;
-
-  static const Color _primaryBlue = Color(0xFF087AF5);
-  static const Color _textSecondary = Color(0xFF58677F);
-  static const Color _border = Color(0xFFDCE7F5);
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
-    final bool interactive = enabled && !loading;
+    final Color effectiveBackground =
+        backgroundColor ??
+            (selected
+                ? foregroundColor.withValues(
+              alpha: 0.14,
+            )
+                : Colors.white.withValues(
+              alpha: 0.88,
+            ));
 
-    final Color backgroundColor;
+    final Color effectiveBorder =
+    backgroundColor != null
+        ? backgroundColor!.withValues(
+      alpha: 0.90,
+    )
+        : selected
+        ? foregroundColor.withValues(
+      alpha: 0.30,
+    )
+        : const Color(0xFFDCE7F5);
 
-    if (destructive) {
-      backgroundColor = activeColor;
-    } else if (active) {
-      backgroundColor = activeColor.withValues(alpha: 0.12);
-    } else {
-      backgroundColor = const Color(0xFFF7FAFF);
-    }
-
-    final Color foregroundColor;
-
-    if (!enabled) {
-      foregroundColor = _textSecondary.withValues(alpha: 0.35);
-    } else if (destructive) {
-      foregroundColor = Colors.white;
-    } else if (active) {
-      foregroundColor = activeColor;
-    } else {
-      foregroundColor = _primaryBlue;
-    }
+    final List<BoxShadow> shadows =
+    backgroundColor != null
+        ? const <BoxShadow>[
+      BoxShadow(
+        color: Color(0x33FF4D5E),
+        blurRadius: 14,
+        offset: Offset(0, 5),
+      ),
+    ]
+        : selected
+        ? <BoxShadow>[
+      BoxShadow(
+        color:
+        foregroundColor.withValues(
+          alpha: 0.14,
+        ),
+        blurRadius: 14,
+        offset:
+        const Offset(0, 4),
+      ),
+    ]
+        : const <BoxShadow>[
+      BoxShadow(
+        color: Color(0x12087AF5),
+        blurRadius: 12,
+        offset: Offset(0, 4),
+      ),
+    ];
 
     return Tooltip(
       message: tooltip,
       child: Semantics(
         button: true,
-        enabled: interactive,
-        selected: active,
+        enabled: enabled && !loading,
+        selected: selected,
         label: tooltip,
         child: Material(
           color: Colors.transparent,
           shape: const CircleBorder(),
           child: InkWell(
-            onTap: interactive ? onTap : null,
-            customBorder: const CircleBorder(),
+            customBorder:
+            const CircleBorder(),
+            onTap: enabled && !loading
+                ? onPressed
+                : null,
             child: AnimatedContainer(
-              duration: const Duration(milliseconds: 160),
-              curve: Curves.easeOutCubic,
-              width: buttonSize,
-              height: buttonSize,
+              duration:
+              const Duration(
+                milliseconds: 160,
+              ),
+              curve:
+              Curves.easeOutCubic,
+              width: size,
+              height: size,
+              alignment:
+              Alignment.center,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: backgroundColor,
-                border: Border.all(
-                  color: destructive
-                      ? activeColor
-                      : active
-                      ? activeColor.withValues(alpha: 0.26)
-                      : _border,
+                color: enabled
+                    ? effectiveBackground
+                    : const Color(
+                  0xFFF1F4F8,
                 ),
-                boxShadow: destructive
-                    ? <BoxShadow>[
-                        BoxShadow(
-                          color: activeColor.withValues(alpha: 0.30),
-                          blurRadius: 16,
-                          offset: const Offset(0, 5),
-                        ),
-                      ]
-                    : active
-                    ? <BoxShadow>[
-                        BoxShadow(
-                          color: activeColor.withValues(alpha: 0.18),
-                          blurRadius: 14,
-                          offset: const Offset(0, 4),
-                        ),
-                      ]
-                    : const <BoxShadow>[],
+                border: Border.all(
+                  color: enabled
+                      ? effectiveBorder
+                      : const Color(
+                    0xFFE4E9F0,
+                  ),
+                ),
+                boxShadow:
+                enabled ? shadows : null,
               ),
-              child: Center(
-                child: loading
-                    ? SizedBox(
-                        width: iconSize - 3,
-                        height: iconSize - 3,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.1,
-                          color: destructive ? Colors.white : activeColor,
-                        ),
-                      )
-                    : Icon(icon, size: iconSize, color: foregroundColor),
+              child: loading
+                  ? SizedBox(
+                width:
+                iconSize - 3,
+                height:
+                iconSize - 3,
+                child:
+                CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color:
+                  foregroundColor,
+                ),
+              )
+                  : Icon(
+                icon,
+                size: iconSize,
+                color: enabled
+                    ? foregroundColor
+                    : const Color(
+                  0xFF98A2B3,
+                ),
               ),
             ),
           ),
@@ -579,121 +705,217 @@ class _CallControlButton extends StatelessWidget {
 }
 
 // ===========================================================
-// Premium keypad sheet
+// JR CALL In-Call Keypad
 // ===========================================================
 
 class _CallKeypadSheet extends StatefulWidget {
-  const _CallKeypadSheet();
+  const _CallKeypadSheet({
+    this.onDigitPressed,
+  });
+
+  final ValueChanged<String>? onDigitPressed;
 
   @override
-  State<_CallKeypadSheet> createState() => _CallKeypadSheetState();
+  State<_CallKeypadSheet> createState() =>
+      _CallKeypadSheetState();
 }
 
-class _CallKeypadSheetState extends State<_CallKeypadSheet> {
-  static const Color _surface = Color(0xFFFFFFFF);
-  static const Color _background = Color(0xFFF5F8FE);
-  static const Color _primaryBlue = Color(0xFF087AF5);
-  static const Color _callGreen = Color(0xFF00D99B);
-  static const Color _textPrimary = Color(0xFF101828);
-  static const Color _textSecondary = Color(0xFF58677F);
-  static const Color _border = Color(0xFFDCE7F5);
-  static const Color _danger = Color(0xFFFF1744);
+class _CallKeypadSheetState
+    extends State<_CallKeypadSheet> {
+  static const int _maxInputLength = 64;
 
-  static const List<List<String>> _rows = <List<String>>[
-    <String>['1', '2', '3'],
-    <String>['4', '5', '6'],
-    <String>['7', '8', '9'],
-    <String>['*', '0', '#'],
-  ];
+  String _input = '';
 
-  String _digits = '';
-
-  void _appendDigit(String value) {
-    setState(() {
-      _digits += value;
-    });
-  }
-
-  void _removeDigit() {
-    if (_digits.isEmpty) {
+  void _append(String value) {
+    if (_input.length >= _maxInputLength) {
       return;
     }
 
     setState(() {
-      _digits = _digits.substring(0, _digits.length - 1);
+      _input += value;
     });
+
+    try {
+      widget.onDigitPressed?.call(
+        value,
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'JR CALL [CallBottomBar/Keypad digit] '
+            'error: $error',
+      );
+
+      debugPrintStack(
+        label:
+        'JR CALL '
+            '[CallBottomBar/Keypad digit]',
+        stackTrace: stackTrace,
+      );
+    }
   }
 
-  void _clearDigits() {
-    if (_digits.isEmpty) {
+  void _backspace() {
+    if (_input.isEmpty) {
       return;
     }
 
     setState(() {
-      _digits = '';
+      _input = _input.substring(
+        0,
+        _input.length - 1,
+      );
+    });
+  }
+
+  void _clear() {
+    if (_input.isEmpty) {
+      return;
+    }
+
+    setState(() {
+      _input = '';
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final double bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    final double bottomInset =
+        MediaQuery.viewInsetsOf(
+          context,
+        ).bottom;
 
     return Container(
-      padding: EdgeInsets.fromLTRB(20, 12, 20, 22 + bottomInset),
-      decoration: const BoxDecoration(
-        color: _background,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+      decoration:
+      const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[
+            Color(0xFFFFFFFF),
+            Color(0xFFF7FAFF),
+            Color(0xFFF0F8FF),
+          ],
+        ),
+        borderRadius:
+        BorderRadius.vertical(
+          top: Radius.circular(30),
+        ),
+        border: Border(
+          top: BorderSide(
+            color: Color(0xFFDCE7F5),
+          ),
+        ),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: Color(0x1A087AF5),
+            blurRadius: 28,
+            offset: Offset(0, -8),
+          ),
+        ],
+      ),
+      padding: EdgeInsets.fromLTRB(
+        20,
+        12,
+        20,
+        24 + bottomInset,
       ),
       child: SingleChildScrollView(
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisSize:
+          MainAxisSize.min,
           children: <Widget>[
             Container(
-              width: 44,
-              height: 5,
-              decoration: BoxDecoration(
-                color: _textSecondary.withValues(alpha: 0.22),
-                borderRadius: BorderRadius.circular(100),
+              width: 42,
+              height: 4,
+              decoration:
+              BoxDecoration(
+                color: const Color(
+                  0xFF98A2B3,
+                ).withValues(
+                  alpha: 0.40,
+                ),
+                borderRadius:
+                BorderRadius.circular(
+                  100,
+                ),
               ),
             ),
-
-            const SizedBox(height: 18),
-
+            const SizedBox(
+              height: 18,
+            ),
+            const Row(
+              mainAxisAlignment:
+              MainAxisAlignment.center,
+              children: <Widget>[
+                Icon(
+                  Icons.dialpad_rounded,
+                  color:
+                  Color(0xFF087AF5),
+                  size: 20,
+                ),
+                SizedBox(width: 8),
+                Text(
+                  'Keypad',
+                  style: TextStyle(
+                    color:
+                    Color(0xFF101828),
+                    fontSize: 17,
+                    fontWeight:
+                    FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(
+              height: 6,
+            ),
             const Text(
-              'JR CALL Keypad',
+              'JR CALL',
               style: TextStyle(
-                color: _textPrimary,
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
+                color:
+                Color(0xFF58677F),
+                fontSize: 12,
+                fontWeight:
+                FontWeight.w600,
+                letterSpacing: 0.7,
               ),
             ),
-
-            const SizedBox(height: 6),
-
-            const Text(
-              'In-call keypad',
-              style: TextStyle(
-                color: _textSecondary,
-                fontSize: 13,
-                fontWeight: FontWeight.w500,
-              ),
+            const SizedBox(
+              height: 16,
             ),
-
-            const SizedBox(height: 18),
-
             Container(
-              width: double.infinity,
-              height: 58,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              decoration: BoxDecoration(
-                color: _surface,
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: _border),
-                boxShadow: const <BoxShadow>[
+              constraints:
+              const BoxConstraints(
+                minHeight: 58,
+              ),
+              padding:
+              const EdgeInsets.symmetric(
+                horizontal: 12,
+              ),
+              decoration:
+              BoxDecoration(
+                color:
+                Colors.white.withValues(
+                  alpha: 0.82,
+                ),
+                borderRadius:
+                BorderRadius.circular(
+                  18,
+                ),
+                border: Border.all(
+                  color:
+                  const Color(
+                    0xFFDCE7F5,
+                  ),
+                ),
+                boxShadow:
+                const <BoxShadow>[
                   BoxShadow(
-                    color: Color(0x10087AF5),
-                    blurRadius: 16,
-                    offset: Offset(0, 5),
+                    color:
+                    Color(0x0F087AF5),
+                    blurRadius: 14,
+                    offset:
+                    Offset(0, 4),
                   ),
                 ],
               ),
@@ -701,100 +923,146 @@ class _CallKeypadSheetState extends State<_CallKeypadSheet> {
                 children: <Widget>[
                   Expanded(
                     child: Text(
-                      _digits.isEmpty ? 'Enter digits' : _digits,
+                      _input.isEmpty
+                          ? 'Enter digits'
+                          : _input,
                       maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
+                      overflow:
+                      TextOverflow
+                          .ellipsis,
+                      textAlign:
+                      TextAlign.center,
                       style: TextStyle(
-                        color: _digits.isEmpty ? _textSecondary : _primaryBlue,
-                        fontSize: 24,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: _digits.isEmpty ? 0 : 2,
+                        color:
+                        _input.isEmpty
+                            ? const Color(
+                          0xFF98A2B3,
+                        )
+                            : const Color(
+                          0xFF087AF5,
+                        ),
+                        fontSize:
+                        _input.isEmpty
+                            ? 16
+                            : 27,
+                        fontWeight:
+                        FontWeight
+                            .w700,
+                        letterSpacing:
+                        _input.isEmpty
+                            ? 0
+                            : 2,
                       ),
                     ),
                   ),
-
-                  if (_digits.isNotEmpty)
+                  if (_input.isNotEmpty)
                     IconButton(
-                      tooltip: 'Delete digit',
-                      onPressed: _removeDigit,
-                      icon: const Icon(
-                        Icons.backspace_outlined,
-                        color: _danger,
+                      tooltip: 'Clear',
+                      onPressed:
+                      _clear,
+                      icon:
+                      const Icon(
+                        Icons
+                            .close_rounded,
+                        color: Color(
+                          0xFF58677F,
+                        ),
                       ),
                     ),
                 ],
               ),
             ),
-
-            const SizedBox(height: 22),
-
-            for (
-              int rowIndex = 0;
-              rowIndex < _rows.length;
-              rowIndex++
-            ) ...<Widget>[
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: _rows[rowIndex]
-                    .map(
-                      (String digit) => _KeypadButton(
-                        label: digit,
-                        onTap: () {
-                          _appendDigit(digit);
-                        },
-                      ),
-                    )
-                    .toList(growable: false),
-              ),
-
-              if (rowIndex < _rows.length - 1) const SizedBox(height: 12),
-            ],
-
-            const SizedBox(height: 18),
-
-            if (_digits.isNotEmpty)
-              TextButton.icon(
-                onPressed: _clearDigits,
-                icon: const Icon(Icons.clear_all_rounded, color: _danger),
-                label: const Text(
-                  'Clear',
-                  style: TextStyle(color: _danger, fontWeight: FontWeight.w700),
-                ),
-              ),
-
-            const SizedBox(height: 4),
-
-            Container(
-              height: 4,
-              width: 92,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: <Color>[_callGreen, _primaryBlue],
-                ),
-                borderRadius: BorderRadius.circular(100),
-              ),
+            const SizedBox(
+              height: 20,
+            ),
+            _buildRow(
+              const <String>[
+                '1',
+                '2',
+                '3',
+              ],
+            ),
+            const SizedBox(
+              height: 14,
+            ),
+            _buildRow(
+              const <String>[
+                '4',
+                '5',
+                '6',
+              ],
+            ),
+            const SizedBox(
+              height: 14,
+            ),
+            _buildRow(
+              const <String>[
+                '7',
+                '8',
+                '9',
+              ],
+            ),
+            const SizedBox(
+              height: 14,
+            ),
+            _buildRow(
+              const <String>[
+                '*',
+                '0',
+                '#',
+              ],
+            ),
+            const SizedBox(
+              height: 18,
+            ),
+            _KeypadIconButton(
+              icon: Icons
+                  .backspace_outlined,
+              tooltip: 'Backspace',
+              onPressed: _backspace,
             ),
           ],
         ),
       ),
     );
   }
+
+  Widget _buildRow(
+      List<String> values,
+      ) {
+    return Row(
+      mainAxisAlignment:
+      MainAxisAlignment.spaceEvenly,
+      children: values
+          .map(
+            (String value) =>
+            _KeypadButton(
+              label: value,
+              onPressed: () {
+                _append(value);
+              },
+            ),
+      )
+          .toList(
+        growable: false,
+      ),
+    );
+  }
 }
 
 // ===========================================================
-// Keypad digit button
+// Keypad Digit Button
 // ===========================================================
 
 class _KeypadButton extends StatelessWidget {
-  const _KeypadButton({required this.label, required this.onTap});
+  const _KeypadButton({
+    required this.label,
+    required this.onPressed,
+  });
 
   final String label;
-  final VoidCallback onTap;
 
-  static const Color _surface = Color(0xFFFFFFFF);
-  static const Color _textPrimary = Color(0xFF101828);
-  static const Color _border = Color(0xFFDCE7F5);
+  final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
@@ -805,30 +1073,135 @@ class _KeypadButton extends StatelessWidget {
         color: Colors.transparent,
         shape: const CircleBorder(),
         child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: onTap,
+          customBorder:
+          const CircleBorder(),
+          onTap: onPressed,
           child: Container(
             width: 64,
             height: 64,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: _surface,
+            alignment:
+            Alignment.center,
+            decoration:
+            BoxDecoration(
               shape: BoxShape.circle,
-              border: Border.all(color: _border),
-              boxShadow: const <BoxShadow>[
+              gradient:
+              const LinearGradient(
+                begin:
+                Alignment.topLeft,
+                end: Alignment
+                    .bottomRight,
+                colors: <Color>[
+                  Color(0xFFFFFFFF),
+                  Color(0xFFF2F8FF),
+                ],
+              ),
+              border: Border.all(
+                color: const Color(
+                  0xFFDCE7F5,
+                ),
+              ),
+              boxShadow:
+              const <BoxShadow>[
                 BoxShadow(
-                  color: Color(0x11087AF5),
+                  color:
+                  Color(0x12087AF5),
                   blurRadius: 14,
-                  offset: Offset(0, 5),
+                  offset:
+                  Offset(0, 5),
                 ),
               ],
             ),
             child: Text(
               label,
-              style: const TextStyle(
-                color: _textPrimary,
+              style:
+              const TextStyle(
+                color:
+                Color(0xFF101828),
                 fontSize: 23,
-                fontWeight: FontWeight.w700,
+                fontWeight:
+                FontWeight.w700,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ===========================================================
+// Keypad Backspace Button
+// ===========================================================
+
+class _KeypadIconButton
+    extends StatelessWidget {
+  const _KeypadIconButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+
+  final String tooltip;
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Semantics(
+        button: true,
+        label: tooltip,
+        child: Material(
+          color: Colors.transparent,
+          borderRadius:
+          BorderRadius.circular(
+            28,
+          ),
+          child: InkWell(
+            borderRadius:
+            BorderRadius.circular(
+              28,
+            ),
+            onTap: onPressed,
+            child: Container(
+              width: 78,
+              height: 52,
+              alignment:
+              Alignment.center,
+              decoration:
+              BoxDecoration(
+                borderRadius:
+                BorderRadius.circular(
+                  26,
+                ),
+                color: const Color(
+                  0xFFFFF1F2,
+                ),
+                border: Border.all(
+                  color: const Color(
+                    0xFFFFD4D8,
+                  ),
+                ),
+                boxShadow:
+                const <BoxShadow>[
+                  BoxShadow(
+                    color:
+                    Color(0x14FF4D5E),
+                    blurRadius: 12,
+                    offset:
+                    Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Icon(
+                icon,
+                color: const Color(
+                  0xFFFF4D5E,
+                ),
+                size: 23,
               ),
             ),
           ),
