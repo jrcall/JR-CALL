@@ -144,6 +144,14 @@ class IceManager extends ChangeNotifier {
 
   RTCPeerConnection? _currentPeerConnection;
 
+  /// True only after CallService has successfully applied a remote
+  /// SDP and explicitly requested a pending-candidate flush.
+  ///
+  /// IceManager must never call native getRemoteDescription() to
+  /// discover whether SDP is ready. That native getter can race
+  /// with setRemoteDescription() on Android/flutter_webrtc.
+  bool _remoteDescriptionReady = false;
+
   // =============================================================
   // REMOTE PROCESSING SERIALIZATION
   // =============================================================
@@ -706,33 +714,17 @@ class IceManager extends ChangeNotifier {
     );
 
     try {
-      final RTCSessionDescription? remoteDescription =
-      await peerConnection.getRemoteDescription();
-
-      if (!_isCurrentSession(
-        generation: generation,
-        callId: callId,
-        peerConnection: peerConnection,
-      )) {
-        return;
-      }
-
-      if (remoteDescription == null) {
+      // Never query native getRemoteDescription() here.
+      //
+      // Candidate delivery can race with the receiver's
+      // setRemoteDescription() call. Until CallService explicitly
+      // flushes after successful SDP application, keep the candidate
+      // queued. Once SDP is known to be applied, native WebRTC is the
+      // authority for accepting/rejecting the candidate.
+      if (!_remoteDescriptionReady) {
         _enqueuePendingCandidate(
           envelope,
           scheduleRetry: false,
-        );
-
-        return;
-      }
-
-      if (!_candidateMatchesRemoteDescription(
-        envelope,
-        remoteDescription,
-      )) {
-        _enqueuePendingCandidate(
-          envelope,
-          scheduleRetry: true,
         );
 
         return;
@@ -907,8 +899,30 @@ class IceManager extends ChangeNotifier {
 
   Future<void> flushPendingCandidates(
       RTCPeerConnection? peerConnection,
-      ) {
-    return _queuePendingFlush(
+      ) async {
+    if (_disposed ||
+        peerConnection == null ||
+        !identical(
+          peerConnection,
+          _currentPeerConnection,
+        )) {
+      return;
+    }
+
+    if (!_isCurrentSession(
+      generation: _generation,
+      callId: _currentCallId ?? '',
+      peerConnection: peerConnection,
+    )) {
+      return;
+    }
+
+    // CallService invokes this only after WebRTCService has successfully
+    // completed setRemoteDescription(). This is the synchronization
+    // point for the ICE queue; no native remote-SDP getter is needed.
+    _remoteDescriptionReady = true;
+
+    await _queuePendingFlush(
       peerConnection,
       resetRetryBudget: true,
     );
@@ -979,41 +993,13 @@ class IceManager extends ChangeNotifier {
   }) async {
     _pruneExpiredPendingCandidates();
 
-    if (_pendingRemoteCandidates.isEmpty ||
+    if (!_remoteDescriptionReady ||
+        _pendingRemoteCandidates.isEmpty ||
         !_isCurrentSession(
           generation: generation,
           callId: callId,
           peerConnection: peerConnection,
         )) {
-      return;
-    }
-
-    final RTCSessionDescription? remoteDescription;
-
-    try {
-      remoteDescription =
-      await peerConnection.getRemoteDescription();
-    } catch (error, stackTrace) {
-      _reportError(
-        'Read remote SDP before ICE flush',
-        error,
-        stackTrace,
-      );
-
-      _schedulePendingFlush();
-
-      return;
-    }
-
-    if (!_isCurrentSession(
-      generation: generation,
-      callId: callId,
-      peerConnection: peerConnection,
-    )) {
-      return;
-    }
-
-    if (remoteDescription == null) {
       return;
     }
 
@@ -1027,8 +1013,6 @@ class IceManager extends ChangeNotifier {
     _pendingRemoteCandidateSignatures.clear();
 
     bool hadFailure = false;
-
-    bool waitingForMatchingGeneration = false;
 
     final DateTime cutoff =
     DateTime.now().toUtc().subtract(
@@ -1055,20 +1039,6 @@ class IceManager extends ChangeNotifier {
       );
 
       if (_processedRemoteCandidates.contains(signature)) {
-        continue;
-      }
-
-      if (!_candidateMatchesRemoteDescription(
-        envelope,
-        remoteDescription,
-      )) {
-        waitingForMatchingGeneration = true;
-
-        _enqueuePendingCandidate(
-          envelope,
-          scheduleRetry: false,
-        );
-
         continue;
       }
 
@@ -1110,8 +1080,7 @@ class IceManager extends ChangeNotifier {
       return;
     }
 
-    if (hadFailure ||
-        waitingForMatchingGeneration) {
+    if (hadFailure) {
       _schedulePendingFlush();
     }
   }
@@ -1122,6 +1091,7 @@ class IceManager extends ChangeNotifier {
 
   void _schedulePendingFlush() {
     if (_disposed ||
+        !_remoteDescriptionReady ||
         _pendingRemoteCandidates.isEmpty ||
         _pendingRetryTimer?.isActive == true) {
       return;
@@ -1237,34 +1207,6 @@ class IceManager extends ChangeNotifier {
       usernameFragment: usernameFragment,
       enqueuedAt: DateTime.now().toUtc(),
     );
-  }
-
-  // =============================================================
-  // ICE GENERATION MATCHING
-  // =============================================================
-
-  bool _candidateMatchesRemoteDescription(
-      _IceCandidateEnvelope envelope,
-      RTCSessionDescription remoteDescription,
-      ) {
-    final String? candidateFragment =
-        envelope.usernameFragment;
-
-    if (candidateFragment == null) {
-      return true;
-    }
-
-    final String? remoteFragment =
-    _extractIceUsernameFragment(
-      remoteDescription.sdp,
-      envelope.candidate.sdpMid,
-    );
-
-    if (remoteFragment == null) {
-      return true;
-    }
-
-    return candidateFragment == remoteFragment;
   }
 
   String? _usernameFragmentFromNativeCandidate(
@@ -1643,6 +1585,8 @@ class IceManager extends ChangeNotifier {
   // =============================================================
 
   void _clearCandidateState() {
+    _remoteDescriptionReady = false;
+
     _pendingRemoteCandidates.clear();
 
     _processedRemoteCandidates.clear();
