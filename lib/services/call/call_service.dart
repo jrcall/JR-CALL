@@ -197,10 +197,10 @@ class CallService with WidgetsBindingObserver {
   // =============================================================
 
   final StreamController<String> _callStatusController =
-      StreamController<String>.broadcast();
+  StreamController<String>.broadcast();
 
   final StreamController<int> _callDurationController =
-      StreamController<int>.broadcast();
+  StreamController<int>.broadcast();
 
   Stream<String> get callStatusStream => _callStatusController.stream;
 
@@ -422,8 +422,8 @@ class CallService with WidgetsBindingObserver {
       return null;
     }
 
-    final String? authenticatedUid = signalingService.auth.currentUser?.uid
-        .trim();
+    final String? authenticatedUid =
+    signalingService.auth.currentUser?.uid.trim();
 
     if (authenticatedUid == null ||
         authenticatedUid.isEmpty ||
@@ -537,7 +537,8 @@ class CallService with WidgetsBindingObserver {
 
       _callListener.startListening(callReference.id);
 
-      final RTCSessionDescription offer = await webRTCService.createOffer();
+      final RTCSessionDescription offer =
+      await webRTCService.createOffer();
 
       if (!_isSessionCurrent(sessionToken)) {
         return null;
@@ -595,7 +596,7 @@ class CallService with WidgetsBindingObserver {
     if (_currentCallId != null) {
       debugPrint(
         'JR CALL: Incoming answer ignored because '
-        'a local call session is already active.',
+            'a local call session is already active.',
       );
 
       return;
@@ -626,22 +627,21 @@ class CallService with WidgetsBindingObserver {
 
       _networkAvailable = true;
 
-      final Map<String, dynamic> callData = await signalingService
-          .getCallDocument(normalizedCallId);
+      final Map<String, dynamic> callData =
+      await signalingService.getCallDocument(normalizedCallId);
 
       if (!_isSessionCurrent(sessionToken)) {
         return;
       }
 
-      final String? status = _readString(
-        callData[CallFields.status],
-      )?.toLowerCase();
+      final String? status =
+      _readString(callData[CallFields.status])?.toLowerCase();
 
       debugPrint(
         'JR CALL [Incoming answer state]: '
-        'callId=$normalizedCallId, '
-        'status=${status ?? 'null'}, '
-        'terminal=${status != null && CallStatusValues.isTerminal(status)}',
+            'callId=$normalizedCallId, '
+            'status=${status ?? 'null'}, '
+            'terminal=${status != null && CallStatusValues.isTerminal(status)}',
       );
 
       if (status == null || CallStatusValues.isTerminal(status)) {
@@ -650,11 +650,11 @@ class CallService with WidgetsBindingObserver {
 
       final String? callerId =
           _readString(callData['callerId']) ??
-          _readString(callData['senderId']);
+              _readString(callData['senderId']);
 
       final String? receiverId =
           _readString(callData['receiverId']) ??
-          _readString(callData['recipientId']);
+              _readString(callData['recipientId']);
 
       if (callerId == null) {
         throw StateError('Incoming call caller ID is missing.');
@@ -664,15 +664,15 @@ class CallService with WidgetsBindingObserver {
         throw StateError('Incoming call receiver ID is missing.');
       }
 
-      final String? authenticatedUid = signalingService.auth.currentUser?.uid
-          .trim();
+      final String? authenticatedUid =
+      signalingService.auth.currentUser?.uid.trim();
 
       if (authenticatedUid == null ||
           authenticatedUid.isEmpty ||
           authenticatedUid != receiverId) {
         throw StateError(
           'Authenticated Firebase UID does not match '
-          'the incoming call receiver.',
+              'the incoming call receiver.',
         );
       }
 
@@ -686,12 +686,11 @@ class CallService with WidgetsBindingObserver {
 
       _isVideoCall =
           _readBool(callData['isVideoCall']) ??
-          _readBool(callData['video']) ??
-          true;
+              _readBool(callData['video']) ??
+              true;
 
-      final Map<String, dynamic>? offer = _normalizeMap(
-        callData[CallFields.offer],
-      );
+      final Map<String, dynamic>? offer =
+      _normalizeMap(callData[CallFields.offer]);
 
       if (!_isValidSessionDescription(offer, requiredType: 'offer')) {
         throw StateError('Incoming call offer is missing or invalid.');
@@ -707,7 +706,10 @@ class CallService with WidgetsBindingObserver {
       // acknowledgement is still racing.
       if (status == CallStatusValues.calling ||
           status == CallStatusValues.ringing) {
-        await signalingService.updateCallStatus(normalizedCallId, 'accepted');
+        await signalingService.updateCallStatus(
+          normalizedCallId,
+          'accepted',
+        );
 
         if (!_isSessionCurrent(sessionToken)) {
           return;
@@ -764,7 +766,8 @@ class CallService with WidgetsBindingObserver {
         return;
       }
 
-      final RTCSessionDescription answer = await webRTCService.createAnswer();
+      final RTCSessionDescription answer =
+      await webRTCService.createAnswer();
 
       if (!_isSessionCurrent(sessionToken)) {
         return;
@@ -805,8 +808,8 @@ class CallService with WidgetsBindingObserver {
         throw StateError('WebRTC did not reach connected state.');
       }
 
-      final Map<String, dynamic> latestCallData = await signalingService
-          .getCallDocument(normalizedCallId);
+      final Map<String, dynamic> latestCallData =
+      await signalingService.getCallDocument(normalizedCallId);
 
       if (!_isActiveCall(
         callId: normalizedCallId,
@@ -815,11 +818,11 @@ class CallService with WidgetsBindingObserver {
         return;
       }
 
-      final String? latestStatus = _readString(
-        latestCallData[CallFields.status],
-      )?.toLowerCase();
+      final String? latestStatus =
+      _readString(latestCallData[CallFields.status])?.toLowerCase();
 
-      if (latestStatus != null && CallStatusValues.isTerminal(latestStatus)) {
+      if (latestStatus != null &&
+          CallStatusValues.isTerminal(latestStatus)) {
         _lastRemoteTerminalStatus = latestStatus;
 
         _emitStatus(latestStatus.toUpperCase(), force: true);
@@ -907,9 +910,8 @@ class CallService with WidgetsBindingObserver {
 
     final String normalizedCallId = callId.trim();
 
-    final String? targetCallId = normalizedCallId.isNotEmpty
-        ? normalizedCallId
-        : _currentCallId;
+    final String? targetCallId =
+    normalizedCallId.isNotEmpty ? normalizedCallId : _currentCallId;
 
     if (targetCallId == null || targetCallId.isEmpty) {
       return;
@@ -941,7 +943,10 @@ class CallService with WidgetsBindingObserver {
       if (useEndCallOperation) {
         await signalingService.endCall(targetCallId);
       } else {
-        await signalingService.updateCallStatus(targetCallId, firestoreStatus);
+        await signalingService.updateCallStatus(
+          targetCallId,
+          firestoreStatus,
+        );
       }
 
       if (_isSessionCurrent(sessionToken)) {
@@ -983,13 +988,13 @@ class CallService with WidgetsBindingObserver {
 
     try {
       try {
-        final Map<String, dynamic> callData = await signalingService
-            .getCallDocument(callId);
+        final Map<String, dynamic> callData =
+        await signalingService.getCallDocument(callId);
 
         final bool isVideo =
             _readBool(callData['isVideoCall']) ??
-            _readBool(callData['video']) ??
-            false;
+                _readBool(callData['video']) ??
+                false;
 
         callType = isVideo ? 'video' : 'voice';
       } catch (error, stackTrace) {
@@ -1003,7 +1008,10 @@ class CallService with WidgetsBindingObserver {
       if (useEndCallOperation) {
         await signalingService.endCall(callId);
       } else {
-        await signalingService.updateCallStatus(callId, firestoreStatus);
+        await signalingService.updateCallStatus(
+          callId,
+          firestoreStatus,
+        );
       }
 
       try {
@@ -1033,15 +1041,15 @@ class CallService with WidgetsBindingObserver {
       return;
     }
 
-    final Map<String, dynamic> configuration = await _loadIceConfiguration();
+    final Map<String, dynamic> configuration =
+    await _loadIceConfiguration();
 
     if (!_isSessionCurrent(sessionToken)) {
       return;
     }
 
-    final List<Map<String, dynamic>> iceServers = _extractIceServers(
-      configuration,
-    );
+    final List<Map<String, dynamic>> iceServers =
+    _extractIceServers(configuration);
 
     await webRTCService.initializeConnection(
       video: video,
@@ -1062,7 +1070,7 @@ class CallService with WidgetsBindingObserver {
     } catch (error, stackTrace) {
       _reportError(
         'TURN credential loading; '
-        'using cached/fallback config',
+            'using cached/fallback config',
         error,
         stackTrace,
       );
@@ -1072,15 +1080,16 @@ class CallService with WidgetsBindingObserver {
   }
 
   List<Map<String, dynamic>> _extractIceServers(
-    Map<String, dynamic> configuration,
-  ) {
+      Map<String, dynamic> configuration,
+      ) {
     final Object? rawServers = configuration['iceServers'];
 
     if (rawServers is! List) {
       return const <Map<String, dynamic>>[];
     }
 
-    final List<Map<String, dynamic>> result = <Map<String, dynamic>>[];
+    final List<Map<String, dynamic>> result =
+    <Map<String, dynamic>>[];
 
     for (final Object? rawServer in rawServers) {
       if (rawServer is! Map) {
@@ -1089,7 +1098,8 @@ class CallService with WidgetsBindingObserver {
 
       final Map<String, dynamic> server = <String, dynamic>{};
 
-      for (final MapEntry<dynamic, dynamic> entry in rawServer.entries) {
+      for (final MapEntry<dynamic, dynamic> entry
+      in rawServer.entries) {
         server[entry.key.toString()] = entry.value;
       }
 
@@ -1106,8 +1116,10 @@ class CallService with WidgetsBindingObserver {
   // =============================================================
 
   void _configureWebRtcCallbacks(int sessionToken) {
-    webRTCService.onConnectionStateChanged = (RTCPeerConnectionState state) {
-      if (!_isSessionCurrent(sessionToken) || _terminalOutcomeInProgress) {
+    webRTCService.onConnectionStateChanged =
+        (RTCPeerConnectionState state) {
+      if (!_isSessionCurrent(sessionToken) ||
+          _terminalOutcomeInProgress) {
         return;
       }
 
@@ -1134,8 +1146,10 @@ class CallService with WidgetsBindingObserver {
       }
     };
 
-    webRTCService.onIceConnectionStateChanged = (RTCIceConnectionState state) {
-      if (!_isSessionCurrent(sessionToken) || _terminalOutcomeInProgress) {
+    webRTCService.onIceConnectionStateChanged =
+        (RTCIceConnectionState state) {
+      if (!_isSessionCurrent(sessionToken) ||
+          _terminalOutcomeInProgress) {
         return;
       }
 
@@ -1143,12 +1157,13 @@ class CallService with WidgetsBindingObserver {
         _recoveryManager.handleIceConnectionChange(
           state,
           webRTCService.peerConnection,
-          () => _restartNativeIceOnly(sessionToken),
+              () => _restartNativeIceOnly(sessionToken),
         ),
       );
     };
 
-    webRTCService.onSignalingStateChanged = (RTCSignalingState state) {
+    webRTCService.onSignalingStateChanged =
+        (RTCSignalingState state) {
       if (!_isSessionCurrent(sessionToken)) {
         return;
       }
@@ -1156,7 +1171,8 @@ class CallService with WidgetsBindingObserver {
       debugPrint('JR CALL: WebRTC signaling state -> $state');
     };
 
-    webRTCService.onIceGatheringStateChanged = (RTCIceGatheringState state) {
+    webRTCService.onIceGatheringStateChanged =
+        (RTCIceGatheringState state) {
       if (!_isSessionCurrent(sessionToken)) {
         return;
       }
@@ -1178,7 +1194,8 @@ class CallService with WidgetsBindingObserver {
       return;
     }
 
-    final RTCPeerConnection? peerConnection = webRTCService.peerConnection;
+    final RTCPeerConnection? peerConnection =
+        webRTCService.peerConnection;
 
     if (peerConnection == null) {
       throw StateError('Peer connection is unavailable for ICE.');
@@ -1212,15 +1229,22 @@ class CallService with WidgetsBindingObserver {
     _callListener.reset();
 
     _callListener.onStatusChanged = (String status) {
-      if (!_isActiveCall(callId: callId, sessionToken: sessionToken)) {
+      if (!_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      )) {
         return;
       }
 
       _handleRemoteStatus(status, sessionToken);
     };
 
-    _callListener.onOfferReceived = (Map<String, dynamic> offer) {
-      if (!_isActiveCall(callId: callId, sessionToken: sessionToken) ||
+    _callListener.onOfferReceived =
+        (Map<String, dynamic> offer) {
+      if (!_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      ) ||
           _currentRole != CallRole.receiver) {
         return;
       }
@@ -1234,8 +1258,12 @@ class CallService with WidgetsBindingObserver {
       );
     };
 
-    _callListener.onAnswerReceived = (Map<String, dynamic> answer) {
-      if (!_isActiveCall(callId: callId, sessionToken: sessionToken) ||
+    _callListener.onAnswerReceived =
+        (Map<String, dynamic> answer) {
+      if (!_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      ) ||
           _currentRole != CallRole.caller) {
         return;
       }
@@ -1250,19 +1278,28 @@ class CallService with WidgetsBindingObserver {
     };
 
     _callListener.onNetworkRecovered = () {
-      if (!_isActiveCall(callId: callId, sessionToken: sessionToken)) {
+      if (!_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      )) {
         return;
       }
 
       if (webRTCService.isPeerConnected) {
-        _emitStatus(CallServiceStatus.reconnected, force: true);
+        _emitStatus(
+          CallServiceStatus.reconnected,
+          force: true,
+        );
       } else {
         _emitStatus(CallServiceStatus.reconnecting);
       }
     };
 
     _callListener.onIceRestart = () {
-      if (!_isActiveCall(callId: callId, sessionToken: sessionToken)) {
+      if (!_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      )) {
         return;
       }
 
@@ -1270,13 +1307,19 @@ class CallService with WidgetsBindingObserver {
     };
 
     _callListener.onCallDeleted = () {
-      if (!_isActiveCall(callId: callId, sessionToken: sessionToken)) {
+      if (!_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      )) {
         return;
       }
 
       _lastRemoteTerminalStatus = CallStatusValues.ended;
 
-      _emitStatus(CallServiceStatus.ended, force: true);
+      _emitStatus(
+        CallServiceStatus.ended,
+        force: true,
+      );
     };
 
     _callListener.onCallEnded = () {
@@ -1284,12 +1327,17 @@ class CallService with WidgetsBindingObserver {
         return;
       }
 
-      if (_isEndingCall || _isFailingCall || _isCleaningUp) {
+      if (_isEndingCall ||
+          _isFailingCall ||
+          _isCleaningUp) {
         return;
       }
 
       unawaited(
-        _handleRemoteCallEnded(callId: callId, sessionToken: sessionToken),
+        _handleRemoteCallEnded(
+          callId: callId,
+          sessionToken: sessionToken,
+        ),
       );
     };
 
@@ -1298,7 +1346,10 @@ class CallService with WidgetsBindingObserver {
     };
   }
 
-  void _handleRemoteStatus(String rawStatus, int sessionToken) {
+  void _handleRemoteStatus(
+      String rawStatus,
+      int sessionToken,
+      ) {
     if (!_isSessionCurrent(sessionToken)) {
       return;
     }
@@ -1364,7 +1415,10 @@ class CallService with WidgetsBindingObserver {
     required String callId,
     required int sessionToken,
   }) async {
-    if (!_isActiveCall(callId: callId, sessionToken: sessionToken)) {
+    if (!_isActiveCall(
+      callId: callId,
+      sessionToken: sessionToken,
+    )) {
       return;
     }
 
@@ -1372,7 +1426,8 @@ class CallService with WidgetsBindingObserver {
 
     final String callType = _isVideoCall ? 'video' : 'voice';
 
-    final String historyStatus = _historyStatusForRemoteTerminal(
+    final String historyStatus =
+    _historyStatusForRemoteTerminal(
       _lastRemoteTerminalStatus,
     );
 
@@ -1385,10 +1440,17 @@ class CallService with WidgetsBindingObserver {
         callType: callType,
       );
     } catch (error, stackTrace) {
-      _reportError('Persist remote terminal call history', error, stackTrace);
+      _reportError(
+        'Persist remote terminal call history',
+        error,
+        stackTrace,
+      );
     }
 
-    await _cleanupSession(sessionToken: sessionToken, preserveLastStatus: true);
+    await _cleanupSession(
+      sessionToken: sessionToken,
+      preserveLastStatus: true,
+    );
   }
 
   String _historyStatusForRemoteTerminal(String? status) {
@@ -1425,7 +1487,8 @@ class CallService with WidgetsBindingObserver {
     required String status,
     required String callType,
   }) async {
-    if (!_isSessionCurrent(sessionToken) || _historyPersistedForSession) {
+    if (!_isSessionCurrent(sessionToken) ||
+        _historyPersistedForSession) {
       return;
     }
 
@@ -1450,13 +1513,19 @@ class CallService with WidgetsBindingObserver {
     required String callId,
     required int sessionToken,
   }) async {
-    if (!_isActiveCall(callId: callId, sessionToken: sessionToken) ||
+    if (!_isActiveCall(
+      callId: callId,
+      sessionToken: sessionToken,
+    ) ||
         _currentRole != CallRole.caller ||
         _terminalOutcomeInProgress) {
       return;
     }
 
-    if (!_isValidSessionDescription(answer, requiredType: 'answer')) {
+    if (!_isValidSessionDescription(
+      answer,
+      requiredType: 'answer',
+    )) {
       return;
     }
 
@@ -1469,7 +1538,10 @@ class CallService with WidgetsBindingObserver {
         sessionToken: sessionToken,
       );
 
-      if (!_isActiveCall(callId: callId, sessionToken: sessionToken) ||
+      if (!_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      ) ||
           _terminalOutcomeInProgress) {
         return;
       }
@@ -1478,7 +1550,10 @@ class CallService with WidgetsBindingObserver {
         timeout: _incomingConnectionTimeout,
       );
 
-      if (!_isActiveCall(callId: callId, sessionToken: sessionToken) ||
+      if (!_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      ) ||
           _terminalOutcomeInProgress) {
         return;
       }
@@ -1487,22 +1562,30 @@ class CallService with WidgetsBindingObserver {
         throw StateError('WebRTC did not reach connected state.');
       }
 
-      final Map<String, dynamic> latestCallData = await signalingService
-          .getCallDocument(callId);
+      final Map<String, dynamic> latestCallData =
+      await signalingService.getCallDocument(callId);
 
-      if (!_isActiveCall(callId: callId, sessionToken: sessionToken) ||
+      if (!_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      ) ||
           _terminalOutcomeInProgress) {
         return;
       }
 
-      final String? latestStatus = _readString(
+      final String? latestStatus =
+      _readString(
         latestCallData[CallFields.status],
       )?.toLowerCase();
 
-      if (latestStatus != null && CallStatusValues.isTerminal(latestStatus)) {
+      if (latestStatus != null &&
+          CallStatusValues.isTerminal(latestStatus)) {
         _lastRemoteTerminalStatus = latestStatus;
 
-        _emitStatus(latestStatus.toUpperCase(), force: true);
+        _emitStatus(
+          latestStatus.toUpperCase(),
+          force: true,
+        );
 
         await _handleRemoteCallEnded(
           callId: callId,
@@ -1517,16 +1600,26 @@ class CallService with WidgetsBindingObserver {
         CallStatusValues.connected,
       );
 
-      if (!_isActiveCall(callId: callId, sessionToken: sessionToken) ||
+      if (!_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      ) ||
           _terminalOutcomeInProgress) {
         return;
       }
 
       _markCallConnected();
     } catch (error, stackTrace) {
-      _reportError('Apply caller answer', error, stackTrace);
+      _reportError(
+        'Apply caller answer',
+        error,
+        stackTrace,
+      );
 
-      if (_isActiveCall(callId: callId, sessionToken: sessionToken) &&
+      if (_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      ) &&
           !_terminalOutcomeInProgress) {
         _recoveryManager.handleRecoveryRequired();
       }
@@ -1542,31 +1635,30 @@ class CallService with WidgetsBindingObserver {
     required String callId,
     required int sessionToken,
   }) async {
-    if (!_isActiveCall(callId: callId, sessionToken: sessionToken) ||
+    if (!_isActiveCall(
+      callId: callId,
+      sessionToken: sessionToken,
+    ) ||
         _currentRole != CallRole.receiver ||
         _terminalOutcomeInProgress ||
-        !_isValidSessionDescription(offer, requiredType: 'offer')) {
+        !_isValidSessionDescription(
+          offer,
+          requiredType: 'offer',
+        )) {
       return;
     }
 
-    final RTCSessionDescription? currentRemote = await webRTCService
-        .getRemoteDescription();
-
-    if (!_isActiveCall(callId: callId, sessionToken: sessionToken) ||
+    // WebRTCService is the sole owner of remote SDP state.
+    // Do not perform a native getRemoteDescription() pre-read here:
+    // a fresh PeerConnection may legitimately report a null native
+    // SessionDescription even though the Firestore offer is valid.
+    // WebRTCService performs cache-based duplicate detection atomically
+    // with remote-description application.
+    if (!_isActiveCall(
+      callId: callId,
+      sessionToken: sessionToken,
+    ) ||
         _terminalOutcomeInProgress) {
-      return;
-    }
-
-    final String? offerSdp = _readString(offer[CallFields.sdp]);
-
-    final String? offerType = _readString(
-      offer[CallFields.type],
-    )?.toLowerCase();
-
-    if (offerSdp != null &&
-        offerType != null &&
-        currentRemote?.sdp?.trim() == offerSdp.trim() &&
-        currentRemote?.type?.trim().toLowerCase() == offerType) {
       return;
     }
 
@@ -1579,14 +1671,21 @@ class CallService with WidgetsBindingObserver {
         sessionToken: sessionToken,
       );
 
-      if (!_isActiveCall(callId: callId, sessionToken: sessionToken) ||
+      if (!_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      ) ||
           _terminalOutcomeInProgress) {
         return;
       }
 
-      final RTCSessionDescription answer = await webRTCService.createAnswer();
+      final RTCSessionDescription answer =
+      await webRTCService.createAnswer();
 
-      if (!_isActiveCall(callId: callId, sessionToken: sessionToken) ||
+      if (!_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      ) ||
           _terminalOutcomeInProgress) {
         return;
       }
@@ -1596,9 +1695,16 @@ class CallService with WidgetsBindingObserver {
         _sessionDescriptionToMap(answer),
       );
     } catch (error, stackTrace) {
-      _reportError('Handle receiver restart offer', error, stackTrace);
+      _reportError(
+        'Handle receiver restart offer',
+        error,
+        stackTrace,
+      );
 
-      if (_isActiveCall(callId: callId, sessionToken: sessionToken) &&
+      if (_isActiveCall(
+        callId: callId,
+        sessionToken: sessionToken,
+      ) &&
           !_terminalOutcomeInProgress) {
         _recoveryManager.handleRecoveryRequired();
       }
@@ -1618,7 +1724,8 @@ class CallService with WidgetsBindingObserver {
       return;
     }
 
-    final String normalizedExpectedType = expectedType.trim().toLowerCase();
+    final String normalizedExpectedType =
+    expectedType.trim().toLowerCase();
 
     if (normalizedExpectedType.isEmpty) {
       throw ArgumentError.value(
@@ -1629,14 +1736,16 @@ class CallService with WidgetsBindingObserver {
       );
     }
 
-    final String? sdp = _readString(description[CallFields.sdp]);
+    final String? sdp =
+    _readString(description[CallFields.sdp]);
 
-    final String? rawType = _readString(description[CallFields.type]);
+    final String? rawType =
+    _readString(description[CallFields.type]);
 
     if (sdp == null || rawType == null) {
       throw StateError(
         'Invalid $normalizedExpectedType '
-        'session description.',
+            'session description.',
       );
     }
 
@@ -1645,11 +1754,12 @@ class CallService with WidgetsBindingObserver {
     if (type != normalizedExpectedType) {
       throw StateError(
         'Expected $normalizedExpectedType '
-        'session description but received $type.',
+            'session description but received $type.',
       );
     }
 
-    final Future<void>? previousOperation = _remoteDescriptionFuture;
+    final Future<void>? previousOperation =
+        _remoteDescriptionFuture;
 
     if (previousOperation != null) {
       try {
@@ -1663,7 +1773,8 @@ class CallService with WidgetsBindingObserver {
       }
     }
 
-    final Future<void> operation = _performRemoteDescriptionApplication(
+    final Future<void> operation =
+    _performRemoteDescriptionApplication(
       sdp: sdp,
       type: type,
       sessionToken: sessionToken,
@@ -1674,7 +1785,10 @@ class CallService with WidgetsBindingObserver {
     try {
       await operation;
     } finally {
-      if (identical(_remoteDescriptionFuture, operation)) {
+      if (identical(
+        _remoteDescriptionFuture,
+        operation,
+      )) {
         _remoteDescriptionFuture = null;
       }
     }
@@ -1689,30 +1803,24 @@ class CallService with WidgetsBindingObserver {
       return;
     }
 
-    final RTCSessionDescription? currentRemote = await webRTCService
-        .getRemoteDescription();
+    // WebRTCService owns the remote SDP cache and native SDP
+    // application. Never read the native remote description as a
+    // prerequisite here: flutter_webrtc may return null on a fresh
+    // PeerConnection and that null must not prevent the valid
+    // Firestore offer/answer from being applied.
+    // Duplicate detection is handled by WebRTCService.
+    await webRTCService.setRemoteDescription(
+      sdp: sdp,
+      type: type,
+    );
 
     if (!_isSessionCurrent(sessionToken)) {
       return;
     }
 
-    final String? currentRemoteSdp = currentRemote?.sdp?.trim();
-
-    final String? currentRemoteType = currentRemote?.type?.trim().toLowerCase();
-
-    if (currentRemoteSdp == sdp && currentRemoteType == type) {
-      await _iceManager.flushPendingCandidates(webRTCService.peerConnection);
-
-      return;
-    }
-
-    await webRTCService.setRemoteDescription(sdp: sdp, type: type);
-
-    if (!_isSessionCurrent(sessionToken)) {
-      return;
-    }
-
-    await _iceManager.flushPendingCandidates(webRTCService.peerConnection);
+    await _iceManager.flushPendingCandidates(
+      webRTCService.peerConnection,
+    );
   }
 
   // =============================================================
@@ -1723,19 +1831,29 @@ class CallService with WidgetsBindingObserver {
     _recoveryManager.onRecoverySuccess = () {
       final String? callId = _currentCallId;
 
-      if (callId == null || _isDisposed || _terminalOutcomeInProgress) {
+      if (callId == null ||
+          _isDisposed ||
+          _terminalOutcomeInProgress) {
         return;
       }
 
       _nativeIceRestartPrepared = false;
 
       if (webRTCService.isPeerConnected) {
-        _emitStatus(CallServiceStatus.reconnected, force: true);
+        _emitStatus(
+          CallServiceStatus.reconnected,
+          force: true,
+        );
       } else {
         _emitStatus(CallServiceStatus.reconnecting);
       }
 
-      unawaited(signalingService.markNetworkRecovered(callId, true));
+      unawaited(
+        signalingService.markNetworkRecovered(
+          callId,
+          true,
+        ),
+      );
     };
 
     _recoveryManager.onRecoveryFailed = () {
@@ -1763,7 +1881,8 @@ class CallService with WidgetsBindingObserver {
       );
     };
 
-    _recoveryManager.onRestartSignalingListener = (String callId) {
+    _recoveryManager.onRestartSignalingListener =
+        (String callId) {
       if (_isDisposed ||
           _currentCallId != callId ||
           _terminalOutcomeInProgress) {
@@ -1798,29 +1917,33 @@ class CallService with WidgetsBindingObserver {
     // -----------------------------------------------------------
 
     _recoveryManager.onCallerRecoveryRequired =
-        (String recoveryCallId, Future<void> Function()? nativeRestart) async {
-          final String normalizedCallId = recoveryCallId.trim();
+        (
+        String recoveryCallId,
+        Future<void> Function()? nativeRestart,
+        ) async {
+      final String normalizedCallId =
+      recoveryCallId.trim();
 
-          final int sessionToken = _sessionGeneration;
+      final int sessionToken = _sessionGeneration;
 
-          if (_isDisposed ||
-              normalizedCallId.isEmpty ||
-              _currentCallId != normalizedCallId ||
-              _currentRole != CallRole.caller ||
-              _terminalOutcomeInProgress ||
-              !_isActiveCall(
-                callId: normalizedCallId,
-                sessionToken: sessionToken,
-              )) {
-            return;
-          }
-
-          await _restartIceSignaling(
+      if (_isDisposed ||
+          normalizedCallId.isEmpty ||
+          _currentCallId != normalizedCallId ||
+          _currentRole != CallRole.caller ||
+          _terminalOutcomeInProgress ||
+          !_isActiveCall(
+            callId: normalizedCallId,
             sessionToken: sessionToken,
-            recoveryCallId: normalizedCallId,
-            nativeRestart: nativeRestart,
-          );
-        };
+          )) {
+        return;
+      }
+
+      await _restartIceSignaling(
+        sessionToken: sessionToken,
+        recoveryCallId: normalizedCallId,
+        nativeRestart: nativeRestart,
+      );
+    };
   }
 
   void _configureRecoveryContext({
@@ -1841,7 +1964,9 @@ class CallService with WidgetsBindingObserver {
   // NATIVE-ONLY ICE RESTART
   // =============================================================
 
-  Future<void> _restartNativeIceOnly(int sessionToken) async {
+  Future<void> _restartNativeIceOnly(
+      int sessionToken,
+      ) async {
     if (_isDisposed ||
         !_isSessionCurrent(sessionToken) ||
         _currentRole != CallRole.caller ||
@@ -1850,7 +1975,8 @@ class CallService with WidgetsBindingObserver {
       return;
     }
 
-    final Future<void>? active = _nativeIceRestartFuture;
+    final Future<void>? active =
+        _nativeIceRestartFuture;
 
     if (active != null) {
       await active;
@@ -1858,35 +1984,45 @@ class CallService with WidgetsBindingObserver {
       return;
     }
 
-    final Future<void> operation = _performNativeIceRestart(sessionToken);
+    final Future<void> operation =
+    _performNativeIceRestart(sessionToken);
 
     _nativeIceRestartFuture = operation;
 
     try {
       await operation;
     } finally {
-      if (identical(_nativeIceRestartFuture, operation)) {
+      if (identical(
+        _nativeIceRestartFuture,
+        operation,
+      )) {
         _nativeIceRestartFuture = null;
       }
     }
   }
 
-  Future<void> _performNativeIceRestart(int sessionToken) async {
+  Future<void> _performNativeIceRestart(
+      int sessionToken,
+      ) async {
     if (_isDisposed ||
         !_isSessionCurrent(sessionToken) ||
         _terminalOutcomeInProgress) {
       return;
     }
 
-    final RTCPeerConnection? peerConnection = webRTCService.peerConnection;
+    final RTCPeerConnection? peerConnection =
+        webRTCService.peerConnection;
 
     if (peerConnection == null) {
-      throw StateError('Peer connection is unavailable for ICE restart.');
+      throw StateError(
+        'Peer connection is unavailable for ICE restart.',
+      );
     }
 
     await peerConnection.restartIce();
 
-    if (!_isSessionCurrent(sessionToken) || _terminalOutcomeInProgress) {
+    if (!_isSessionCurrent(sessionToken) ||
+        _terminalOutcomeInProgress) {
       return;
     }
 
@@ -1902,7 +2038,8 @@ class CallService with WidgetsBindingObserver {
     required String recoveryCallId,
     required Future<void> Function()? nativeRestart,
   }) async {
-    final String normalizedRecoveryCallId = recoveryCallId.trim();
+    final String normalizedRecoveryCallId =
+    recoveryCallId.trim();
 
     if (_isDisposed ||
         normalizedRecoveryCallId.isEmpty ||
@@ -1919,22 +2056,26 @@ class CallService with WidgetsBindingObserver {
     try {
       _emitStatus(CallServiceStatus.reconnecting);
 
-      final Map<String, dynamic> callData = await signalingService
-          .getCallDocument(normalizedRecoveryCallId);
+      final Map<String, dynamic> callData =
+      await signalingService.getCallDocument(
+        normalizedRecoveryCallId,
+      );
 
       if (!_isActiveCall(
-            callId: normalizedRecoveryCallId,
-            sessionToken: sessionToken,
-          ) ||
+        callId: normalizedRecoveryCallId,
+        sessionToken: sessionToken,
+      ) ||
           _terminalOutcomeInProgress) {
         return;
       }
 
-      final String? currentStatus = _readString(
+      final String? currentStatus =
+      _readString(
         callData[CallFields.status],
       )?.toLowerCase();
 
-      if (currentStatus != null && CallStatusValues.isTerminal(currentStatus)) {
+      if (currentStatus != null &&
+          CallStatusValues.isTerminal(currentStatus)) {
         _lastRemoteTerminalStatus = currentStatus;
 
         return;
@@ -1951,9 +2092,9 @@ class CallService with WidgetsBindingObserver {
       }
 
       if (!_isActiveCall(
-            callId: normalizedRecoveryCallId,
-            sessionToken: sessionToken,
-          ) ||
+        callId: normalizedRecoveryCallId,
+        sessionToken: sessionToken,
+      ) ||
           _terminalOutcomeInProgress) {
         return;
       }
@@ -1964,9 +2105,9 @@ class CallService with WidgetsBindingObserver {
       );
 
       if (!_isActiveCall(
-            callId: normalizedRecoveryCallId,
-            sessionToken: sessionToken,
-          ) ||
+        callId: normalizedRecoveryCallId,
+        sessionToken: sessionToken,
+      ) ||
           _terminalOutcomeInProgress) {
         return;
       }
@@ -1992,14 +2133,16 @@ class CallService with WidgetsBindingObserver {
       // ---------------------------------------------------------
 
       if (_nativeIceRestartPrepared) {
-        offer = await webRTCService.createOffer(iceRestart: true);
+        offer = await webRTCService.createOffer(
+          iceRestart: true,
+        );
       } else if (nativeRestart != null) {
         await nativeRestart();
 
         if (!_isActiveCall(
-              callId: normalizedRecoveryCallId,
-              sessionToken: sessionToken,
-            ) ||
+          callId: normalizedRecoveryCallId,
+          sessionToken: sessionToken,
+        ) ||
             _terminalOutcomeInProgress) {
           return;
         }
@@ -2007,11 +2150,13 @@ class CallService with WidgetsBindingObserver {
         if (!_nativeIceRestartPrepared) {
           throw StateError(
             'Native ICE restart callback completed '
-            'without preparing the active restart.',
+                'without preparing the active restart.',
           );
         }
 
-        offer = await webRTCService.createOffer(iceRestart: true);
+        offer = await webRTCService.createOffer(
+          iceRestart: true,
+        );
       } else {
         // FILE 17 explicitly permits the callback to be null.
         //
@@ -2022,9 +2167,9 @@ class CallService with WidgetsBindingObserver {
       }
 
       if (!_isActiveCall(
-            callId: normalizedRecoveryCallId,
-            sessionToken: sessionToken,
-          ) ||
+        callId: normalizedRecoveryCallId,
+        sessionToken: sessionToken,
+      ) ||
           _terminalOutcomeInProgress) {
         return;
       }
@@ -2035,25 +2180,31 @@ class CallService with WidgetsBindingObserver {
       );
 
       if (!_isActiveCall(
-            callId: normalizedRecoveryCallId,
-            sessionToken: sessionToken,
-          ) ||
+        callId: normalizedRecoveryCallId,
+        sessionToken: sessionToken,
+      ) ||
           _terminalOutcomeInProgress) {
         return;
       }
 
-      await signalingService.incrementIceRestart(normalizedRecoveryCallId);
+      await signalingService.incrementIceRestart(
+        normalizedRecoveryCallId,
+      );
 
       _nativeIceRestartPrepared = false;
     } catch (error, stackTrace) {
       _nativeIceRestartPrepared = false;
 
-      _reportError('ICE restart signaling', error, stackTrace);
+      _reportError(
+        'ICE restart signaling',
+        error,
+        stackTrace,
+      );
 
       if (_isActiveCall(
-            callId: normalizedRecoveryCallId,
-            sessionToken: sessionToken,
-          ) &&
+        callId: normalizedRecoveryCallId,
+        sessionToken: sessionToken,
+      ) &&
           !_terminalOutcomeInProgress) {
         _recoveryManager.handleRecoveryRequired();
       }
@@ -2068,7 +2219,9 @@ class CallService with WidgetsBindingObserver {
   // CONNECTION MANAGER
   // =============================================================
 
-  void _handleConnectionState(ConnectionStateModel state) {
+  void _handleConnectionState(
+      ConnectionStateModel state,
+      ) {
     if (_isDisposed) {
       return;
     }
@@ -2088,8 +2241,11 @@ class CallService with WidgetsBindingObserver {
         break;
 
       case ConnectionStateModel.reconnecting:
-        if (_currentCallId != null && !_terminalOutcomeInProgress) {
-          _emitStatus(CallServiceStatus.reconnecting);
+        if (_currentCallId != null &&
+            !_terminalOutcomeInProgress) {
+          _emitStatus(
+            CallServiceStatus.reconnecting,
+          );
         }
 
         break;
@@ -2097,8 +2253,11 @@ class CallService with WidgetsBindingObserver {
       case ConnectionStateModel.disconnected:
         _networkAvailable = false;
 
-        if (_currentCallId != null && !_terminalOutcomeInProgress) {
-          _emitStatus(CallServiceStatus.networkLost);
+        if (_currentCallId != null &&
+            !_terminalOutcomeInProgress) {
+          _emitStatus(
+            CallServiceStatus.networkLost,
+          );
 
           _recoveryManager.handleRecoveryRequired();
         }
@@ -2114,26 +2273,27 @@ class CallService with WidgetsBindingObserver {
   void _startCallTimeoutTimer(int sessionToken) {
     _callTimeoutTimer?.cancel();
 
-    _callTimeoutTimer = Timer(_outgoingCallTimeout, () {
-      final String? callId = _currentCallId;
+    _callTimeoutTimer =
+        Timer(_outgoingCallTimeout, () {
+          final String? callId = _currentCallId;
 
-      if (!_isSessionCurrent(sessionToken) ||
-          callId == null ||
-          webRTCService.isPeerConnected ||
-          _terminalOutcomeInProgress) {
-        return;
-      }
+          if (!_isSessionCurrent(sessionToken) ||
+              callId == null ||
+              webRTCService.isPeerConnected ||
+              _terminalOutcomeInProgress) {
+            return;
+          }
 
-      unawaited(
-        _completeCallWithStatus(
-          callId: callId,
-          firestoreStatus: CallStatusValues.timeout,
-          historyStatus: CallServiceStatus.timeout,
-          uiStatus: CallServiceStatus.timeout,
-          useEndCallOperation: false,
-        ),
-      );
-    });
+          unawaited(
+            _completeCallWithStatus(
+              callId: callId,
+              firestoreStatus: CallStatusValues.timeout,
+              historyStatus: CallServiceStatus.timeout,
+              uiStatus: CallServiceStatus.timeout,
+              useEndCallOperation: false,
+            ),
+          );
+        });
   }
 
   // =============================================================
@@ -2153,18 +2313,19 @@ class CallService with WidgetsBindingObserver {
 
     _emitDuration(0);
 
-    _callDurationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_currentCallId == null ||
-          _isDisposed ||
-          _terminalOutcomeInProgress ||
-          !webRTCService.isPeerConnected) {
-        return;
-      }
+    _callDurationTimer =
+        Timer.periodic(const Duration(seconds: 1), (_) {
+          if (_currentCallId == null ||
+              _isDisposed ||
+              _terminalOutcomeInProgress ||
+              !webRTCService.isPeerConnected) {
+            return;
+          }
 
-      _callDurationSeconds++;
+          _callDurationSeconds++;
 
-      _emitDuration(_callDurationSeconds);
-    });
+          _emitDuration(_callDurationSeconds);
+        });
   }
 
   void _markCallConnected() {
@@ -2202,8 +2363,11 @@ class CallService with WidgetsBindingObserver {
 
     final String normalizedType = type.trim().toLowerCase();
 
-    if (normalizedSdp.isEmpty || normalizedType.isEmpty) {
-      throw ArgumentError('Remote offer SDP and type are required.');
+    if (normalizedSdp.isEmpty ||
+        normalizedType.isEmpty) {
+      throw ArgumentError(
+        'Remote offer SDP and type are required.',
+      );
     }
 
     await webRTCService.setRemoteDescription(
@@ -2211,7 +2375,9 @@ class CallService with WidgetsBindingObserver {
       type: normalizedType,
     );
 
-    await _iceManager.flushPendingCandidates(webRTCService.peerConnection);
+    await _iceManager.flushPendingCandidates(
+      webRTCService.peerConnection,
+    );
   }
 
   // =============================================================
@@ -2249,11 +2415,16 @@ class CallService with WidgetsBindingObserver {
   }
 
   bool _isSessionCurrent(int sessionToken) {
-    return !_isDisposed && sessionToken == _sessionGeneration;
+    return !_isDisposed &&
+        sessionToken == _sessionGeneration;
   }
 
-  bool _isActiveCall({required String callId, required int sessionToken}) {
-    return _isSessionCurrent(sessionToken) && _currentCallId == callId;
+  bool _isActiveCall({
+    required String callId,
+    required int sessionToken,
+  }) {
+    return _isSessionCurrent(sessionToken) &&
+        _currentCallId == callId;
   }
 
   // =============================================================
@@ -2264,7 +2435,8 @@ class CallService with WidgetsBindingObserver {
     required int sessionToken,
     required String? callId,
   }) async {
-    if (!_isSessionCurrent(sessionToken) || _isFailingCall) {
+    if (!_isSessionCurrent(sessionToken) ||
+        _isFailingCall) {
       return;
     }
 
@@ -2272,13 +2444,19 @@ class CallService with WidgetsBindingObserver {
 
     final int durationSeconds = _callDurationSeconds;
 
-    final String callType = _isVideoCall ? 'video' : 'voice';
+    final String callType =
+    _isVideoCall ? 'video' : 'voice';
 
     try {
-      _emitStatus(CallServiceStatus.failed, force: true);
+      _emitStatus(
+        CallServiceStatus.failed,
+        force: true,
+      );
 
-      if (callId != null && callId.trim().isNotEmpty) {
-        final String normalizedCallId = callId.trim();
+      if (callId != null &&
+          callId.trim().isNotEmpty) {
+        final String normalizedCallId =
+        callId.trim();
 
         try {
           await signalingService.updateCallStatus(
@@ -2296,7 +2474,11 @@ class CallService with WidgetsBindingObserver {
             );
           }
         } catch (error, stackTrace) {
-          _reportError('Persist failed call', error, stackTrace);
+          _reportError(
+            'Persist failed call',
+            error,
+            stackTrace,
+          );
         }
       }
 
@@ -2322,7 +2504,8 @@ class CallService with WidgetsBindingObserver {
       return;
     }
 
-    if (!force && sessionToken != _sessionGeneration) {
+    if (!force &&
+        sessionToken != _sessionGeneration) {
       return;
     }
 
@@ -2371,7 +2554,11 @@ class CallService with WidgetsBindingObserver {
 
       await webRTCService.dispose();
     } catch (error, stackTrace) {
-      _reportError('Call resource cleanup', error, stackTrace);
+      _reportError(
+        'Call resource cleanup',
+        error,
+        stackTrace,
+      );
     } finally {
       _currentCallId = null;
 
@@ -2415,21 +2602,28 @@ class CallService with WidgetsBindingObserver {
   // STATUS / ERROR
   // =============================================================
 
-  void _emitStatus(String status, {bool force = false}) {
-    final String normalizedStatus = status.trim().toUpperCase();
+  void _emitStatus(
+      String status, {
+        bool force = false,
+      }) {
+    final String normalizedStatus =
+    status.trim().toUpperCase();
 
     if (normalizedStatus.isEmpty) {
       return;
     }
 
-    if (!force && normalizedStatus == _lastStatus) {
+    if (!force &&
+        normalizedStatus == _lastStatus) {
       return;
     }
 
     _lastStatus = normalizedStatus;
 
     if (!_callStatusController.isClosed) {
-      _callStatusController.add(normalizedStatus);
+      _callStatusController.add(
+        normalizedStatus,
+      );
     }
   }
 
@@ -2439,11 +2633,20 @@ class CallService with WidgetsBindingObserver {
     }
   }
 
-  void _reportError(String source, Object error, [StackTrace? stackTrace]) {
-    debugPrint('JR CALL [$source] error: $error');
+  void _reportError(
+      String source,
+      Object error, [
+        StackTrace? stackTrace,
+      ]) {
+    debugPrint(
+      'JR CALL [$source] error: $error',
+    );
 
     if (stackTrace != null) {
-      debugPrintStack(label: 'JR CALL [$source]', stackTrace: stackTrace);
+      debugPrintStack(
+        label: 'JR CALL [$source]',
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -2452,32 +2655,40 @@ class CallService with WidgetsBindingObserver {
   // =============================================================
 
   Map<String, dynamic> _sessionDescriptionToMap(
-    RTCSessionDescription description,
-  ) {
+      RTCSessionDescription description,
+      ) {
     final String? rawSdp = description.sdp;
 
     final String? rawType = description.type;
 
     if (rawSdp == null || rawType == null) {
-      throw StateError('WebRTC session description is invalid.');
+      throw StateError(
+        'WebRTC session description is invalid.',
+      );
     }
 
     final String sdp = rawSdp.trim();
 
-    final String type = rawType.trim().toLowerCase();
+    final String type =
+    rawType.trim().toLowerCase();
 
     if (sdp.isEmpty || type.isEmpty) {
-      throw StateError('WebRTC session description is invalid.');
+      throw StateError(
+        'WebRTC session description is invalid.',
+      );
     }
 
     if (type != 'offer' && type != 'answer') {
       throw StateError(
         'Unsupported WebRTC session '
-        'description type: $type',
+            'description type: $type',
       );
     }
 
-    return <String, dynamic>{CallFields.type: type, CallFields.sdp: sdp};
+    return <String, dynamic>{
+      CallFields.type: type,
+      CallFields.sdp: sdp,
+    };
   }
 
   String? _readString(Object? value) {
@@ -2487,7 +2698,9 @@ class CallService with WidgetsBindingObserver {
 
     final String normalized = value.trim();
 
-    return normalized.isEmpty ? null : normalized;
+    return normalized.isEmpty
+        ? null
+        : normalized;
   }
 
   bool? _readBool(Object? value) {
@@ -2506,13 +2719,18 @@ class CallService with WidgetsBindingObserver {
     }
 
     if (value is String) {
-      final String normalized = value.trim().toLowerCase();
+      final String normalized =
+      value.trim().toLowerCase();
 
-      if (normalized == 'true' || normalized == '1' || normalized == 'yes') {
+      if (normalized == 'true' ||
+          normalized == '1' ||
+          normalized == 'yes') {
         return true;
       }
 
-      if (normalized == 'false' || normalized == '0' || normalized == 'no') {
+      if (normalized == 'false' ||
+          normalized == '0' ||
+          normalized == 'no') {
         return false;
       }
     }
@@ -2526,14 +2744,17 @@ class CallService with WidgetsBindingObserver {
     }
 
     if (value is Map) {
-      final Map<String, dynamic> result = <String, dynamic>{};
+      final Map<String, dynamic> result =
+      <String, dynamic>{};
 
-      for (final MapEntry<dynamic, dynamic> entry in value.entries) {
+      for (final MapEntry<dynamic, dynamic> entry
+      in value.entries) {
         if (entry.key is! String) {
           return null;
         }
 
-        result[entry.key as String] = entry.value;
+        result[entry.key as String] =
+            entry.value;
       }
 
       return result;
@@ -2543,28 +2764,32 @@ class CallService with WidgetsBindingObserver {
   }
 
   bool _isValidSessionDescription(
-    Map<String, dynamic>? description, {
-    required String requiredType,
-  }) {
+      Map<String, dynamic>? description, {
+        required String requiredType,
+      }) {
     if (description == null) {
       return false;
     }
 
-    final String normalizedRequiredType = requiredType.trim().toLowerCase();
+    final String normalizedRequiredType =
+    requiredType.trim().toLowerCase();
 
     if (normalizedRequiredType.isEmpty) {
       return false;
     }
 
-    final String? sdp = _readString(description[CallFields.sdp]);
+    final String? sdp =
+    _readString(description[CallFields.sdp]);
 
-    final String? rawType = _readString(description[CallFields.type]);
+    final String? rawType =
+    _readString(description[CallFields.type]);
 
     if (sdp == null || rawType == null) {
       return false;
     }
 
-    return rawType.toLowerCase() == normalizedRequiredType;
+    return rawType.toLowerCase() ==
+        normalizedRequiredType;
   }
 
   // =============================================================
@@ -2589,7 +2814,11 @@ class CallService with WidgetsBindingObserver {
       try {
         await pendingInitialization;
       } catch (error, stackTrace) {
-        _reportError('Pending infrastructure disposal', error, stackTrace);
+        _reportError(
+          'Pending infrastructure disposal',
+          error,
+          stackTrace,
+        );
       }
     }
 
@@ -2620,46 +2849,46 @@ class CallService with WidgetsBindingObserver {
 //
 // FILE 28 FINAL EXACT FILE-17 ALIGNMENT:
 //
-// âœ“ Existing CallService public API preserved.
-// âœ“ Existing lifecycle logic preserved.
-// âœ“ Firebase UID identity preserved.
-// âœ“ SignalingService ownership preserved.
-// âœ“ IceManager ownership preserved.
-// âœ“ WebRTCService ownership preserved.
-// âœ“ RecoveryManager retry/backoff ownership preserved.
+// ✓ Existing CallService public API preserved.
+// ✓ Existing lifecycle logic preserved.
+// ✓ Firebase UID identity preserved.
+// ✓ SignalingService ownership preserved.
+// ✓ IceManager ownership preserved.
+// ✓ WebRTCService ownership preserved.
+// ✓ RecoveryManager retry/backoff ownership preserved.
 //
-// âœ“ Exact RecoveryManager callback signature used:
+// ✓ Exact RecoveryManager callback signature used:
 //
 // Future<void> Function(
 //   String callId,
 //   Future<void> Function()? nativeRestart,
 // )?
 //
-// âœ“ nativeRestart is correctly nullable.
-// âœ“ Previous compile-time callback mismatch removed.
-// âœ“ No zero-argument callback guess remains.
-// âœ“ Native callback remains transport-only.
-// âœ“ Null native callback has safe complete-restart fallback.
-// âœ“ Non-null native callback executes only once.
-// âœ“ Native restart single-flight protection preserved.
-// âœ“ Restart offer still uses iceRestart: true.
-// âœ“ No second native restart after callback.
-// âœ“ Restart offer remains SignalingService persisted.
-// âœ“ Restart counter remains SignalingService persisted.
-// âœ“ networkRecovered metadata preserved.
-// âœ“ Illegal early reconnecting lifecycle write blocked.
-// âœ“ Terminal resurrection protection preserved.
-// âœ“ Caller answer terminal guard preserved.
-// âœ“ Receiver offer terminal guard preserved.
-// âœ“ Duration real-WebRTC-only behavior preserved.
-// âœ“ Detached-call protection preserved.
-// âœ“ Same-session history guard preserved.
-// âœ“ TURN/STUN flow preserved.
-// âœ“ No UI/design changes.
-// âœ“ No Message/Profile/Auth ownership added.
+// ✓ nativeRestart is correctly nullable.
+// ✓ Previous compile-time callback mismatch removed.
+// ✓ No zero-argument callback guess remains.
+// ✓ Native callback remains transport-only.
+// ✓ Null native callback has safe complete-restart fallback.
+// ✓ Non-null native callback executes only once.
+// ✓ Native restart single-flight protection preserved.
+// ✓ Restart offer still uses iceRestart: true.
+// ✓ No second native restart after callback.
+// ✓ Restart offer remains SignalingService persisted.
+// ✓ Restart counter remains SignalingService persisted.
+// ✓ networkRecovered metadata preserved.
+// ✓ Illegal early reconnecting lifecycle write blocked.
+// ✓ Terminal resurrection protection preserved.
+// ✓ Caller answer terminal guard preserved.
+// ✓ Receiver offer terminal guard preserved.
+// ✓ Duration real-WebRTC-only behavior preserved.
+// ✓ Detached-call protection preserved.
+// ✓ Same-session history guard preserved.
+// ✓ TURN/STUN flow preserved.
+// ✓ No UI/design changes.
+// ✓ No Message/Profile/Auth ownership added.
 //
 // STATUS:
-// FILE 28 â€” READY FOR IDE VERIFICATION.
+// FILE 28 — READY FOR IDE VERIFICATION.
 //
 // AFTER SAVE:
 // Android Studio -> Problems -> File
