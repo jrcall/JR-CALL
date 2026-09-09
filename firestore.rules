@@ -1416,7 +1416,20 @@ service cloud.firestore {
           historyId
         );
 
-      allow get, list:
+      // Single-document reads used by the deterministic history
+      // transaction must also be authorized when the history document
+      // does not exist yet. In that case resource.data is unavailable,
+      // so historyParticipant(resource.data) cannot prove ownership.
+      // Authorization is derived from the immutable call participant
+      // data instead.
+      allow get:
+        if participantOfCall(
+          historyId
+        );
+
+      // Collection queries remain query-safe and continue to authorize
+      // only documents whose stored caller/receiver is the requester.
+      allow list:
         if historyParticipant(
           resource.data
         );
