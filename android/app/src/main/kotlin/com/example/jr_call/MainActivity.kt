@@ -6,19 +6,10 @@
 //
 // PRODUCTION ANDROID CALL PRESENTATION BRIDGE
 //
-// OWNERSHIP:
-// - CallService -> WebRTC/call lifecycle.
-// - SignalingService -> Firestore signaling.
-// - BackgroundCallService -> Dart/native orchestration.
-// - MainActivity -> Android notification/full-screen handoff.
-//
-// IMPORTANT:
-// - No WebRTC ownership.
-// - No Firestore ownership.
-// - No Firebase Auth ownership.
-// - No ICE/SDP ownership.
-// - No fake CONNECTED state.
-// - Existing MethodChannel contract preserved.
+// FIX:
+// - Flutter MethodChannel launch actions are buffered before the
+//   Dart BackgroundCallService handler is registered.
+// - This prevents cold-start Accept/Reject actions from being lost.
 // ===============================================================
 
 package com.example.jr_call
@@ -48,17 +39,8 @@ import org.json.JSONObject
 class MainActivity : FlutterActivity() {
 
     companion object {
-
-        // =======================================================
-        // METHOD CHANNEL
-        // =======================================================
-
         private const val CHANNEL_NAME =
             "jr_call/background_call"
-
-        // =======================================================
-        // NOTIFICATION CHANNELS
-        // =======================================================
 
         private const val INCOMING_CHANNEL_ID =
             "jr_call_incoming_calls"
@@ -78,19 +60,11 @@ class MainActivity : FlutterActivity() {
         private const val ACTIVE_NOTIFICATION_ID =
             41002
 
-        // =======================================================
-        // STORAGE
-        // =======================================================
-
         private const val PREFS_NAME =
             "jr_call_background_call"
 
         private const val PREF_PENDING_CALL =
             "pending_call"
-
-        // =======================================================
-        // INTENT DATA
-        // =======================================================
 
         private const val EXTRA_CALL_ID =
             "jr_call_call_id"
@@ -107,25 +81,15 @@ class MainActivity : FlutterActivity() {
         private const val ACTION_REJECT =
             "reject"
 
-        // Use literal permission name so minSdk < 29 remains
-        // compile/lint safe.
         private const val PERMISSION_USE_FULL_SCREEN_INTENT =
             "android.permission.USE_FULL_SCREEN_INTENT"
     }
-
-    // ===========================================================
-    // RUNTIME
-    // ===========================================================
 
     private var methodChannel: MethodChannel? = null
 
     private var flutterEngineReady = false
 
     private var lastDeliveredActionKey: String? = null
-
-    // ===========================================================
-    // FLUTTER ENGINE
-    // ===========================================================
 
     override fun configureFlutterEngine(
         flutterEngine: FlutterEngine
@@ -139,6 +103,19 @@ class MainActivity : FlutterActivity() {
                 flutterEngine.dartExecutor.binaryMessenger,
                 CHANNEL_NAME
             )
+
+        // =======================================================
+        // CRITICAL COLD-START FIX
+        //
+        // Android can create MainActivity and deliver the
+        // notification Accept intent before Dart has installed
+        // BackgroundCallService.setMethodCallHandler().
+        //
+        // Without this buffer the native method call can be
+        // discarded. Flutter officially provides this API for
+        // exactly this channel-startup condition.
+        // =======================================================
+        channel.resizeChannelBuffer(8)
 
         channel.setMethodCallHandler { call, result ->
             handleFlutterMethod(
@@ -154,10 +131,6 @@ class MainActivity : FlutterActivity() {
         handleLaunchIntent(intent)
     }
 
-    // ===========================================================
-    // NEW INTENT
-    // ===========================================================
-
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
 
@@ -165,10 +138,6 @@ class MainActivity : FlutterActivity() {
 
         handleLaunchIntent(intent)
     }
-
-    // ===========================================================
-    // FLUTTER -> ANDROID
-    // ===========================================================
 
     private fun handleFlutterMethod(
         call: MethodCall,
@@ -318,10 +287,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // ===========================================================
-    // INCOMING CALL NOTIFICATION
-    // ===========================================================
-
     private fun showIncomingCallNotification(
         payload: Map<String, Any?>
     ): Boolean {
@@ -459,10 +424,6 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    // ===========================================================
-    // FULL-SCREEN CALL PRESENTATION
-    // ===========================================================
-
     @SuppressLint("FullScreenIntentPolicy")
     private fun applyFullScreenIntentIfAllowed(
         builder: NotificationCompat.Builder,
@@ -477,10 +438,6 @@ class MainActivity : FlutterActivity() {
             true
         )
     }
-
-    // ===========================================================
-    // ACTIVE CALL NOTIFICATION
-    // ===========================================================
 
     private fun showActiveCallNotification(
         callId: String,
@@ -541,10 +498,6 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    // ===========================================================
-    // SAFE NOTIFICATION POST
-    // ===========================================================
-
     @SuppressLint("MissingPermission")
     private fun postNotification(
         id: Int,
@@ -569,10 +522,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // ===========================================================
-    // NOTIFICATION PERMISSION
-    // ===========================================================
-
     private fun canPostNotifications(): Boolean {
 
         if (
@@ -595,10 +544,6 @@ class MainActivity : FlutterActivity() {
             .from(this)
             .areNotificationsEnabled()
     }
-
-    // ===========================================================
-    // FULL-SCREEN INTENT AVAILABILITY
-    // ===========================================================
 
     private fun canUseFullScreenIntent(): Boolean {
 
@@ -634,10 +579,6 @@ class MainActivity : FlutterActivity() {
 
         return true
     }
-
-    // ===========================================================
-    // NOTIFICATION CHANNELS
-    // ===========================================================
 
     private fun createNotificationChannels() {
 
@@ -747,10 +688,6 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    // ===========================================================
-    // INTENT CREATION
-    // ===========================================================
-
     private fun createCallIntent(
         callId: String,
         action: String
@@ -777,10 +714,6 @@ class MainActivity : FlutterActivity() {
             )
         }
     }
-
-    // ===========================================================
-    // INTENT HANDLING
-    // ===========================================================
 
     private fun handleLaunchIntent(
         launchIntent: Intent?
@@ -881,10 +814,6 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    // ===========================================================
-    // SHARED PREFERENCES
-    // ===========================================================
-
     private fun preferences():
             SharedPreferences {
 
@@ -894,11 +823,6 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    // ===========================================================
-    // SAVE PENDING CALL
-    // ===========================================================
-
-    //noinspection SpellCheckingInspection
     @SuppressLint("UseKtx")
     private fun savePendingCall(
         payload: Map<String, Any?>
@@ -916,10 +840,6 @@ class MainActivity : FlutterActivity() {
 
         editor.apply()
     }
-
-    // ===========================================================
-    // LOAD PENDING CALL
-    // ===========================================================
 
     private fun loadPendingCall():
             Map<String, Any?> {
@@ -941,11 +861,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // ===========================================================
-    // CLEAR PENDING CALL
-    // ===========================================================
-
-    //noinspection SpellCheckingInspection
     @SuppressLint("UseKtx")
     private fun clearPendingCall() {
 
@@ -958,10 +873,6 @@ class MainActivity : FlutterActivity() {
 
         editor.apply()
     }
-
-    // ===========================================================
-    // MAP -> JSON
-    // ===========================================================
 
     private fun mapToJson(
         map: Map<String, Any?>
@@ -1066,10 +977,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // ===========================================================
-    // JSON -> MAP
-    // ===========================================================
-
     private fun jsonToMap(
         json: JSONObject
     ): Map<String, Any?> {
@@ -1133,10 +1040,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // ===========================================================
-    // DISMISS NOTIFICATIONS
-    // ===========================================================
-
     private fun cancelIncomingNotification() {
         NotificationManagerCompat
             .from(this)
@@ -1152,10 +1055,6 @@ class MainActivity : FlutterActivity() {
                 ACTIVE_NOTIFICATION_ID
             )
     }
-
-    // ===========================================================
-    // ARGUMENT NORMALIZATION
-    // ===========================================================
 
     private fun normalizeArguments(
         arguments: Any?
@@ -1185,10 +1084,6 @@ class MainActivity : FlutterActivity() {
         return normalized
     }
 
-    // ===========================================================
-    // STRING NORMALIZATION
-    // ===========================================================
-
     private fun readString(
         value: Any?
     ): String? {
@@ -1204,10 +1099,6 @@ class MainActivity : FlutterActivity() {
                 null
             }
     }
-
-    // ===========================================================
-    // BOOLEAN NORMALIZATION
-    // ===========================================================
 
     private fun readBoolean(
         value: Any?
@@ -1243,10 +1134,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // ===========================================================
-    // PENDING INTENT REQUEST CODE
-    // ===========================================================
-
     private fun requestCode(
         callId: String,
         suffix: Int
@@ -1258,10 +1145,6 @@ class MainActivity : FlutterActivity() {
                 ) + suffix
     }
 
-    // ===========================================================
-    // PENDING INTENT FLAGS
-    // ===========================================================
-
     private fun pendingIntentFlags():
             Int {
 
@@ -1269,10 +1152,6 @@ class MainActivity : FlutterActivity() {
             .FLAG_UPDATE_CURRENT or
                 PendingIntent.FLAG_IMMUTABLE
     }
-
-    // ===========================================================
-    // CLEANUP
-    // ===========================================================
 
     override fun cleanUpFlutterEngine(
         flutterEngine: FlutterEngine
@@ -1296,27 +1175,4 @@ class MainActivity : FlutterActivity() {
 
 // ===============================================================
 // END OF FILE
-// File: MainActivity.kt
-// Location:
-// android/app/src/main/kotlin/com/example/jr_call/MainActivity.kt
-//
-// IDE / LINT:
-//
-// - Android UseKtx lint is suppressed only on the two intentional
-//   SharedPreferences editor operations.
-// - JetBrains spelling inspection is suppressed only at those
-//   exact suppression annotations.
-// - No global dictionary or project inspection change is needed.
-// - Runtime behavior is unchanged.
-//
-// CALL ENGINE:
-//
-// - Existing MethodChannel name is preserved.
-// - Incoming notification flow is preserved.
-// - Accept/reject native handoff is preserved.
-// - Pending-call restore flow is preserved.
-// - Android 14+ full-screen availability check is preserved.
-// - Notification permission processing is preserved.
-// - Notification channels are preserved.
-// - CallService/WebRTC/SDP/ICE/signaling ownership is untouched.
 // ===============================================================
