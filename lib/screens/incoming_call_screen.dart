@@ -342,92 +342,311 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                 BuildContext context,
                 BoxConstraints constraints,
                 ) {
+              final double availableHeight =
+                  constraints.maxHeight;
+
+              final double availableWidth =
+                  constraints.maxWidth;
+
+              final bool veryCompact =
+                  availableHeight < 590;
+
               final bool compact =
-                  constraints.maxHeight < 690;
+                  availableHeight < 690;
 
               final double horizontalPadding =
-              constraints.maxWidth < 360
+              availableWidth < 360
                   ? 18
                   : 24;
 
               return Stack(
+                fit: StackFit.expand,
                 children: <Widget>[
                   const Positioned.fill(
                     child: _IncomingBackground(),
                   ),
-                  SingleChildScrollView(
-                    physics:
-                    const BouncingScrollPhysics(),
+                  Padding(
                     padding: EdgeInsets.fromLTRB(
                       horizontalPadding,
-                      compact ? 14 : 20,
+                      compact ? 10 : 20,
                       horizontalPadding,
-                      compact ? 18 : 28,
+                      compact ? 12 : 28,
                     ),
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        minHeight:
-                        constraints.maxHeight -
-                            (compact ? 32 : 48),
-                      ),
-                      child: Column(
-                        children: <Widget>[
-                          _buildBrandHeader(),
+                    child: Column(
+                      children: <Widget>[
+                        _buildBrandHeader(),
 
-                          SizedBox(
-                            height:
-                            compact ? 22 : 42,
+                        SizedBox(
+                          height: veryCompact
+                              ? 8
+                              : compact
+                              ? 16
+                              : 30,
+                        ),
+
+                        _buildIncomingBadge(),
+
+                        SizedBox(
+                          height: veryCompact
+                              ? 8
+                              : compact
+                              ? 14
+                              : 24,
+                        ),
+
+                        Expanded(
+                          child: _buildLockedCenterContent(
+                            constraints,
+                            compact,
+                            veryCompact,
                           ),
+                        ),
 
-                          _buildIncomingBadge(),
+                        SizedBox(
+                          height: veryCompact
+                              ? 8
+                              : compact
+                              ? 14
+                              : 24,
+                        ),
 
-                          SizedBox(
-                            height:
-                            compact ? 20 : 34,
-                          ),
+                        _buildCallActions(
+                          compact: compact,
+                        ),
 
-                          _buildCallerCard(
-                            compact: compact,
-                          ),
+                        SizedBox(
+                          height: veryCompact
+                              ? 8
+                              : compact
+                              ? 12
+                              : 20,
+                        ),
 
-                          SizedBox(
-                            height:
-                            compact ? 22 : 34,
-                          ),
-
-                          _buildCallInformation(),
-
-                          SizedBox(
-                            height:
-                            compact ? 20 : 30,
-                          ),
-
-                          if (_isProcessing)
-                            _buildProcessingState(),
-
-                          if (_isProcessing)
-                            SizedBox(
-                              height:
-                              compact ? 16 : 24,
-                            ),
-
-                          _buildCallActions(
-                            compact: compact,
-                          ),
-
-                          SizedBox(
-                            height:
-                            compact ? 18 : 26,
-                          ),
-
-                          const _SecurityMessage(),
-                        ],
-                      ),
+                        const _SecurityMessage(),
+                      ],
                     ),
                   ),
                 ],
               );
             },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLockedCenterContent(
+      BoxConstraints constraints,
+      bool compact,
+      bool veryCompact,
+      ) {
+    final double maxWidth =
+        constraints.maxWidth - 48;
+
+    final double avatarSize =
+    veryCompact
+        ? 92
+        : compact
+        ? 118
+        : 164;
+
+    final double cardPadding =
+    veryCompact
+        ? 12
+        : compact
+        ? 18
+        : 28;
+
+    return Center(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth:
+          maxWidth.clamp(0.0, 520.0),
+          maxHeight:
+          constraints.maxHeight,
+        ),
+        child: Container(
+          width: double.infinity,
+          padding: EdgeInsets.symmetric(
+            horizontal: cardPadding,
+            vertical: cardPadding,
+          ),
+          decoration: BoxDecoration(
+            color: _surface.withValues(
+              alpha: 0.82,
+            ),
+            borderRadius:
+            BorderRadius.circular(
+              veryCompact ? 22 : 30,
+            ),
+            border:
+            Border.all(
+              color: _border,
+            ),
+            boxShadow:
+            const <BoxShadow>[
+              BoxShadow(
+                color: Color(0x1A087AF5),
+                blurRadius: 30,
+                offset: Offset(0, 12),
+              ),
+              BoxShadow(
+                color: Color(0x1200D99B),
+                blurRadius: 32,
+                offset: Offset(0, -2),
+              ),
+            ],
+          ),
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.center,
+            child: SizedBox(
+              width:
+              maxWidth.clamp(280.0, 520.0),
+              child: Column(
+                mainAxisSize:
+                MainAxisSize.min,
+                children: <Widget>[
+                  ScaleTransition(
+                    scale: _pulseAnimation,
+                    child:
+                    _buildCallerAvatar(
+                      size: avatarSize,
+                    ),
+                  ),
+
+                  SizedBox(
+                    height: veryCompact
+                        ? 10
+                        : compact
+                        ? 16
+                        : 24,
+                  ),
+
+                  Text(
+                    _safeCallerName,
+                    maxLines: 2,
+                    overflow:
+                    TextOverflow.ellipsis,
+                    textAlign:
+                    TextAlign.center,
+                    style: TextStyle(
+                      color: _textPrimary,
+                      fontSize: veryCompact
+                          ? 22
+                          : compact
+                          ? 25
+                          : 29,
+                      fontWeight:
+                      FontWeight.w900,
+                      height: 1.08,
+                    ),
+                  ),
+
+                  if (_safeCallerId != null)
+                    ...<Widget>[
+                      SizedBox(
+                        height:
+                        veryCompact
+                            ? 5
+                            : 8,
+                      ),
+                      Container(
+                        constraints:
+                        const BoxConstraints(
+                          maxWidth: 270,
+                        ),
+                        padding:
+                        const EdgeInsets
+                            .symmetric(
+                          horizontal: 13,
+                          vertical: 7,
+                        ),
+                        decoration:
+                        BoxDecoration(
+                          color:
+                          const Color(
+                            0xFFF1F6FF,
+                          ),
+                          borderRadius:
+                          BorderRadius
+                              .circular(
+                            22,
+                          ),
+                        ),
+                        child: Text(
+                          _safeCallerId!,
+                          maxLines: 1,
+                          overflow:
+                          TextOverflow
+                              .ellipsis,
+                          textAlign:
+                          TextAlign.center,
+                          style:
+                          const TextStyle(
+                            color: _deepBlue,
+                            fontSize: 12.5,
+                            fontWeight:
+                            FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+
+                  SizedBox(
+                    height: veryCompact
+                        ? 8
+                        : compact
+                        ? 12
+                        : 18,
+                  ),
+
+                  Text(
+                    _callLabel,
+                    textAlign:
+                    TextAlign.center,
+                    style: TextStyle(
+                      color: _textPrimary,
+                      fontSize: veryCompact
+                          ? 15
+                          : compact
+                          ? 17
+                          : 18,
+                      fontWeight:
+                      FontWeight.w800,
+                    ),
+                  ),
+
+                  const SizedBox(
+                    height: 7,
+                  ),
+
+                  const Text(
+                    'Choose Accept or Decline',
+                    textAlign:
+                    TextAlign.center,
+                    style: TextStyle(
+                      color:
+                      _textSecondary,
+                      fontSize: 13,
+                      fontWeight:
+                      FontWeight.w500,
+                    ),
+                  ),
+
+                  if (_isProcessing)
+                    ...<Widget>[
+                      SizedBox(
+                        height:
+                        veryCompact
+                            ? 8
+                            : 14,
+                      ),
+                      _buildProcessingState(),
+                    ],
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -444,14 +663,16 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
         Container(
           width: 52,
           height: 52,
-          padding: const EdgeInsets.all(3),
+          padding:
+          const EdgeInsets.all(3),
           decoration: BoxDecoration(
             color: _surface,
             borderRadius:
             BorderRadius.circular(16),
             border:
             Border.all(color: _border),
-            boxShadow: const <BoxShadow>[
+            boxShadow:
+            const <BoxShadow>[
               BoxShadow(
                 color: Color(0x22087AF5),
                 blurRadius: 16,
@@ -471,8 +692,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                   StackTrace? stackTrace,
                   ) {
                 return const DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
+                  decoration:
+                  BoxDecoration(
+                    gradient:
+                    LinearGradient(
                       begin:
                       Alignment.topLeft,
                       end:
@@ -485,7 +708,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                   ),
                   child: Center(
                     child: Icon(
-                      Icons.phone_in_talk_rounded,
+                      Icons
+                          .phone_in_talk_rounded,
                       color: Colors.white,
                       size: 27,
                     ),
@@ -525,7 +749,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                 overflow:
                 TextOverflow.ellipsis,
                 style: TextStyle(
-                  color: _textSecondary,
+                  color:
+                  _textSecondary,
                   fontSize: 11.5,
                   fontWeight:
                   FontWeight.w500,
@@ -538,13 +763,15 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
           width: 42,
           height: 42,
           decoration: BoxDecoration(
-            color: _surface.withValues(
+            color:
+            _surface.withValues(
               alpha: 0.92,
             ),
             shape: BoxShape.circle,
             border:
             Border.all(color: _border),
-            boxShadow: const <BoxShadow>[
+            boxShadow:
+            const <BoxShadow>[
               BoxShadow(
                 color: Color(0x14087AF5),
                 blurRadius: 13,
@@ -570,20 +797,25 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
 
   Widget _buildIncomingBadge() {
     return Container(
-      padding: const EdgeInsets.symmetric(
+      padding:
+      const EdgeInsets.symmetric(
         horizontal: 16,
         vertical: 9,
       ),
       decoration: BoxDecoration(
-        color: _surface.withValues(
+        color:
+        _surface.withValues(
           alpha: 0.88,
         ),
         borderRadius:
         BorderRadius.circular(40),
         border: Border.all(
-          color: const Color(0xFFBFEFE3),
+          color: const Color(
+            0xFFBFEFE3,
+          ),
         ),
-        boxShadow: const <BoxShadow>[
+        boxShadow:
+        const <BoxShadow>[
           BoxShadow(
             color: Color(0x2200D99B),
             blurRadius: 18,
@@ -592,7 +824,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
         ],
       ),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
+        mainAxisSize:
+        MainAxisSize.min,
         children: <Widget>[
           Container(
             width: 9,
@@ -601,7 +834,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
             const BoxDecoration(
               color: _callGreen,
               shape: BoxShape.circle,
-              boxShadow: <BoxShadow>[
+              boxShadow:
+              <BoxShadow>[
                 BoxShadow(
                   color:
                   Color(0x6600D99B),
@@ -622,7 +856,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
               maxLines: 1,
               overflow:
               TextOverflow.ellipsis,
-              style: const TextStyle(
+              style:
+              const TextStyle(
                 color:
                 Color(0xFF11745E),
                 fontSize: 12.5,
@@ -638,118 +873,6 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   }
 
   // =============================================================
-  // Caller Card
-  // =============================================================
-
-  Widget _buildCallerCard({
-    required bool compact,
-  }) {
-    final double avatarSize =
-    compact ? 136 : 164;
-
-    return Container(
-      width: double.infinity,
-      padding: EdgeInsets.symmetric(
-        horizontal: 20,
-        vertical: compact ? 22 : 30,
-      ),
-      decoration: BoxDecoration(
-        color: _surface.withValues(
-          alpha: 0.82,
-        ),
-        borderRadius:
-        BorderRadius.circular(30),
-        border:
-        Border.all(color: _border),
-        boxShadow: const <BoxShadow>[
-          BoxShadow(
-            color: Color(0x1A087AF5),
-            blurRadius: 30,
-            offset: Offset(0, 12),
-          ),
-          BoxShadow(
-            color: Color(0x1200D99B),
-            blurRadius: 32,
-            offset: Offset(0, -2),
-          ),
-        ],
-      ),
-      child: Column(
-        children: <Widget>[
-          ScaleTransition(
-            scale: _pulseAnimation,
-            child: _buildCallerAvatar(
-              size: avatarSize,
-            ),
-          ),
-          SizedBox(
-            height: compact ? 18 : 24,
-          ),
-          Text(
-            _safeCallerName,
-            maxLines: 2,
-            overflow:
-            TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: _textPrimary,
-              fontSize:
-              compact ? 25 : 29,
-              fontWeight:
-              FontWeight.w900,
-              height: 1.08,
-            ),
-          ),
-          if (_safeCallerId != null)
-            ...<Widget>[
-              const SizedBox(
-                height: 8,
-              ),
-              Container(
-                constraints:
-                const BoxConstraints(
-                  maxWidth: 270,
-                ),
-                padding:
-                const EdgeInsets.symmetric(
-                  horizontal: 13,
-                  vertical: 7,
-                ),
-                decoration:
-                BoxDecoration(
-                  color:
-                  const Color(
-                    0xFFF1F6FF,
-                  ),
-                  borderRadius:
-                  BorderRadius.circular(
-                    22,
-                  ),
-                ),
-                child: Text(
-                  _safeCallerId!,
-                  maxLines: 1,
-                  overflow:
-                  TextOverflow
-                      .ellipsis,
-                  textAlign:
-                  TextAlign.center,
-                  style:
-                  const TextStyle(
-                    color: _deepBlue,
-                    fontSize: 12.5,
-                    fontWeight:
-                    FontWeight.w700,
-                  ),
-                ),
-              ),
-            ],
-        ],
-      ),
-    );
-  }
-
-  // =============================================================
   // Caller Avatar
   // =============================================================
 
@@ -759,7 +882,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     return Container(
       width: size,
       height: size,
-      padding: const EdgeInsets.all(5),
+      padding:
+      const EdgeInsets.all(5),
       decoration:
       const BoxDecoration(
         shape: BoxShape.circle,
@@ -786,15 +910,16 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
         ],
       ),
       child: Container(
-        padding: const EdgeInsets.all(4),
+        padding:
+        const EdgeInsets.all(4),
         decoration:
         const BoxDecoration(
           shape: BoxShape.circle,
           color: Colors.white,
         ),
         child: ClipOval(
-          child: _safeCallerPhotoUrl ==
-              null
+          child:
+          _safeCallerPhotoUrl == null
               ? _buildAvatarFallback()
               : Image.network(
             _safeCallerPhotoUrl!,
@@ -804,10 +929,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
             errorBuilder: (
                 BuildContext context,
                 Object error,
-                StackTrace?
-                stackTrace,
+                StackTrace? stackTrace,
                 ) {
-              return _buildAvatarFallback();
+              return
+                _buildAvatarFallback();
             },
           ),
         ),
@@ -842,40 +967,6 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   }
 
   // =============================================================
-  // Call Information
-  // =============================================================
-
-  Widget _buildCallInformation() {
-    return Column(
-      children: <Widget>[
-        Text(
-          _callLabel,
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            color: _textPrimary,
-            fontSize: 18,
-            fontWeight:
-            FontWeight.w800,
-          ),
-        ),
-        const SizedBox(
-          height: 7,
-        ),
-        const Text(
-          'Choose Accept or Decline',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: _textSecondary,
-            fontSize: 13,
-            fontWeight:
-            FontWeight.w500,
-          ),
-        ),
-      ],
-    );
-  }
-
-  // =============================================================
   // Processing
   // =============================================================
 
@@ -887,7 +978,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
         vertical: 10,
       ),
       decoration: BoxDecoration(
-        color: _surface.withValues(
+        color:
+        _surface.withValues(
           alpha: 0.82,
         ),
         borderRadius:
@@ -896,7 +988,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
         Border.all(color: _border),
       ),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
+        mainAxisSize:
+        MainAxisSize.min,
         children: <Widget>[
           const SizedBox(
             width: 17,
@@ -915,8 +1008,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
               _accepting
                   ? 'Accepting call...'
                   : 'Declining call...',
-              style: const TextStyle(
-                color: _textSecondary,
+              style:
+              const TextStyle(
+                color:
+                _textSecondary,
                 fontSize: 13,
                 fontWeight:
                 FontWeight.w600,
@@ -995,7 +1090,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
 // Premium Incoming Call Action
 // ===============================================================
 
-class _PremiumCallAction extends StatelessWidget {
+class _PremiumCallAction
+    extends StatelessWidget {
   const _PremiumCallAction({
     required this.semanticsLabel,
     required this.label,
@@ -1034,7 +1130,8 @@ class _PremiumCallAction extends StatelessWidget {
       label: semanticsLabel,
       child: AnimatedOpacity(
         opacity: enabled ? 1 : 0.45,
-        duration: const Duration(
+        duration:
+        const Duration(
           milliseconds: 160,
         ),
         child: Column(
@@ -1123,7 +1220,8 @@ class _PremiumCallAction extends StatelessWidget {
 // Background Decoration
 // ===============================================================
 
-class _IncomingBackground extends StatelessWidget {
+class _IncomingBackground
+    extends StatelessWidget {
   const _IncomingBackground();
 
   @override
@@ -1166,7 +1264,8 @@ class _IncomingBackground extends StatelessWidget {
   }
 }
 
-class _GlowOrb extends StatelessWidget {
+class _GlowOrb
+    extends StatelessWidget {
   const _GlowOrb({
     required this.size,
     required this.color,
@@ -1182,7 +1281,8 @@ class _GlowOrb extends StatelessWidget {
       child: Container(
         width: size,
         height: size,
-        decoration: BoxDecoration(
+        decoration:
+        BoxDecoration(
           color: color,
           shape: BoxShape.circle,
         ),
@@ -1195,7 +1295,8 @@ class _GlowOrb extends StatelessWidget {
 // Call Engine Information
 // ===============================================================
 
-class _SecurityMessage extends StatelessWidget {
+class _SecurityMessage
+    extends StatelessWidget {
   const _SecurityMessage();
 
   @override
@@ -1207,7 +1308,8 @@ class _SecurityMessage extends StatelessWidget {
         Icon(
           Icons.shield_outlined,
           size: 15,
-          color: Color(0xFF728199),
+          color:
+          Color(0xFF728199),
         ),
         SizedBox(
           width: 6,
