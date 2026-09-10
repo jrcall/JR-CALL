@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../services/call/audio_manager.dart';
@@ -49,7 +51,7 @@ class CallBottomBar extends StatefulWidget {
     this.onKeypadDigit,
   });
 
-  final VoidCallback onEndCall;
+  final FutureOr<void> Function() onEndCall;
 
   final bool showVideoControls;
 
@@ -261,7 +263,7 @@ class _CallBottomBarState extends State<CallBottomBar> {
   // End Call
   // ===========================================================
 
-  void _endCall() {
+  Future<void> _endCall() async {
     if (_endCallLoading) {
       return;
     }
@@ -271,7 +273,7 @@ class _CallBottomBarState extends State<CallBottomBar> {
     });
 
     try {
-      widget.onEndCall();
+      await widget.onEndCall();
     } catch (error, stackTrace) {
       _reportError(
         'End call',
