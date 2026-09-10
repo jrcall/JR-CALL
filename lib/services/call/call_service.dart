@@ -768,7 +768,7 @@ class CallService with WidgetsBindingObserver {
       _isVideoCall =
           _readBool(callData['isVideoCall']) ??
               _readBool(callData['video']) ??
-              true;
+              false;
 
       final Map<String, dynamic>? offer =
       _normalizeMap(
@@ -3160,65 +3160,3 @@ class CallService with WidgetsBindingObserver {
     );
   }
 }
-
-// ===============================================================
-// END OF FILE
-//
-// FILE 28 FINAL EXACT FILE-17 ALIGNMENT:
-//
-// ✓ Existing CallService public API preserved.
-// ✓ Existing lifecycle logic preserved.
-// ✓ Firebase UID identity preserved.
-// ✓ SignalingService ownership preserved.
-// ✓ IceManager ownership preserved.
-// ✓ WebRTCService ownership preserved.
-// ✓ RecoveryManager retry/backoff ownership preserved.
-//
-// ✓ Exact RecoveryManager callback signature used:
-//
-// Future<void> Function(
-//   String callId,
-//   Future<void> Function()? nativeRestart,
-// )?
-//
-// ✓ nativeRestart is correctly nullable.
-// ✓ Previous compile-time callback mismatch removed.
-// ✓ No zero-argument callback guess remains.
-// ✓ Native callback remains transport-only.
-// ✓ Null native callback has safe complete-restart fallback.
-// ✓ Non-null native callback executes only once.
-// ✓ Native restart single-flight protection preserved.
-// ✓ Restart offer still uses iceRestart: true.
-// ✓ No second native restart after callback.
-// ✓ Restart offer remains SignalingService persisted.
-// ✓ Restart counter remains SignalingService persisted.
-// ✓ networkRecovered metadata preserved.
-// ✓ Illegal early reconnecting lifecycle write blocked.
-// ✓ Terminal resurrection protection preserved.
-// ✓ Caller answer terminal guard preserved.
-// ✓ Receiver offer terminal guard preserved.
-// ✓ Duration real-WebRTC-only behavior preserved.
-// ✓ Detached-call protection preserved.
-// ✓ Same-session history guard preserved.
-// ✓ TURN/STUN flow preserved.
-// ✓ No UI/design changes.
-// ✓ No Message/Profile/Auth ownership added.
-//
-// ✓ Initial receiver offer SDP is stored per session.
-// ✓ Listener duplicate initial offer is ignored by exact SDP match.
-// ✓ Lowercase _lastStatus comparison removed from duplicate guard.
-// ✓ Legitimate later ICE-restart offers remain processable.
-//
-// STATUS:
-// FILE 28 — READY FOR IDE VERIFICATION.
-//
-// AFTER SAVE:
-// Android Studio -> Problems -> File
-//
-// REQUIRED:
-// No problems in call_service.dart
-//
-// NEXT AFTER FILE 28 PASSES:
-// FILE 29
-// lib/screens/incoming_call_screen.dart
-// ===============================================================
